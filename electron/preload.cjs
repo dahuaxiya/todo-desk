@@ -5,7 +5,9 @@ contextBridge.exposeInMainWorld('todoDesk', {
   saveData: (data) => ipcRenderer.invoke('data:save', data),
   importImages: () => ipcRenderer.invoke('attachment:import'),
   revealStorage: () => ipcRenderer.invoke('storage:reveal'),
+  revealLogs: () => ipcRenderer.invoke('logs:reveal'),
   restoreDock: () => ipcRenderer.invoke('dock:restore'),
+  applyWindowMode: (mode) => ipcRenderer.invoke('window:apply-mode', mode),
   parseTask: (payload) => ipcRenderer.invoke('ai:parse-task', payload),
   syncToLark: (payload) => ipcRenderer.invoke('lark:sync', payload),
   onDataUpdated: (callback) => {

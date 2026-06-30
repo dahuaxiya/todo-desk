@@ -64,7 +64,9 @@ export interface TodoDeskBridge {
   saveData: (data: AppData) => Promise<AppData>
   importImages: () => Promise<TaskImage[]>
   revealStorage: () => Promise<unknown>
+  revealLogs: () => Promise<unknown>
   restoreDock: () => Promise<{ ok: boolean }>
+  applyWindowMode: (mode: AppMode) => Promise<{ ok: boolean }>
   parseTask: (payload: { text: string; settings: AppSettings }) => Promise<{
     ok: boolean
     skipped?: boolean

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,8 +13,10 @@ let mainWindow = null
 let apiServer = null
 let apiPort = null
 let lastNormalBounds = null
+let lastNormalModeBounds = null
 let isDocked = false
 let keepOnTopBeforeDock = false
+let currentAppMode = 'normal'
 
 function getPaths() {
   const userData = app.getPath('userData')
@@ -22,7 +24,52 @@ function getPaths() {
     userData,
     dataFile: join(userData, 'todo-desk-data.json'),
     attachmentDir: join(userData, 'attachments'),
+    logFile: join(userData, 'todo-desk.log'),
   }
+}
+
+async function writeLog(level, message, meta = {}) {
+  try {
+    const paths = getPaths()
+    await mkdir(paths.userData, { recursive: true })
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      level,
+      message,
+      ...meta,
+    })
+    await appendFile(paths.logFile, `${line}\n`, 'utf8')
+  } catch (error) {
+    console.error('Todo Desk log write failed:', error)
+  }
+}
+
+function clipText(value, size = 800) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, size)
+}
+
+function safeAiMeta(settings, extra = {}) {
+  return {
+    endpoint: buildAiEndpoint(settings.aiBaseUrl),
+    model: settings.aiModel,
+    aiEnabled: Boolean(settings.aiEnabled),
+    hasApiKey: Boolean(settings.aiApiKey),
+    ...extra,
+  }
+}
+
+function buildAiEndpoint(baseUrl) {
+  return `${String(baseUrl || '').replace(/\/$/, '')}/chat/completions`
+}
+
+function buildAiFallbackEndpoint(baseUrl) {
+  const normalized = String(baseUrl || '').replace(/\/$/, '')
+  if (!normalized || /\/v1$/i.test(normalized)) return ''
+  return `${normalized}/v1/chat/completions`
+}
+
+function looksLikeHtml(text, contentType) {
+  return /text\/html/i.test(contentType) || /^\s*</.test(String(text || ''))
 }
 
 function getDefaultData() {
@@ -284,22 +331,30 @@ async function startApiServer(settings) {
   apiServer = http.createServer((request, response) => {
     handleApiRequest(request, response)
   })
-  await new Promise((resolve, reject) => {
-    const handleError = (error) => {
-      apiServer = null
-      apiPort = null
-      reject(error)
-    }
-    apiServer.once('error', handleError)
-    apiServer.listen(port, '127.0.0.1', () => {
-      apiServer.off('error', handleError)
-      apiServer.on('error', (error) => {
-        console.error('Todo Desk API server error:', error)
+  try {
+    await new Promise((resolve, reject) => {
+      const handleError = (error) => {
+        apiServer = null
+        apiPort = null
+        reject(error)
+      }
+      apiServer.once('error', handleError)
+      apiServer.listen(port, '127.0.0.1', () => {
+        apiServer.off('error', handleError)
+        apiServer.on('error', (error) => {
+          console.error('Todo Desk API server error:', error)
+        })
+        apiPort = port
+        resolve()
       })
-      apiPort = port
-      resolve()
     })
-  })
+    await writeLog('info', 'Todo Desk API server started', { port })
+  } catch (error) {
+    await writeLog('error', 'Todo Desk API server failed to start', {
+      port,
+      error: error instanceof Error ? error.message : 'unknown error',
+    })
+  }
 }
 
 function formatDateTime(value) {
@@ -345,7 +400,7 @@ async function callAiTaskParser(text, settings) {
     return { ok: false, skipped: true, message: 'AI Base URL 或 Model 未配置' }
   }
 
-  const endpoint = `${settings.aiBaseUrl.replace(/\/$/, '')}/chat/completions`
+  const endpoint = buildAiEndpoint(settings.aiBaseUrl)
   const today = new Date().toISOString()
   const prompt = [
     '你是 Todo 元数据解析器。只返回 JSON，不要解释。',
@@ -358,36 +413,128 @@ async function callAiTaskParser(text, settings) {
     `用户输入：${text}`,
   ].join('\n')
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(settings.aiApiKey ? { Authorization: `Bearer ${settings.aiApiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: settings.aiModel,
-      messages: [
-        {
-          role: 'system',
-          content: 'Extract todo metadata as strict JSON.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.1,
-    }),
-  })
+  await writeLog('info', 'AI parse request started', safeAiMeta(settings, { inputLength: text.length }))
 
-  if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`AI 请求失败 ${response.status}: ${body.slice(0, 240)}`)
+  const requestPayload = {
+    model: settings.aiModel,
+    messages: [
+      {
+        role: 'system',
+        content: 'Extract todo metadata as strict JSON.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+    temperature: 0.1,
   }
 
-  const body = await response.json()
+  async function requestEndpoint(url) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(settings.aiApiKey ? { Authorization: `Bearer ${settings.aiApiKey}` } : {}),
+      },
+      body: JSON.stringify(requestPayload),
+    })
+    return {
+      response,
+      rawBody: await response.text(),
+      contentType: response.headers.get('content-type') || '',
+    }
+  }
+
+  let aiResponse
+  try {
+    aiResponse = await requestEndpoint(endpoint)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'AI 网络请求失败'
+    await writeLog('error', 'AI parse request failed before response', safeAiMeta(settings, { error: message }))
+    throw new Error(`AI 网络请求失败：${message}`)
+  }
+
+  let { response, rawBody, contentType } = aiResponse
+
+  if (response.ok && looksLikeHtml(rawBody, contentType)) {
+    const fallbackEndpoint = buildAiFallbackEndpoint(settings.aiBaseUrl)
+    if (fallbackEndpoint) {
+      await writeLog(
+        'warn',
+        'AI parse response looked like HTML, retrying with /v1 endpoint',
+        safeAiMeta(settings, {
+          endpoint,
+          fallbackEndpoint,
+          status: response.status,
+          contentType,
+          responseSnippet: clipText(rawBody),
+        }),
+      )
+      try {
+        aiResponse = await requestEndpoint(fallbackEndpoint)
+        response = aiResponse.response
+        rawBody = aiResponse.rawBody
+        contentType = aiResponse.contentType
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'AI /v1 重试失败'
+        await writeLog(
+          'error',
+          'AI parse fallback /v1 request failed before response',
+          safeAiMeta(settings, { endpoint: fallbackEndpoint, error: message }),
+        )
+        throw new Error(`AI /v1 重试失败：${message}`)
+      }
+    }
+  }
+
+  if (!response.ok) {
+    await writeLog(
+      'error',
+      'AI parse request returned non-2xx',
+      safeAiMeta(settings, {
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        responseSnippet: clipText(rawBody),
+      }),
+    )
+    throw new Error(`AI 请求失败 ${response.status} ${response.statusText || ''}：${clipText(rawBody, 180)}`)
+  }
+
+  let body
+  try {
+    body = JSON.parse(rawBody)
+  } catch (error) {
+    await writeLog(
+      'error',
+      'AI parse response is not JSON',
+      safeAiMeta(settings, {
+        status: response.status,
+        contentType,
+        responseSnippet: clipText(rawBody),
+        error: error instanceof Error ? error.message : 'JSON parse failed',
+      }),
+    )
+    throw new Error(`AI 返回的不是 JSON，可能 Base URL 填错或被重定向：${clipText(rawBody, 180)}`)
+  }
+
   const content = body?.choices?.[0]?.message?.content ?? ''
-  const parsed = extractJsonObject(content)
+  let parsed
+  try {
+    parsed = extractJsonObject(content)
+  } catch (error) {
+    await writeLog(
+      'error',
+      'AI parse message content is not valid task JSON',
+      safeAiMeta(settings, {
+        contentType,
+        messageSnippet: clipText(content),
+        error: error instanceof Error ? error.message : 'task JSON parse failed',
+      }),
+    )
+    throw new Error(`AI 返回内容不是有效任务 JSON：${clipText(content, 180)}`)
+  }
   const task = {
     title: typeof parsed.title === 'string' ? parsed.title : text,
     detail: typeof parsed.detail === 'string' ? parsed.detail : '',
@@ -399,6 +546,7 @@ async function callAiTaskParser(text, settings) {
     reminderAt: parsed.reminderAt ? new Date(parsed.reminderAt).toISOString() : '',
   }
 
+  await writeLog('info', 'AI parse request succeeded', safeAiMeta(settings, { title: task.title }))
   return { ok: true, task }
 }
 
@@ -477,16 +625,66 @@ function dockWindowToEdge(window, edge, area) {
   setDockState(true, edge)
 }
 
-function restoreDockedWindow() {
+function restoreDockedWindow(anchorBounds = null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const current = mainWindow.getBounds()
-  const nextBounds = lastNormalBounds
+  const nextBounds = anchorBounds
+    ? {
+        x: anchorBounds.x,
+        y: anchorBounds.y,
+        width: lastNormalBounds?.width || 980,
+        height: lastNormalBounds?.height || 900,
+      }
+    : lastNormalBounds
     ? { ...lastNormalBounds }
     : { x: current.x - 844, y: current.y, width: 980, height: 900 }
   mainWindow.setMinimumSize(760, 640)
   mainWindow.setBounds(nextBounds, true)
   mainWindow.setAlwaysOnTop(keepOnTopBeforeDock)
   setDockState(false)
+}
+
+function applyAppModeWindow(mode) {
+  if (!mainWindow || mainWindow.isDestroyed() || isDocked) return
+  const bounds = mainWindow.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const area = display.workArea
+  void writeLog('info', 'Applying app mode window bounds', { mode, currentBounds: bounds })
+
+  if (mode === 'mini') {
+    if (currentAppMode !== 'mini') {
+      lastNormalModeBounds = bounds
+    }
+    const width = Math.min(760, Math.max(520, Math.round(area.width * 0.42)))
+    const height = Math.min(720, Math.max(520, Math.round(area.height * 0.7)))
+    mainWindow.setMinimumSize(460, 420)
+    mainWindow.setBounds(
+      {
+        x: Math.min(Math.max(bounds.x, area.x), area.x + area.width - width),
+        y: Math.min(Math.max(bounds.y, area.y), area.y + area.height - height),
+        width,
+        height,
+      },
+      true,
+    )
+    currentAppMode = 'mini'
+    void writeLog('info', 'Applied mini window bounds', { bounds: mainWindow.getBounds() })
+    return
+  }
+
+  const nextBounds = lastNormalModeBounds || { ...bounds, width: 980, height: 900 }
+  mainWindow.setMinimumSize(760, 640)
+  mainWindow.setBounds(
+    {
+      x: Math.min(Math.max(nextBounds.x ?? bounds.x, area.x), area.x + area.width - 760),
+      y: Math.min(Math.max(nextBounds.y ?? bounds.y, area.y), area.y + area.height - 640),
+      width: Math.max(980, nextBounds.width ?? 980),
+      height: Math.max(760, nextBounds.height ?? 900),
+    },
+    true,
+  )
+  currentAppMode = 'normal'
+  void writeLog('info', 'Applied normal window bounds', { bounds: mainWindow.getBounds() })
 }
 
 function snapWindowToEdge(window) {
@@ -502,7 +700,7 @@ function snapWindowToEdge(window) {
     const leftDocked = bounds.x <= area.x + threshold
     const rightDocked = bounds.x + bounds.width >= area.x + area.width - threshold
     if (!leftDocked && !rightDocked) {
-      restoreDockedWindow()
+      restoreDockedWindow(bounds)
     }
     return
   }
@@ -542,11 +740,12 @@ async function createMainWindow() {
     })
   }
   await startApiServer(data.settings)
+  currentAppMode = data.settings.appMode === 'mini' ? 'mini' : 'normal'
   mainWindow = new BrowserWindow({
-    width: 980,
-    height: 900,
-    minWidth: 760,
-    minHeight: 640,
+    width: currentAppMode === 'mini' ? 640 : 980,
+    height: currentAppMode === 'mini' ? 680 : 900,
+    minWidth: currentAppMode === 'mini' ? 460 : 760,
+    minHeight: currentAppMode === 'mini' ? 420 : 640,
     title: 'Todo Desk',
     backgroundColor: '#f7f2e8',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -592,7 +791,11 @@ ipcMain.handle('data:load', async () => readData())
 ipcMain.handle('data:save', async (_event, data) => {
   const saved = await saveData(data)
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setAlwaysOnTop(Boolean(saved.settings.keepOnTop))
+    if (isDocked) {
+      mainWindow.setAlwaysOnTop(true, 'floating')
+    } else {
+      mainWindow.setAlwaysOnTop(Boolean(saved.settings.keepOnTop))
+    }
   }
   await startApiServer(saved.settings)
   return saved
@@ -631,8 +834,21 @@ ipcMain.handle('storage:reveal', async () => {
   return getPaths()
 })
 
+ipcMain.handle('logs:reveal', async () => {
+  await ensureStorage()
+  const paths = getPaths()
+  await writeLog('info', 'User opened Todo Desk log file')
+  shell.showItemInFolder(paths.logFile)
+  return paths
+})
+
 ipcMain.handle('dock:restore', async () => {
   restoreDockedWindow()
+  return { ok: true }
+})
+
+ipcMain.handle('window:apply-mode', async (_event, mode) => {
+  applyAppModeWindow(mode === 'mini' ? 'mini' : 'normal')
   return { ok: true }
 })
 

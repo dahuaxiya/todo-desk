@@ -245,7 +245,7 @@ function App() {
     loadData()
       .then((nextData) => {
         setData(nextData)
-        setSelectedTaskId(nextData.tasks[0]?.id ?? '')
+        setSelectedTaskId('')
         setSyncState(nextData.settings.larkDoc ? '飞书同步已配置' : '先配置飞书文档')
       })
       .catch((error) => {
@@ -589,6 +589,9 @@ function App() {
   }
 
   async function updateSettings(patch: Partial<AppSettings>) {
+    if (patch.appMode && patch.appMode !== data.settings.appMode) {
+      await window.todoDesk?.applyWindowMode?.(patch.appMode)
+    }
     const nextData = {
       ...data,
       settings: {
@@ -620,6 +623,14 @@ function App() {
       return
     }
     await window.todoDesk.revealStorage()
+  }
+
+  async function revealLogs() {
+    if (!window.todoDesk?.revealLogs) {
+      setSyncState('日志文件需要桌面 App 运行')
+      return
+    }
+    await window.todoDesk.revealLogs()
   }
 
   function handleDraftKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -701,11 +712,11 @@ function App() {
           <div className="mini-list">
             {miniTasks.length === 0 && <p className="empty-state">这里暂时没有事项</p>}
             {miniTasks.map((task) => (
-              <MiniTaskRow
+            <MiniTaskRow
                 key={task.id}
                 task={task}
                 selected={task.id === selectedTaskId}
-                onSelect={setSelectedTaskId}
+                onSelect={(taskId) => setSelectedTaskId((current) => (current === taskId ? '' : taskId))}
                 onEdit={startEdit}
                 onToggleDone={toggleDone}
                 onMove={moveTask}
@@ -745,6 +756,9 @@ function App() {
               </header>
               <button type="button" onClick={() => updateSettings({ appMode: 'normal' })}>
                 返回正常模式
+              </button>
+              <button type="button" onClick={revealLogs}>
+                打开日志文件
               </button>
               <p className="settings-status">{syncState}</p>
             </aside>
@@ -1099,9 +1113,17 @@ function App() {
               <code>POST http://127.0.0.1:{data.settings.apiPort}/tasks</code>
             </div>
 
+            <div className="api-example">
+              <span>AI 报错日志</span>
+              <code>~/Library/Application Support/todo-desk/todo-desk.log</code>
+            </div>
+
             <div className="settings-actions">
               <button type="button" onClick={revealStorage}>
                 打开本地数据
+              </button>
+              <button type="button" onClick={revealLogs}>
+                打开日志文件
               </button>
               <button type="button" onClick={() => syncToLark()}>
                 立即同步飞书
@@ -1256,7 +1278,7 @@ function TaskColumn({
             key={task.id}
             task={task}
             selected={task.id === selectedTaskId}
-            onSelect={onSelect}
+            onSelect={(taskId) => onSelect(selectedTaskId === taskId ? '' : taskId)}
             onEdit={onEdit}
             onComplete={onComplete}
             onToggleDone={onToggleDone}

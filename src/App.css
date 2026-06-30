@@ -68,7 +68,6 @@
 }
 
 .title-actions {
-  -webkit-app-region: no-drag;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -158,11 +157,22 @@ select:focus-visible {
 }
 
 .titlebar button,
+.titlebar select,
+.titlebar input,
 .control-strip button,
+.control-strip input,
 .composer button,
+.composer input,
+.composer textarea,
+.composer select,
 .column header button,
 .card-actions button,
 .settings-panel button,
+.settings-panel input,
+.settings-panel select,
+.mini-titlebar button,
+.mini-panel button,
+.mini-panel input,
 .section-toggle {
   -webkit-app-region: no-drag;
 }
