@@ -74,6 +74,43 @@
   gap: 10px;
 }
 
+.mode-switch {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(48, 43, 35, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.72);
+}
+
+.mode-switch button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.mode-switch button.active {
+  color: #11100d;
+  background: var(--accent);
+  box-shadow: 0 2px 0 rgba(48, 43, 35, 0.12);
+}
+
+.mini-column-picker {
+  height: 38px;
+  max-width: 118px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .sync-dot {
   width: 10px;
   height: 10px;
@@ -254,9 +291,27 @@ select:focus-visible {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.board-mini {
+  grid-template-columns: minmax(280px, 520px);
+}
+
+.mode-mini .board-mini {
+  justify-content: start;
+}
+
+.mode-mini .column {
+  min-height: 340px;
+}
+
 .column {
   min-width: 0;
   overflow: hidden;
+}
+
+.column.drop-ready {
+  outline: 2px dashed rgba(29, 111, 134, 0.28);
+  outline-offset: -6px;
+  background: rgba(244, 252, 255, 0.52);
 }
 
 .column header {
@@ -334,6 +389,14 @@ select:focus-visible {
   border: 1px solid rgba(48, 43, 35, 0.16);
   border-radius: 8px;
   background: var(--card);
+}
+
+.task-card[draggable='true'] {
+  cursor: grab;
+}
+
+.task-card[draggable='true']:active {
+  cursor: grabbing;
 }
 
 .task-card.selected {
@@ -482,6 +545,11 @@ select:focus-visible {
   gap: 10px;
 }
 
+.quick-form textarea {
+  min-height: 104px;
+  font-size: 15px;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: 1.4fr 120px 120px 1fr 1fr;
@@ -548,6 +616,12 @@ select:focus-visible {
 
 .form-actions {
   justify-content: flex-end;
+}
+
+.form-actions span {
+  margin-right: auto;
+  color: var(--ink-muted);
+  font-size: 12px;
 }
 
 .form-actions button {
@@ -647,6 +721,28 @@ select:focus-visible {
   font-size: 12px;
 }
 
+.settings-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(48, 43, 35, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.settings-section h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.settings-section p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-field {
   display: grid;
   gap: 6px;
@@ -654,9 +750,13 @@ select:focus-visible {
   font-size: 12px;
 }
 
-.settings-field input {
+.settings-field input,
+.settings-field select {
   height: 38px;
   padding: 0 10px;
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--ink);
 }
 
 .settings-group {
@@ -675,9 +775,118 @@ select:focus-visible {
   font-size: 13px;
 }
 
-.settings-group input {
+.settings-section label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.settings-section .settings-field {
+  display: grid;
+  align-items: stretch;
+}
+
+.settings-section .settings-field input,
+.settings-section .settings-field select {
+  width: 100%;
+}
+
+.settings-group input[type='checkbox'],
+.settings-section input[type='checkbox'] {
   width: 16px;
   height: 16px;
+}
+
+.dock-shell {
+  min-width: 0;
+  min-height: 100vh;
+  height: 100vh;
+  gap: 8px;
+  padding: 8px;
+  overflow: hidden;
+  border-left: 1px solid rgba(48, 43, 35, 0.18);
+  border-right: 1px solid rgba(48, 43, 35, 0.18);
+  background: #f8edcf;
+  -webkit-app-region: drag;
+}
+
+.dock-restore {
+  -webkit-app-region: no-drag;
+  width: 100%;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  color: var(--ink-muted);
+  background: rgba(255, 255, 255, 0.56);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.dock-card {
+  display: grid;
+  min-height: 0;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.dock-card h1 {
+  margin: 0;
+  padding: 7px 4px;
+  border-bottom: 1px solid rgba(48, 43, 35, 0.16);
+  font-size: 14px;
+  line-height: 1.15;
+  text-align: center;
+  letter-spacing: 0;
+}
+
+.dock-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  overflow: hidden auto;
+}
+
+.dock-list button,
+.dock-list span {
+  -webkit-app-region: no-drag;
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(48, 43, 35, 0.14);
+  border-radius: 7px;
+  background: rgba(255, 250, 240, 0.88);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.dock-list strong,
+.dock-list small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-list strong {
+  font-size: 12px;
+}
+
+.dock-list small {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.dock-list span {
+  color: var(--ink-muted);
+  text-align: center;
 }
 
 .api-example {

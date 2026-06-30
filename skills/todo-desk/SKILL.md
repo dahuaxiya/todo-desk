@@ -28,7 +28,9 @@ python3 /Users/dxm/.codex/skills/todo-desk/scripts/add_work.py \
   --status doing \
   --priority medium \
   --project "AI 工作" \
-  --tags codex,todo-desk
+  --tags codex,todo-desk \
+  --due-at "2026-07-01T18:00:00+08:00" \
+  --reminder-at "2026-07-01T17:30:00+08:00"
 ```
 
 Fields:
@@ -37,6 +39,7 @@ Fields:
 - `status`: `doing`, `todo`, or `done`; default `doing`.
 - `priority`: `low`, `medium`, or `high`; default `medium`.
 - `tags` accepts comma or space separated values.
+- `due-at` and `reminder-at` accept ISO 8601 timestamps.
 - `source` defaults to the current agent/tool name when supplied by the caller, otherwise `codex`.
 
 ## When App Is Not Running

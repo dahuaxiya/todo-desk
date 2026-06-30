@@ -12,6 +12,8 @@ const appDataVersion = 1
 let mainWindow = null
 let apiServer = null
 let apiPort = null
+let lastNormalBounds = null
+let isDocked = false
 
 function getPaths() {
   const userData = app.getPath('userData')
@@ -33,6 +35,14 @@ function getDefaultData() {
       snapToEdge: true,
       apiEnabled: true,
       apiPort: 47731,
+      aiEnabled: false,
+      aiBaseUrl: 'https://api.openai.com/v1',
+      aiModel: 'gpt-4o-mini',
+      aiApiKey: '',
+      appMode: 'normal',
+      miniColumn: 'doing',
+      addMode: 'quick',
+      edgeDocked: false,
     },
     tasks: [
       {
@@ -308,6 +318,89 @@ function formatTaskLine(task) {
   return `- ${task.title}${project}${due}${tags}`
 }
 
+function extractJsonObject(text) {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return {}
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    const cleaned = trimmed.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
+    try {
+      return JSON.parse(cleaned)
+    } catch {
+      // Continue below and pull the first JSON-looking object out of a chatty model response.
+    }
+    const match = cleaned.match(/\{[\s\S]*\}/) || trimmed.match(/\{[\s\S]*\}/)
+    if (!match) return {}
+    return JSON.parse(match[0])
+  }
+}
+
+async function callAiTaskParser(text, settings) {
+  if (!settings.aiEnabled) {
+    return { ok: false, skipped: true, message: 'AI 未启用' }
+  }
+  if (!settings.aiBaseUrl || !settings.aiModel) {
+    return { ok: false, skipped: true, message: 'AI Base URL 或 Model 未配置' }
+  }
+
+  const endpoint = `${settings.aiBaseUrl.replace(/\/$/, '')}/chat/completions`
+  const today = new Date().toISOString()
+  const prompt = [
+    '你是 Todo 元数据解析器。只返回 JSON，不要解释。',
+    '根据用户输入识别任务字段：title, detail, status, priority, project, tags, dueAt, reminderAt。',
+    'status 只能是 doing/todo/done，默认 todo。',
+    'priority 只能是 high/medium/low，默认 medium。',
+    'tags 是字符串数组。',
+    'dueAt/reminderAt 必须是 ISO 8601 字符串；没有就返回空字符串。',
+    `当前时间：${today}`,
+    `用户输入：${text}`,
+  ].join('\n')
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(settings.aiApiKey ? { Authorization: `Bearer ${settings.aiApiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: settings.aiModel,
+      messages: [
+        {
+          role: 'system',
+          content: 'Extract todo metadata as strict JSON.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.1,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`AI 请求失败 ${response.status}: ${body.slice(0, 240)}`)
+  }
+
+  const body = await response.json()
+  const content = body?.choices?.[0]?.message?.content ?? ''
+  const parsed = extractJsonObject(content)
+  const task = {
+    title: typeof parsed.title === 'string' ? parsed.title : text,
+    detail: typeof parsed.detail === 'string' ? parsed.detail : '',
+    status: ['doing', 'todo', 'done'].includes(parsed.status) ? parsed.status : 'todo',
+    priority: ['high', 'medium', 'low'].includes(parsed.priority) ? parsed.priority : 'medium',
+    project: typeof parsed.project === 'string' ? parsed.project : '',
+    tags: Array.isArray(parsed.tags) ? parsed.tags.map((tag) => String(tag)).filter(Boolean) : [],
+    dueAt: parsed.dueAt ? new Date(parsed.dueAt).toISOString() : '',
+    reminderAt: parsed.reminderAt ? new Date(parsed.reminderAt).toISOString() : '',
+  }
+
+  return { ok: true, task }
+}
+
 function buildLarkMarkdown(data, completedTask) {
   const doing = data.tasks.filter((task) => task.status === 'doing')
   const todo = data.tasks.filter((task) => task.status === 'todo')
@@ -362,6 +455,36 @@ function runLarkUpdate(doc, markdown) {
   })
 }
 
+function setDockState(docked, edge = '') {
+  isDocked = docked
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('dock:changed', { docked, edge })
+  }
+}
+
+function dockWindowToEdge(window, edge, area) {
+  if (!window || window.isDestroyed() || isDocked) return
+  lastNormalBounds = window.getBounds()
+  const width = 136
+  const height = Math.min(520, Math.max(360, area.height - 160))
+  const y = area.y + Math.round((area.height - height) / 2)
+  const x = edge === 'left' ? area.x : area.x + area.width - width
+  window.setMinimumSize(96, 260)
+  window.setBounds({ x, y, width, height }, true)
+  setDockState(true, edge)
+}
+
+function restoreDockedWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const current = mainWindow.getBounds()
+  const nextBounds = lastNormalBounds
+    ? { ...lastNormalBounds }
+    : { x: current.x - 844, y: current.y, width: 980, height: 900 }
+  mainWindow.setMinimumSize(760, 640)
+  mainWindow.setBounds(nextBounds, true)
+  setDockState(false)
+}
+
 function snapWindowToEdge(window) {
   if (!window || window.isDestroyed()) return
   const bounds = window.getBounds()
@@ -372,15 +495,15 @@ function snapWindowToEdge(window) {
   let snapped = false
 
   if (Math.abs(bounds.x - area.x) <= threshold) {
-    nextBounds.x = area.x
-    snapped = true
+    dockWindowToEdge(window, 'left', area)
+    return
+  }
+  if (Math.abs(bounds.x + bounds.width - (area.x + area.width)) <= threshold) {
+    dockWindowToEdge(window, 'right', area)
+    return
   }
   if (Math.abs(bounds.y - area.y) <= threshold) {
     nextBounds.y = area.y
-    snapped = true
-  }
-  if (Math.abs(bounds.x + bounds.width - (area.x + area.width)) <= threshold) {
-    nextBounds.x = area.x + area.width - bounds.width
     snapped = true
   }
   if (Math.abs(bounds.y + bounds.height - (area.y + area.height)) <= threshold) {
@@ -395,7 +518,16 @@ function snapWindowToEdge(window) {
 
 async function createMainWindow() {
   await ensureStorage()
-  const data = await readData()
+  let data = await readData()
+  if (data.settings.edgeDocked) {
+    data = await saveData({
+      ...data,
+      settings: {
+        ...data.settings,
+        edgeDocked: false,
+      },
+    })
+  }
   await startApiServer(data.settings)
   mainWindow = new BrowserWindow({
     width: 980,
@@ -484,6 +616,22 @@ ipcMain.handle('storage:reveal', async () => {
   await ensureStorage()
   shell.showItemInFolder(getPaths().dataFile)
   return getPaths()
+})
+
+ipcMain.handle('dock:restore', async () => {
+  restoreDockedWindow()
+  return { ok: true }
+})
+
+ipcMain.handle('ai:parse-task', async (_event, payload) => {
+  try {
+    return await callAiTaskParser(payload.text, payload.settings)
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'AI 解析失败',
+    }
+  }
 })
 
 ipcMain.handle('lark:sync', async (_event, payload) => {

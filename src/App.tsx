@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
-import type { FormEvent, KeyboardEvent } from 'react'
-import type { AppData, AppSettings, Task, TaskImage, TaskPriority, TaskStatus } from './types'
+import type { DragEvent, FormEvent, KeyboardEvent } from 'react'
+import type { AddMode, AppData, AppMode, AppSettings, Task, TaskImage, TaskPriority, TaskStatus } from './types'
 
 const storageKey = 'todo-desk-data'
 
@@ -16,6 +16,18 @@ const priorityConfig: Record<TaskPriority, { label: string }> = {
   medium: { label: '中' },
   low: { label: '低' },
 }
+
+const taskStatuses = ['doing', 'todo', 'done'] as const
+
+const appModeOptions: Array<{ value: AppMode; label: string }> = [
+  { value: 'normal', label: '正常' },
+  { value: 'mini', label: '小卡' },
+]
+
+const addModeOptions: Array<{ value: AddMode; label: string }> = [
+  { value: 'quick', label: '文本' },
+  { value: 'detail', label: '详细' },
+]
 
 const emptyTaskDraft = {
   title: '',
@@ -39,6 +51,14 @@ function createDefaultData(): AppData {
       snapToEdge: true,
       apiEnabled: true,
       apiPort: 47731,
+      aiEnabled: false,
+      aiBaseUrl: 'https://api.openai.com/v1',
+      aiModel: 'gpt-4o-mini',
+      aiApiKey: '',
+      appMode: 'normal',
+      miniColumn: 'doing',
+      addMode: 'quick',
+      edgeDocked: false,
     },
     tasks: [
       {
@@ -84,6 +104,7 @@ function mergeWithDefaults(value: AppData): AppData {
     settings: {
       ...defaults.settings,
       ...value.settings,
+      edgeDocked: false,
     },
     tasks: Array.isArray(value.tasks) ? value.tasks : [],
     syncLog: Array.isArray(value.syncLog) ? value.syncLog : [],
@@ -130,6 +151,13 @@ function formatDateTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function getTaskTimeLabel(task: Task) {
+  if (task.completedAt) return `完成 ${formatDateTime(task.completedAt)}`
+  if (task.dueAt) return `截止 ${formatDateTime(task.dueAt)}`
+  if (task.reminderAt) return `提醒 ${formatDateTime(task.reminderAt)}`
+  return `创建 ${formatDateTime(task.createdAt)}`
 }
 
 function normalizeKeywords(value: string) {
@@ -180,6 +208,24 @@ function buildDraftFromTask(task: Task) {
   }
 }
 
+function applyParsedTaskToDraft(parsed: Partial<Task>, fallbackText: string, status: TaskStatus) {
+  const parsedStatus = taskStatuses.includes(parsed.status as TaskStatus) ? (parsed.status as TaskStatus) : status
+  const parsedPriority = ['high', 'medium', 'low'].includes(parsed.priority as TaskPriority)
+    ? (parsed.priority as TaskPriority)
+    : 'medium'
+
+  return {
+    title: parsed.title || fallbackText,
+    detail: parsed.detail || '',
+    status: parsedStatus,
+    priority: parsedPriority,
+    project: parsed.project || '',
+    tags: parsed.tags?.join(' ') || '',
+    dueAt: toLocalInputValue(parsed.dueAt || ''),
+    reminderAt: toLocalInputValue(parsed.reminderAt || ''),
+  }
+}
+
 function App() {
   const [data, setData] = useState<AppData>(() => createDefaultData())
   const [isLoaded, setIsLoaded] = useState(false)
@@ -190,6 +236,10 @@ function App() {
   const [attachedImages, setAttachedImages] = useState<TaskImage[]>([])
   const [syncState, setSyncState] = useState('尚未同步')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [quickText, setQuickText] = useState('')
+  const [aiState, setAiState] = useState('AI 元数据识别未启用')
+  const [draggingTaskId, setDraggingTaskId] = useState('')
+  const [dockState, setDockState] = useState({ docked: false, edge: '' })
 
   useEffect(() => {
     loadData()
@@ -210,6 +260,13 @@ function App() {
     return window.todoDesk.onDataUpdated((nextData) => {
       setData(mergeWithDefaults(nextData))
       setSyncState(nextData.settings.larkDoc ? '飞书同步已配置' : '先配置飞书文档')
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!window.todoDesk?.onDockStateChanged) return undefined
+    return window.todoDesk.onDockStateChanged((state) => {
+      setDockState({ docked: state.docked, edge: state.edge || '' })
     })
   }, [])
 
@@ -298,6 +355,70 @@ function App() {
     }
   }
 
+  async function parseTextToDraft(text: string, status: TaskStatus) {
+    const trimmed = text.trim()
+    if (!trimmed) return { ...emptyTaskDraft, status }
+    if (!data.settings.aiEnabled) {
+      setAiState('AI 元数据识别未启用')
+      return { ...emptyTaskDraft, title: trimmed, status }
+    }
+    if (!window.todoDesk?.parseTask) {
+      setAiState('AI 解析需要桌面 App 运行')
+      return { ...emptyTaskDraft, title: trimmed, status }
+    }
+
+    setAiState('正在识别时间、优先级和标签...')
+    try {
+      const result = await window.todoDesk.parseTask({ text: trimmed, settings: data.settings })
+      if (result.ok && result.task) {
+        setAiState('AI 已填充元数据')
+        return applyParsedTaskToDraft(result.task, trimmed, status)
+      }
+      setAiState(result.message || 'AI 解析失败，已按普通文本添加')
+    } catch (error) {
+      setAiState(error instanceof Error ? error.message : 'AI 解析失败，已按普通文本添加')
+    }
+    return { ...emptyTaskDraft, title: trimmed, status }
+  }
+
+  async function handleQuickSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmed = quickText.trim()
+    if (!trimmed) return
+    const parsedDraft = await parseTextToDraft(trimmed, 'todo')
+    const now = new Date().toISOString()
+    const nextTask: Task = {
+      id: crypto.randomUUID(),
+      title: parsedDraft.title.trim() || trimmed,
+      detail: parsedDraft.detail.trim(),
+      status: parsedDraft.status,
+      priority: parsedDraft.priority,
+      project: parsedDraft.project.trim(),
+      tags: parseTags(parsedDraft.tags),
+      dueAt: fromLocalInputValue(parsedDraft.dueAt),
+      reminderAt: fromLocalInputValue(parsedDraft.reminderAt),
+      imagePaths: [],
+      createdAt: now,
+      updatedAt: now,
+      completedAt: parsedDraft.status === 'done' ? now : '',
+      remindedAt: '',
+    }
+    const saved = await persist({ ...data, tasks: [nextTask, ...data.tasks] })
+    setData(saved)
+    setSelectedTaskId(nextTask.id)
+    setQuickText('')
+  }
+
+  async function fillDraftWithAi() {
+    const source = [draft.title, draft.detail].filter(Boolean).join('\n')
+    if (!source.trim()) {
+      setAiState('先输入标题或详情')
+      return
+    }
+    const parsedDraft = await parseTextToDraft(source, draft.status)
+    setDraft(parsedDraft)
+  }
+
   const updateTask = useCallback(
     async (taskId: string, patch: Partial<Task>) => {
       const now = new Date().toISOString()
@@ -381,6 +502,23 @@ function App() {
 
   async function reopenTask(taskId: string, status: TaskStatus = 'todo') {
     await updateTask(taskId, { status, completedAt: '' })
+  }
+
+  async function moveTask(taskId: string, status: TaskStatus) {
+    const currentTask = data.tasks.find((task) => task.id === taskId)
+    if (!currentTask || currentTask.status === status) {
+      setDraggingTaskId('')
+      return
+    }
+
+    const completedAt = status === 'done' ? currentTask.completedAt || new Date().toISOString() : ''
+    const saved = await updateTask(taskId, { status, completedAt })
+    setSelectedTaskId(taskId)
+    setDraggingTaskId('')
+
+    if (status === 'done' && currentTask.status !== 'done' && saved.settings.syncOnComplete) {
+      syncToLark(saved, taskId)
+    }
   }
 
   useEffect(() => {
@@ -498,8 +636,34 @@ function App() {
     )
   }
 
+  const visibleStatuses = data.settings.appMode === 'mini' ? [data.settings.miniColumn] : taskStatuses
+  const isQuickComposer = !editingTaskId && data.settings.addMode === 'quick'
+
+  if (dockState.docked) {
+    const miniTasks = groupedTasks[data.settings.miniColumn]
+    return (
+      <main className={`app-shell dock-shell dock-${dockState.edge || 'right'}`}>
+        <button className="dock-restore" type="button" onClick={() => window.todoDesk?.restoreDock()}>
+          ↔
+        </button>
+        <section className="dock-card">
+          <h1>{statusConfig[data.settings.miniColumn].label}</h1>
+          <div className="dock-list">
+            {miniTasks.slice(0, 8).map((task) => (
+              <button key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)}>
+                <strong>{task.title}</strong>
+                <small>{getTaskTimeLabel(task)}</small>
+              </button>
+            ))}
+            {miniTasks.length === 0 && <span>暂无任务</span>}
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   return (
-    <main className="app-shell">
+    <main className={`app-shell mode-${data.settings.appMode}`}>
       <header className="titlebar">
         <div className="brand">
           <div className="brand-mark">TD</div>
@@ -511,6 +675,32 @@ function App() {
           </div>
         </div>
         <div className="title-actions">
+          <div className="mode-switch" role="group" aria-label="显示模式">
+            {appModeOptions.map((option) => (
+              <button
+                key={option.value}
+                className={data.settings.appMode === option.value ? 'active' : ''}
+                type="button"
+                onClick={() => updateSettings({ appMode: option.value })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {data.settings.appMode === 'mini' && (
+            <select
+              className="mini-column-picker"
+              value={data.settings.miniColumn}
+              aria-label="小卡显示列表"
+              onChange={(event) => updateSettings({ miniColumn: event.target.value as TaskStatus })}
+            >
+              {taskStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {statusConfig[status].label}
+                </option>
+              ))}
+            </select>
+          )}
           <span className={`sync-dot ${data.settings.larkDoc ? 'ready' : ''}`} title={syncState} />
           <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
             ⚙
@@ -539,8 +729,8 @@ function App() {
         <span>API {data.settings.apiEnabled ? `127.0.0.1:${data.settings.apiPort}` : '已关闭'}</span>
       </div>
 
-      <section className="board board-three">
-        {(['doing', 'todo', 'done'] as TaskStatus[]).map((status) => (
+      <section className={`board ${data.settings.appMode === 'mini' ? 'board-mini' : 'board-three'}`}>
+        {visibleStatuses.map((status) => (
           <TaskColumn
             key={status}
             status={status}
@@ -551,20 +741,53 @@ function App() {
             onEdit={startEdit}
             onComplete={completeTask}
             onToggleDone={toggleDone}
-            onMove={(taskId, nextStatus) => updateTask(taskId, { status: nextStatus, completedAt: '' })}
+            draggingTaskId={draggingTaskId}
+            onDragStart={setDraggingTaskId}
+            onDropTask={moveTask}
+            onMove={moveTask}
             onDelete={deleteTask}
           />
         ))}
       </section>
 
       <section className="composer">
-        <form onSubmit={handleSubmit}>
-          <header className="section-head">
-            <div>
-              <h2>{editingTaskId ? '编辑任务' : '添加任务'}</h2>
-              <p>记录当前工作、待办和必要上下文</p>
+        <header className="section-head">
+          <div>
+            <h2>{editingTaskId ? '编辑任务' : '添加任务'}</h2>
+            <p>{isQuickComposer ? '输入一句话，AI 自动识别时间和元数据' : '手动维护完整任务信息'}</p>
+          </div>
+          {!editingTaskId && (
+            <div className="mode-switch" role="group" aria-label="添加任务模式">
+              {addModeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={data.settings.addMode === option.value ? 'active' : ''}
+                  type="button"
+                  onClick={() => updateSettings({ addMode: option.value })}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
-          </header>
+          )}
+        </header>
+
+        {isQuickComposer ? (
+          <form className="quick-form" onSubmit={handleQuickSubmit}>
+            <textarea
+              value={quickText}
+              onChange={(event) => setQuickText(event.target.value)}
+              placeholder="例如：明天下午 3 点提醒我整理周报，归到工作，优先级高"
+            />
+            <div className="form-actions">
+              <span>{aiState}</span>
+              <button className="primary-button" type="submit">
+                智能添加
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleSubmit}>
           <div className="form-grid">
             <input
               className="title-input"
@@ -648,6 +871,10 @@ function App() {
             </button>
           </div>
           <div className="form-actions">
+            <span>{aiState}</span>
+            <button type="button" onClick={fillDraftWithAi}>
+              AI 填充
+            </button>
             <button type="button" onClick={() => startCreate('todo')}>
               清空
             </button>
@@ -656,6 +883,7 @@ function App() {
             </button>
           </div>
         </form>
+        )}
       </section>
 
       {selectedTask && (
@@ -781,7 +1009,7 @@ function App() {
             </div>
 
             <label className="settings-field">
-              <span>AI 接口端口</span>
+              <span>本机写入接口端口</span>
               <input
                 type="number"
                 min="1024"
@@ -790,6 +1018,62 @@ function App() {
                 onChange={(event) => updateSettings({ apiPort: Number(event.target.value) || 47731 })}
               />
             </label>
+
+            <div className="settings-section">
+              <h3>AI 元数据识别</h3>
+              <p>添加任务时调用兼容 OpenAI Chat Completions 的接口，自动识别时间、优先级、项目和标签。</p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={data.settings.aiEnabled}
+                  onChange={(event) => updateSettings({ aiEnabled: event.target.checked })}
+                />
+                添加任务时启用 AI 解析
+              </label>
+              <label className="settings-field">
+                <span>Base URL</span>
+                <input
+                  value={data.settings.aiBaseUrl}
+                  onChange={(event) => updateSettings({ aiBaseUrl: event.target.value })}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </label>
+              <label className="settings-field">
+                <span>Model</span>
+                <input
+                  value={data.settings.aiModel}
+                  onChange={(event) => updateSettings({ aiModel: event.target.value })}
+                  placeholder="gpt-4o-mini"
+                />
+              </label>
+              <label className="settings-field">
+                <span>API Key</span>
+                <input
+                  type="password"
+                  value={data.settings.aiApiKey}
+                  onChange={(event) => updateSettings({ aiApiKey: event.target.value })}
+                  placeholder="可选，本地保存"
+                />
+              </label>
+            </div>
+
+            <div className="settings-section">
+              <h3>小卡模式</h3>
+              <p>正常模式展示三列，小卡模式只展示一个列表；拖到左右屏幕边缘会自动变成贴边长条。</p>
+              <label className="settings-field">
+                <span>小卡展示列表</span>
+                <select
+                  value={data.settings.miniColumn}
+                  onChange={(event) => updateSettings({ miniColumn: event.target.value as TaskStatus })}
+                >
+                  {taskStatuses.map((status) => (
+                    <option key={status} value={status}>
+                      {statusConfig[status].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
 
             <div className="api-example">
               <span>添加工作接口</span>
@@ -821,6 +1105,9 @@ interface TaskColumnProps {
   onEdit: (task: Task) => void
   onComplete: (taskId: string) => void
   onToggleDone: (taskId: string) => void
+  draggingTaskId: string
+  onDragStart: (taskId: string) => void
+  onDropTask: (taskId: string, status: TaskStatus) => void
   onMove: (taskId: string, status: TaskStatus) => void
   onDelete: (taskId: string) => void
 }
@@ -834,11 +1121,33 @@ function TaskColumn({
   onEdit,
   onComplete,
   onToggleDone,
+  draggingTaskId,
+  onDragStart,
+  onDropTask,
   onMove,
   onDelete,
 }: TaskColumnProps) {
+  const isDragTarget = Boolean(draggingTaskId)
+
+  function handleDragOver(event: DragEvent<HTMLElement>) {
+    if (!draggingTaskId) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+  }
+
+  function handleDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault()
+    const taskId = event.dataTransfer.getData('text/plain') || draggingTaskId
+    if (!taskId) return
+    onDropTask(taskId, status)
+  }
+
   return (
-    <section className={`column column-${status}`}>
+    <section
+      className={`column column-${status} ${isDragTarget ? 'drop-ready' : ''}`}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <header>
         <div>
           <span className="column-mark">{statusConfig[status].shortLabel}</span>
@@ -864,6 +1173,7 @@ function TaskColumn({
             onEdit={onEdit}
             onComplete={onComplete}
             onToggleDone={onToggleDone}
+            onDragStart={onDragStart}
             onMove={onMove}
             onDelete={onDelete}
           />
@@ -881,6 +1191,7 @@ interface TaskCardProps {
   onEdit: (task: Task) => void
   onComplete: (taskId: string) => void
   onToggleDone: (taskId: string) => void
+  onDragStart: (taskId: string) => void
   onMove: (taskId: string, status: TaskStatus) => void
   onDelete: (taskId: string) => void
 }
@@ -893,6 +1204,7 @@ function TaskCard({
   onEdit,
   onComplete,
   onToggleDone,
+  onDragStart,
   onMove,
   onDelete,
 }: TaskCardProps) {
@@ -900,7 +1212,16 @@ function TaskCard({
   const isOverdue = !isDone && task.dueAt && new Date(task.dueAt).getTime() < Date.now()
 
   return (
-    <article className={`task-card ${selected ? 'selected' : ''} ${compact ? 'compact' : ''}`}>
+    <article
+      className={`task-card ${selected ? 'selected' : ''} ${compact ? 'compact' : ''}`}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData('text/plain', task.id)
+        onDragStart(task.id)
+      }}
+      onDragEnd={() => onDragStart('')}
+    >
       <div className="task-main">
         <button
           className={`check ${isDone ? 'checked' : ''}`}
@@ -922,8 +1243,9 @@ function TaskCard({
       </div>
       <div className="meta-row">
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
+        <span>{getTaskTimeLabel(task)}</span>
         {task.project && <span>{task.project}</span>}
-        {task.dueAt && <span className={isOverdue ? 'danger' : ''}>{formatDateTime(task.dueAt)}</span>}
+        {task.dueAt && isOverdue && <span className="danger">已逾期</span>}
         {task.imagePaths.length > 0 && <span>{task.imagePaths.length}图</span>}
       </div>
       {task.tags.length > 0 && !compact && (

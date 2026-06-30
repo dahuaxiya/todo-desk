@@ -18,6 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--priority", choices=["low", "medium", "high"], default="medium")
     parser.add_argument("--project", default="AI 工作")
     parser.add_argument("--tags", default="")
+    parser.add_argument("--due-at", default="")
+    parser.add_argument("--reminder-at", default="")
     parser.add_argument("--source", default="codex")
     parser.add_argument("--port", type=int, default=47731)
     parser.add_argument("--timeout", type=int, default=8)
@@ -33,6 +35,8 @@ def main() -> int:
         "priority": args.priority,
         "project": args.project,
         "tags": args.tags,
+        "dueAt": args.due_at,
+        "reminderAt": args.reminder_at,
         "source": args.source,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

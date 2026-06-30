@@ -1,5 +1,7 @@
 export type TaskStatus = 'doing' | 'todo' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
+export type AppMode = 'normal' | 'mini'
+export type AddMode = 'quick' | 'detail'
 
 export interface TaskImage {
   name: string
@@ -31,6 +33,14 @@ export interface AppSettings {
   snapToEdge: boolean
   apiEnabled: boolean
   apiPort: number
+  aiEnabled: boolean
+  aiBaseUrl: string
+  aiModel: string
+  aiApiKey: string
+  appMode: AppMode
+  miniColumn: TaskStatus
+  addMode: AddMode
+  edgeDocked: boolean
 }
 
 export interface SyncLogItem {
@@ -54,6 +64,13 @@ export interface TodoDeskBridge {
   saveData: (data: AppData) => Promise<AppData>
   importImages: () => Promise<TaskImage[]>
   revealStorage: () => Promise<unknown>
+  restoreDock: () => Promise<{ ok: boolean }>
+  parseTask: (payload: { text: string; settings: AppSettings }) => Promise<{
+    ok: boolean
+    skipped?: boolean
+    message?: string
+    task?: Partial<Task>
+  }>
   syncToLark: (payload: { data: AppData; completedTaskId?: string }) => Promise<{
     ok: boolean
     skipped?: boolean
@@ -61,6 +78,7 @@ export interface TodoDeskBridge {
     data?: AppData
   }>
   onDataUpdated: (callback: (data: AppData) => void) => () => void
+  onDockStateChanged: (callback: (state: { docked: boolean; edge?: string }) => void) => () => void
 }
 
 declare global {
