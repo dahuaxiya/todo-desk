@@ -2,6 +2,8 @@
 
 一个便笺风格的桌面 Todo 工具。它用 Electron 提供桌面窗口、吸边、本地 JSON 存储和飞书 CLI 同步，用 React/Vite 提供跨端 UI。
 
+![Todo Desk UI](docs/images/todo-desk-ui.png)
+
 ## 已实现
 
 - 当前工作 / Todo / 已完成三段看板
