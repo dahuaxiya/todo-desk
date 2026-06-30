@@ -1,0 +1,55 @@
+:root {
+  --paper: #f6ead2;
+  --surface: #fffaf0;
+  --card: #fff7df;
+  --field: #fffdfa;
+  --button: #fff9ec;
+  --button-hover: #fff1cc;
+  --accent: #f5c84b;
+  --accent-strong: #f0b92b;
+  --ok: #a8d36f;
+  --stamp: #d7e7ea;
+  --ink: #302b23;
+  --ink-muted: #766b5e;
+  --border: rgba(48, 43, 35, 0.24);
+  --focus: #1d6f86;
+  font-family:
+    Avenir Next,
+    Segoe UI,
+    Helvetica Neue,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--ink);
+  background: var(--paper);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+::selection {
+  color: #11100d;
+  background: #f7d976;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(118, 107, 94, 0.72);
+}
