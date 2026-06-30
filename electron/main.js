@@ -14,6 +14,7 @@ let apiServer = null
 let apiPort = null
 let lastNormalBounds = null
 let isDocked = false
+let keepOnTopBeforeDock = false
 
 function getPaths() {
   const userData = app.getPath('userData')
@@ -465,11 +466,13 @@ function setDockState(docked, edge = '') {
 function dockWindowToEdge(window, edge, area) {
   if (!window || window.isDestroyed() || isDocked) return
   lastNormalBounds = window.getBounds()
+  keepOnTopBeforeDock = window.isAlwaysOnTop()
   const width = 136
   const height = Math.min(520, Math.max(360, area.height - 160))
   const y = area.y + Math.round((area.height - height) / 2)
   const x = edge === 'left' ? area.x : area.x + area.width - width
   window.setMinimumSize(96, 260)
+  window.setAlwaysOnTop(true, 'floating')
   window.setBounds({ x, y, width, height }, true)
   setDockState(true, edge)
 }
@@ -482,6 +485,7 @@ function restoreDockedWindow() {
     : { x: current.x - 844, y: current.y, width: 980, height: 900 }
   mainWindow.setMinimumSize(760, 640)
   mainWindow.setBounds(nextBounds, true)
+  mainWindow.setAlwaysOnTop(keepOnTopBeforeDock)
   setDockState(false)
 }
 
@@ -493,6 +497,15 @@ function snapWindowToEdge(window) {
   const threshold = 32
   const nextBounds = { ...bounds }
   let snapped = false
+
+  if (isDocked) {
+    const leftDocked = bounds.x <= area.x + threshold
+    const rightDocked = bounds.x + bounds.width >= area.x + area.width - threshold
+    if (!leftDocked && !rightDocked) {
+      restoreDockedWindow()
+    }
+    return
+  }
 
   if (Math.abs(bounds.x - area.x) <= threshold) {
     dockWindowToEdge(window, 'left', area)

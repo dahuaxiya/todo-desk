@@ -4,6 +4,10 @@
 
 ![Todo Desk UI](docs/images/todo-desk-ui.png)
 
+小卡独立界面原型：
+
+![Todo Desk Mini Prototype](docs/images/todo-desk-mini-prototype.png)
+
 ## 已实现
 
 - 当前工作 / Todo / 已完成三段看板

@@ -286,7 +286,6 @@ function App() {
     [filteredTasks],
   )
 
-  const selectedTask = data.tasks.find((task) => task.id === selectedTaskId)
   const doingCount = data.tasks.filter((task) => task.status === 'doing').length
   const activeCount = data.tasks.filter((task) => task.status !== 'done').length
   const overdueCount = data.tasks.filter(
@@ -385,7 +384,9 @@ function App() {
     event.preventDefault()
     const trimmed = quickText.trim()
     if (!trimmed) return
-    const parsedDraft = await parseTextToDraft(trimmed, 'todo')
+    const targetStatus =
+      data.settings.appMode === 'mini' && data.settings.miniColumn !== 'done' ? data.settings.miniColumn : 'todo'
+    const parsedDraft = await parseTextToDraft(trimmed, targetStatus)
     const now = new Date().toISOString()
     const nextTask: Task = {
       id: crypto.randomUUID(),
@@ -636,11 +637,10 @@ function App() {
     )
   }
 
-  const visibleStatuses = data.settings.appMode === 'mini' ? [data.settings.miniColumn] : taskStatuses
   const isQuickComposer = !editingTaskId && data.settings.addMode === 'quick'
+  const miniTasks = groupedTasks[data.settings.miniColumn]
 
   if (dockState.docked) {
-    const miniTasks = groupedTasks[data.settings.miniColumn]
     return (
       <main className={`app-shell dock-shell dock-${dockState.edge || 'right'}`}>
         <button className="dock-restore" type="button" onClick={() => window.todoDesk?.restoreDock()}>
@@ -658,6 +658,98 @@ function App() {
             {miniTasks.length === 0 && <span>暂无任务</span>}
           </div>
         </section>
+      </main>
+    )
+  }
+
+  if (data.settings.appMode === 'mini') {
+    return (
+      <main className="app-shell mini-shell">
+        <header className="mini-titlebar">
+          <div className="brand mini-brand">
+            <div className="brand-mark">TD</div>
+            <div>
+              <h1>Todo Desk</h1>
+              <p>{statusConfig[data.settings.miniColumn].label} · {miniTasks.length}</p>
+            </div>
+          </div>
+          <div className="title-actions">
+            <button className="ghost-icon-button" type="button" title="返回正常模式" onClick={() => updateSettings({ appMode: 'normal' })}>
+              ↗
+            </button>
+            <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
+              ⚙
+            </button>
+          </div>
+        </header>
+
+        <section className="mini-panel">
+          <div className="mini-tabs" role="group" aria-label="小卡列表">
+            {taskStatuses.map((status) => (
+              <button
+                key={status}
+                className={data.settings.miniColumn === status ? 'active' : ''}
+                type="button"
+                onClick={() => updateSettings({ miniColumn: status })}
+              >
+                {statusConfig[status].label}
+                <small>{groupedTasks[status].length}</small>
+              </button>
+            ))}
+          </div>
+
+          <div className="mini-list">
+            {miniTasks.length === 0 && <p className="empty-state">这里暂时没有事项</p>}
+            {miniTasks.map((task) => (
+              <MiniTaskRow
+                key={task.id}
+                task={task}
+                selected={task.id === selectedTaskId}
+                onSelect={setSelectedTaskId}
+                onEdit={startEdit}
+                onToggleDone={toggleDone}
+                onMove={moveTask}
+              />
+            ))}
+          </div>
+
+          <form className="mini-quick-add" onSubmit={handleQuickSubmit}>
+            <input
+              value={quickText}
+              onChange={(event) => setQuickText(event.target.value)}
+              placeholder="添加任务"
+            />
+            <button className="primary-button" type="submit">
+              AI
+            </button>
+          </form>
+        </section>
+
+        {settingsOpen && (
+          <div className="settings-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
+            <aside
+              className="settings-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Todo Desk 设置"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <header className="settings-head">
+                <div>
+                  <h2>后台设置</h2>
+                  <p>同步、窗口和 AI 接口都在这里配置</p>
+                </div>
+                <button className="icon-button" type="button" title="关闭设置" onClick={() => setSettingsOpen(false)}>
+                  ×
+                </button>
+              </header>
+              <button type="button" onClick={() => updateSettings({ appMode: 'normal' })}>
+                返回正常模式
+              </button>
+              <p className="settings-status">{syncState}</p>
+            </aside>
+          </div>
+        )}
       </main>
     )
   }
@@ -687,20 +779,6 @@ function App() {
               </button>
             ))}
           </div>
-          {data.settings.appMode === 'mini' && (
-            <select
-              className="mini-column-picker"
-              value={data.settings.miniColumn}
-              aria-label="小卡显示列表"
-              onChange={(event) => updateSettings({ miniColumn: event.target.value as TaskStatus })}
-            >
-              {taskStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusConfig[status].label}
-                </option>
-              ))}
-            </select>
-          )}
           <span className={`sync-dot ${data.settings.larkDoc ? 'ready' : ''}`} title={syncState} />
           <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
             ⚙
@@ -729,8 +807,8 @@ function App() {
         <span>API {data.settings.apiEnabled ? `127.0.0.1:${data.settings.apiPort}` : '已关闭'}</span>
       </div>
 
-      <section className={`board ${data.settings.appMode === 'mini' ? 'board-mini' : 'board-three'}`}>
-        {visibleStatuses.map((status) => (
+      <section className="board board-three">
+        {taskStatuses.map((status) => (
           <TaskColumn
             key={status}
             status={status}
@@ -885,65 +963,6 @@ function App() {
         </form>
         )}
       </section>
-
-      {selectedTask && (
-        <aside className="detail-drawer">
-          <header className="section-head">
-            <div>
-              <h2>任务详情</h2>
-              <p>当前选中：{selectedTask.title}</p>
-            </div>
-          </header>
-          <div>
-            <span className={`priority priority-${selectedTask.priority}`}>
-              {priorityConfig[selectedTask.priority].label}
-            </span>
-            <span className="status-pill">{statusConfig[selectedTask.status].label}</span>
-          </div>
-          <h2>{selectedTask.title}</h2>
-          {selectedTask.detail && <p>{selectedTask.detail}</p>}
-          <dl>
-            {selectedTask.project && (
-              <>
-                <dt>项目</dt>
-                <dd>{selectedTask.project}</dd>
-              </>
-            )}
-            {selectedTask.dueAt && (
-              <>
-                <dt>截止</dt>
-                <dd>{formatDateTime(selectedTask.dueAt)}</dd>
-              </>
-            )}
-            {selectedTask.reminderAt && (
-              <>
-                <dt>提醒</dt>
-                <dd>{formatDateTime(selectedTask.reminderAt)}</dd>
-              </>
-            )}
-            {selectedTask.completedAt && (
-              <>
-                <dt>完成</dt>
-                <dd>{formatDateTime(selectedTask.completedAt)}</dd>
-              </>
-            )}
-          </dl>
-          {selectedTask.tags.length > 0 && (
-            <div className="tag-list">
-              {selectedTask.tags.map((tag) => (
-                <span key={tag}>#{tag}</span>
-              ))}
-            </div>
-          )}
-          {selectedTask.imagePaths.length > 0 && (
-            <div className="preview-grid">
-              {selectedTask.imagePaths.map((image) => (
-                <img key={image.path} src={image.url} alt={image.name} />
-              ))}
-            </div>
-          )}
-        </aside>
-      )}
 
       {settingsOpen && (
         <div className="settings-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
@@ -1112,6 +1131,74 @@ interface TaskColumnProps {
   onDelete: (taskId: string) => void
 }
 
+interface MiniTaskRowProps {
+  task: Task
+  selected: boolean
+  onSelect: (taskId: string) => void
+  onEdit: (task: Task) => void
+  onToggleDone: (taskId: string) => void
+  onMove: (taskId: string, status: TaskStatus) => void
+}
+
+function MiniTaskRow({ task, selected, onSelect, onEdit, onToggleDone, onMove }: MiniTaskRowProps) {
+  const isDone = task.status === 'done'
+
+  return (
+    <article className={`mini-task-row ${selected ? 'expanded' : ''}`}>
+      <div className="mini-task-main">
+        <button
+          className={`check ${isDone ? 'checked' : ''}`}
+          type="button"
+          aria-label={isDone ? '取消完成' : '完成任务'}
+          onClick={() => onToggleDone(task.id)}
+        >
+          ✓
+        </button>
+        <button className="mini-task-copy" type="button" onClick={() => onSelect(task.id)} onDoubleClick={() => onEdit(task)}>
+          <strong>{task.title}</strong>
+          <small>{getTaskTimeLabel(task)}</small>
+        </button>
+        <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
+        <button className="mini-expand" type="button" onClick={() => onSelect(selected ? '' : task.id)}>
+          {selected ? '⌃' : '⌄'}
+        </button>
+      </div>
+      {selected && (
+        <div className="mini-task-detail">
+          {task.detail && <p>{task.detail}</p>}
+          <div className="tag-list">
+            <span>{statusConfig[task.status].label}</span>
+            {task.project && <span>{task.project}</span>}
+            {task.tags.map((tag) => (
+              <span key={tag}>#{tag}</span>
+            ))}
+          </div>
+          <div className="card-actions">
+            {!isDone && (
+              <button type="button" onClick={() => onMove(task.id, 'done')}>
+                完成
+              </button>
+            )}
+            {task.status !== 'doing' && (
+              <button type="button" onClick={() => onMove(task.id, 'doing')}>
+                正在做
+              </button>
+            )}
+            {task.status !== 'todo' && (
+              <button type="button" onClick={() => onMove(task.id, 'todo')}>
+                Todo
+              </button>
+            )}
+            <button type="button" onClick={() => onEdit(task)}>
+              编辑
+            </button>
+          </div>
+        </div>
+      )}
+    </article>
+  )
+}
+
 function TaskColumn({
   status,
   tasks,
@@ -1243,11 +1330,54 @@ function TaskCard({
       </div>
       <div className="meta-row">
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
+        <span className="status-pill">{statusConfig[task.status].label}</span>
         <span>{getTaskTimeLabel(task)}</span>
         {task.project && <span>{task.project}</span>}
         {task.dueAt && isOverdue && <span className="danger">已逾期</span>}
         {task.imagePaths.length > 0 && <span>{task.imagePaths.length}图</span>}
       </div>
+      {selected && !compact && (
+        <div className="task-detail-inline">
+          {task.detail && <p>{task.detail}</p>}
+          <dl>
+            <div>
+              <dt>创建</dt>
+              <dd>{formatDateTime(task.createdAt)}</dd>
+            </div>
+            {task.project && (
+              <div>
+                <dt>项目</dt>
+                <dd>{task.project}</dd>
+              </div>
+            )}
+            {task.dueAt && (
+              <div>
+                <dt>截止</dt>
+                <dd>{formatDateTime(task.dueAt)}</dd>
+              </div>
+            )}
+            {task.reminderAt && (
+              <div>
+                <dt>提醒</dt>
+                <dd>{formatDateTime(task.reminderAt)}</dd>
+              </div>
+            )}
+            {task.completedAt && (
+              <div>
+                <dt>完成</dt>
+                <dd>{formatDateTime(task.completedAt)}</dd>
+              </div>
+            )}
+          </dl>
+          {task.imagePaths.length > 0 && (
+            <div className="preview-grid inline-preview-grid">
+              {task.imagePaths.map((image) => (
+                <img key={image.path} src={image.url} alt={image.name} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {task.tags.length > 0 && !compact && (
         <div className="tag-list">
           {task.tags.map((tag) => (
