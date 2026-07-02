@@ -1278,58 +1278,60 @@ function App() {
                 ×
               </button>
             </header>
-            <strong>{expandedDockTask.title}</strong>
-            {expandedDockTask.detail && <p>{expandedDockTask.detail}</p>}
-            <dl>
-              <div>
-                <dt>创建</dt>
-                <dd>{formatDateTime(expandedDockTask.createdAt)}</dd>
-              </div>
-              <div>
-                <dt>状态</dt>
-                <dd>{statusConfig[expandedDockTask.status].label}</dd>
-              </div>
-              {expandedDockTask.project && (
+            <div className="dock-popover-scroll">
+              <strong>{expandedDockTask.title}</strong>
+              {expandedDockTask.detail && <p>{expandedDockTask.detail}</p>}
+              <dl>
                 <div>
-                  <dt>项目</dt>
-                  <dd>{expandedDockTask.project}</dd>
+                  <dt>创建</dt>
+                  <dd>{formatDateTime(expandedDockTask.createdAt)}</dd>
+                </div>
+                <div>
+                  <dt>状态</dt>
+                  <dd>{statusConfig[expandedDockTask.status].label}</dd>
+                </div>
+                {expandedDockTask.project && (
+                  <div>
+                    <dt>项目</dt>
+                    <dd>{expandedDockTask.project}</dd>
+                  </div>
+                )}
+                {expandedDockTask.dueAt && (
+                  <div>
+                    <dt>截止</dt>
+                    <dd>{formatDateTime(expandedDockTask.dueAt)}</dd>
+                  </div>
+                )}
+                {expandedDockTask.reminderAt && (
+                  <div>
+                    <dt>提醒</dt>
+                    <dd>{formatDateTime(expandedDockTask.reminderAt)}</dd>
+                  </div>
+                )}
+              </dl>
+              {expandedDockTask.tags.length > 0 && (
+                <div className="dock-detail-meta">
+                  {expandedDockTask.tags.map((tag) => (
+                    <span key={tag}>#{tag}</span>
+                  ))}
                 </div>
               )}
-              {expandedDockTask.dueAt && (
-                <div>
-                  <dt>截止</dt>
-                  <dd>{formatDateTime(expandedDockTask.dueAt)}</dd>
+              {expandedDockTask.imagePaths.length > 0 && (
+                <div className="preview-grid inline-preview-grid">
+                  {expandedDockTask.imagePaths.map((image, index) => (
+                    <button
+                      key={image.path}
+                      className="preview-thumb"
+                      type="button"
+                      title="查看大图"
+                      onClick={() => openImagePreview(expandedDockTask.imagePaths, index, expandedDockTask.title)}
+                    >
+                      <img src={image.url} alt={image.name} />
+                    </button>
+                  ))}
                 </div>
               )}
-              {expandedDockTask.reminderAt && (
-                <div>
-                  <dt>提醒</dt>
-                  <dd>{formatDateTime(expandedDockTask.reminderAt)}</dd>
-                </div>
-              )}
-            </dl>
-            {expandedDockTask.tags.length > 0 && (
-              <div className="dock-detail-meta">
-                {expandedDockTask.tags.map((tag) => (
-                  <span key={tag}>#{tag}</span>
-                ))}
-              </div>
-            )}
-            {expandedDockTask.imagePaths.length > 0 && (
-              <div className="preview-grid inline-preview-grid">
-                {expandedDockTask.imagePaths.map((image, index) => (
-                  <button
-                    key={image.path}
-                    className="preview-thumb"
-                    type="button"
-                    title="查看大图"
-                    onClick={() => openImagePreview(expandedDockTask.imagePaths, index, expandedDockTask.title)}
-                  >
-                    <img src={image.url} alt={image.name} />
-                  </button>
-                ))}
-              </div>
-            )}
+            </div>
             <div className="dock-detail-actions">
               {expandedDockTask.status !== 'done' && (
                 <button type="button" onClick={() => moveTask(expandedDockTask.id, 'done')}>

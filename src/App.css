@@ -1546,11 +1546,13 @@ select:focus-visible {
   grid-column: 1;
   grid-row: 1;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   align-self: start;
   gap: 9px;
+  height: calc(100vh - 32px);
   max-height: calc(100vh - 32px);
   padding: 12px;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid rgba(48, 43, 35, 0.16);
   border-radius: 12px;
   background: rgba(255, 252, 244, 0.96);
@@ -1579,14 +1581,23 @@ select:focus-visible {
   line-height: 1;
 }
 
-.dock-popover > strong {
+.dock-popover-scroll {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-height: 0;
+  padding-right: 4px;
+  overflow: hidden auto;
+}
+
+.dock-popover-scroll > strong {
   color: var(--ink);
   font-size: 14px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
-.dock-popover > p {
+.dock-popover-scroll > p {
   margin: 0;
   color: var(--ink-muted);
   font-size: 12px;
@@ -1595,7 +1606,7 @@ select:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.dock-popover dl {
+.dock-popover-scroll dl {
   display: grid;
   gap: 6px;
   margin: 0;
@@ -1605,31 +1616,31 @@ select:focus-visible {
   background: rgba(255, 250, 240, 0.72);
 }
 
-.dock-popover dl div {
+.dock-popover-scroll dl div {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   gap: 8px;
   align-items: baseline;
 }
 
-.dock-popover dt,
-.dock-popover dd {
+.dock-popover-scroll dt,
+.dock-popover-scroll dd {
   margin: 0;
   min-width: 0;
   font-size: 11px;
   line-height: 1.25;
 }
 
-.dock-popover dt {
+.dock-popover-scroll dt {
   color: var(--ink-muted);
 }
 
-.dock-popover dd {
+.dock-popover-scroll dd {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 
-.dock-popover .preview-grid {
+.dock-popover-scroll .preview-grid {
   grid-template-columns: repeat(3, 1fr);
 }
 
@@ -1833,6 +1844,13 @@ select:focus-visible {
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+.dock-popover > .dock-detail-actions {
+  align-self: end;
+  padding-top: 8px;
+  border-top: 1px solid rgba(48, 43, 35, 0.1);
+  background: rgba(255, 252, 244, 0.96);
 }
 
 .dock-detail-meta span {
