@@ -1505,6 +1505,15 @@ select:focus-visible {
   display: none;
 }
 
+.dock-shell,
+.dock-shell button,
+.dock-card,
+.dock-popover,
+.dock-task-item {
+  animation: none;
+  transition: none;
+}
+
 .dock-right {
   grid-template-columns: minmax(0, 1fr);
 }

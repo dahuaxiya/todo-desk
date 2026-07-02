@@ -551,8 +551,9 @@ function App() {
     }
 
     setMultiSelectedTaskIds([])
+    const isSameTask = selectedTaskId === taskId
     setSelectedTaskId(taskId)
-    setDockDetailOpenState(true)
+    setDockDetailOpenState((current) => (isSameTask ? !current : true))
   }
 
   function buildPlainMergedTask(tasks: Task[]): Pick<Task, 'title' | 'detail'> {
