@@ -2,6 +2,18 @@ export type TaskStatus = 'doing' | 'todo' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
 export type AppMode = 'normal' | 'mini'
 export type AddMode = 'quick' | 'detail'
+export type TaskSortMode =
+  | 'manual'
+  | 'priority-desc'
+  | 'priority-asc'
+  | 'created-desc'
+  | 'created-asc'
+  | 'due-asc'
+  | 'due-desc'
+  | 'updated-desc'
+  | 'updated-asc'
+  | 'completed-desc'
+  | 'completed-asc'
 
 export interface TaskImage {
   name: string
@@ -24,6 +36,12 @@ export interface Task {
   updatedAt: string
   completedAt: string
   remindedAt?: string
+  deletedAt?: string
+  source?: string
+  agent?: string
+  agentSessionId?: string
+  repository?: string
+  repositoryPath?: string
 }
 
 export interface AppSettings {
@@ -33,6 +51,7 @@ export interface AppSettings {
   snapToEdge: boolean
   apiEnabled: boolean
   apiPort: number
+  desktopReminders: boolean
   aiEnabled: boolean
   aiBaseUrl: string
   aiModel: string
@@ -40,6 +59,7 @@ export interface AppSettings {
   appMode: AppMode
   miniColumn: TaskStatus
   addMode: AddMode
+  columnSorts: Record<TaskStatus, TaskSortMode>
   edgeDocked: boolean
 }
 
@@ -56,6 +76,7 @@ export interface AppData {
   version: number
   settings: AppSettings
   tasks: Task[]
+  trash: Task[]
   syncLog: SyncLogItem[]
 }
 
@@ -63,11 +84,25 @@ export interface TodoDeskBridge {
   loadData: () => Promise<AppData>
   saveData: (data: AppData) => Promise<AppData>
   importImages: () => Promise<TaskImage[]>
+  pasteImages: () => Promise<TaskImage[]>
+  savePastedImage: (payload: { name: string; dataUrl: string }) => Promise<TaskImage[]>
   revealStorage: () => Promise<unknown>
   revealLogs: () => Promise<unknown>
+  openTaskInCalendar: (task: Task) => Promise<{ ok: boolean; message?: string; filePath?: string }>
+  openAgentSession: (task: Task) => Promise<{ ok: boolean; message?: string; url?: string }>
   restoreDock: () => Promise<{ ok: boolean }>
+  dockToEdge: (edge: 'left' | 'right') => Promise<{ ok: boolean }>
+  setDockDetailOpen: (open: boolean) => Promise<{ ok: boolean; bounds?: { x: number; y: number; width: number; height: number } }>
   applyWindowMode: (mode: AppMode) => Promise<{ ok: boolean }>
-  parseTask: (payload: { text: string; settings: AppSettings }) => Promise<{
+  parseTask: (payload: { text: string; settings: AppSettings; images?: TaskImage[] }) => Promise<{
+    ok: boolean
+    skipped?: boolean
+    message?: string
+    task?: Partial<Task>
+    tasks?: Partial<Task>[]
+    imageMode?: 'none' | 'vision' | 'ocr'
+  }>
+  mergeTasks: (payload: { tasks: Task[]; settings: AppSettings }) => Promise<{
     ok: boolean
     skipped?: boolean
     message?: string

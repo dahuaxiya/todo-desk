@@ -9,19 +9,39 @@
       <stop offset="0" stop-color="#fff8df" />
       <stop offset="1" stop-color="#f0d99c" />
     </linearGradient>
+    <filter id="shadow" x="120" y="140" width="784" height="792" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="34" stdDeviation="38" flood-color="#0b1521" flood-opacity="0.38" />
+    </filter>
   </defs>
+
   <rect width="1024" height="1024" rx="228" fill="url(#bg)" />
-  <path fill="url(#paper)" d="M288 164h448c54 0 98 44 98 98v500c0 54-44 98-98 98H288c-54 0-98-44-98-98V262c0-54 44-98 98-98Z" />
-  <path fill="#f7eabf" d="M672 164h66c53 0 96 43 96 96v70H704c-18 0-32-14-32-32V164Z" opacity="0.76" />
-  <path fill="#d1ac55" d="M710 331h124L672 493V369c0-21 17-38 38-38Z" opacity="0.42" />
+  <circle cx="242" cy="227" r="132" fill="#5bd3aa" opacity="0.22" />
+  <circle cx="817" cy="784" r="188" fill="#e6c56c" opacity="0.16" />
+
+  <g filter="url(#shadow)">
+    <path
+      fill="url(#paper)"
+      d="M288 164h448c54 0 98 44 98 98v500c0 54-44 98-98 98H288c-54 0-98-44-98-98V262c0-54 44-98 98-98Z"
+    />
+    <path fill="#f7eabf" d="M672 164h66c53 0 96 43 96 96v70H704c-18 0-32-14-32-32V164Z" opacity="0.76" />
+    <path fill="#d1ac55" d="M710 331h124L672 493V369c0-21 17-38 38-38Z" opacity="0.42" />
+  </g>
+
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path stroke="#1f6f66" stroke-width="46" d="m330 392 50 50 91-105" />
     <path stroke="#244357" stroke-width="42" d="M542 391h172" />
     <path stroke="#244357" stroke-width="42" d="M330 553h384" opacity="0.82" />
     <path stroke="#244357" stroke-width="42" d="M330 690h292" opacity="0.66" />
   </g>
+
   <g fill="#df8b47">
     <circle cx="319" cy="553" r="23" />
     <circle cx="319" cy="690" r="23" opacity="0.72" />
   </g>
+
+  <path
+    fill="#ffffff"
+    d="M287 189h390c18 0 18 28 0 28H287c-24 0-44 20-44 44v304c0 18-28 18-28 0V261c0-40 32-72 72-72Z"
+    opacity="0.26"
+  />
 </svg>

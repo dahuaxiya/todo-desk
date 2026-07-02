@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages } from './ai-task-parser.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -15,8 +16,23 @@ let apiPort = null
 let lastNormalBounds = null
 let lastNormalModeBounds = null
 let isDocked = false
+let currentDockEdge = ''
 let keepOnTopBeforeDock = false
 let currentAppMode = 'normal'
+let suppressMoveHandlingUntil = 0
+let dockDragStartBounds = null
+
+const dockCollapsedWidth = 152
+const dockDetailWidth = 260
+const dockDetailGap = 12
+const dockExpandedWidth = dockCollapsedWidth + dockDetailGap + dockDetailWidth
+const dockDetachThreshold = 96
+const aiRequestTimeoutMs = 45_000
+const miniWindowWidth = 300
+const miniWindowHeight = 350
+const miniWindowMinWidth = 300
+const miniWindowMinHeight = 350
+const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function getPaths() {
   const userData = app.getPath('userData')
@@ -24,6 +40,7 @@ function getPaths() {
     userData,
     dataFile: join(userData, 'todo-desk-data.json'),
     attachmentDir: join(userData, 'attachments'),
+    calendarDir: join(userData, 'calendar-events'),
     logFile: join(userData, 'todo-desk.log'),
   }
 }
@@ -44,10 +61,6 @@ async function writeLog(level, message, meta = {}) {
   }
 }
 
-function clipText(value, size = 800) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, size)
-}
-
 function safeAiMeta(settings, extra = {}) {
   return {
     endpoint: buildAiEndpoint(settings.aiBaseUrl),
@@ -56,20 +69,6 @@ function safeAiMeta(settings, extra = {}) {
     hasApiKey: Boolean(settings.aiApiKey),
     ...extra,
   }
-}
-
-function buildAiEndpoint(baseUrl) {
-  return `${String(baseUrl || '').replace(/\/$/, '')}/chat/completions`
-}
-
-function buildAiFallbackEndpoint(baseUrl) {
-  const normalized = String(baseUrl || '').replace(/\/$/, '')
-  if (!normalized || /\/v1$/i.test(normalized)) return ''
-  return `${normalized}/v1/chat/completions`
-}
-
-function looksLikeHtml(text, contentType) {
-  return /text\/html/i.test(contentType) || /^\s*</.test(String(text || ''))
 }
 
 function getDefaultData() {
@@ -83,6 +82,7 @@ function getDefaultData() {
       snapToEdge: true,
       apiEnabled: true,
       apiPort: 47731,
+      desktopReminders: true,
       aiEnabled: false,
       aiBaseUrl: 'https://api.openai.com/v1',
       aiModel: 'gpt-4o-mini',
@@ -90,6 +90,11 @@ function getDefaultData() {
       appMode: 'normal',
       miniColumn: 'doing',
       addMode: 'quick',
+      columnSorts: {
+        doing: 'manual',
+        todo: 'manual',
+        done: 'completed-desc',
+      },
       edgeDocked: false,
     },
     tasks: [
@@ -124,6 +129,7 @@ function getDefaultData() {
         completedAt: '',
       },
     ],
+    trash: [],
     syncLog: [],
   }
 }
@@ -131,6 +137,7 @@ function getDefaultData() {
 async function ensureStorage() {
   const paths = getPaths()
   await mkdir(paths.attachmentDir, { recursive: true })
+  await mkdir(paths.calendarDir, { recursive: true })
   if (!existsSync(paths.dataFile)) {
     await writeJson(paths.dataFile, getDefaultData())
   }
@@ -154,8 +161,13 @@ async function readData() {
     settings: {
       ...getDefaultData().settings,
       ...data.settings,
+      columnSorts: {
+        ...getDefaultData().settings.columnSorts,
+        ...data.settings?.columnSorts,
+      },
     },
     tasks: Array.isArray(data.tasks) ? data.tasks : [],
+    trash: Array.isArray(data.trash) ? data.trash : [],
     syncLog: Array.isArray(data.syncLog) ? data.syncLog : [],
   }
 }
@@ -170,13 +182,26 @@ async function saveData(nextData) {
   return normalized
 }
 
+async function saveAttachmentBuffer(buffer, originalName, extension = '.png') {
+  await ensureStorage()
+  const safeExt = extension.startsWith('.') ? extension : `.${extension}`
+  const safeName = `${Date.now()}-${crypto.randomUUID()}${safeExt}`
+  const destination = join(getPaths().attachmentDir, safeName)
+  await writeFile(destination, buffer)
+  return {
+    name: originalName,
+    path: destination,
+    url: `file://${destination}`,
+  }
+}
+
 function sendJson(response, status, body) {
   const payload = JSON.stringify(body)
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
     'Access-Control-Allow-Origin': 'http://127.0.0.1',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   })
   response.end(payload)
@@ -220,6 +245,24 @@ function normalizeExternalTask(input) {
           .map((tag) => tag.trim())
           .filter(Boolean)
       : []
+  const rawImages = Array.isArray(input.imagePaths) ? input.imagePaths : Array.isArray(input.images) ? input.images : []
+  const imagePaths = rawImages
+    .map((image) => {
+      if (typeof image === 'string') {
+        return {
+          name: basename(image),
+          path: image,
+          url: image.startsWith('file://') ? image : `file://${image}`,
+        }
+      }
+      if (!image?.path) return null
+      return {
+        name: String(image.name || basename(image.path)),
+        path: String(image.path),
+        url: String(image.url || `file://${image.path}`),
+      }
+    })
+    .filter(Boolean)
 
   return {
     id: crypto.randomUUID(),
@@ -231,31 +274,86 @@ function normalizeExternalTask(input) {
     tags,
     dueAt: input.dueAt ? new Date(input.dueAt).toISOString() : '',
     reminderAt: input.reminderAt ? new Date(input.reminderAt).toISOString() : '',
-    imagePaths: [],
+    imagePaths,
     createdAt: now,
     updatedAt: now,
     completedAt: status === 'done' ? now : '',
     source: String(input.source || 'api').trim(),
+    agent: String(input.agent || input.agentName || '').trim(),
+    agentSessionId: String(input.agentSessionId || input.sessionId || input.session || '').trim(),
+    repository: String(input.repository || input.repo || '').trim(),
+    repositoryPath: String(input.repositoryPath || input.repoPath || '').trim(),
   }
 }
 
-async function addTaskFromApi(input) {
-  const task = normalizeExternalTask(input)
-  if (!task.title) {
+function normalizeTaskPatch(input, currentTask) {
+  const now = new Date().toISOString()
+  const patch = {
+    updatedAt: now,
+  }
+  if (typeof input.title === 'string') patch.title = input.title.trim()
+  if (typeof input.detail === 'string') patch.detail = input.detail.trim()
+  if (typeof input.description === 'string') patch.detail = input.description.trim()
+  if (typeof input.project === 'string') patch.project = input.project.trim()
+  if (['low', 'medium', 'high'].includes(input.priority)) patch.priority = input.priority
+  if (['doing', 'todo', 'done'].includes(input.status)) {
+    patch.status = input.status
+    patch.completedAt = input.status === 'done' ? currentTask.completedAt || now : ''
+  }
+  if (Array.isArray(input.tags)) patch.tags = input.tags.map((tag) => String(tag).trim()).filter(Boolean)
+  if (typeof input.tags === 'string') patch.tags = input.tags.split(/[,\s，、]+/).map((tag) => tag.trim()).filter(Boolean)
+  if (Object.prototype.hasOwnProperty.call(input, 'dueAt')) patch.dueAt = input.dueAt ? new Date(input.dueAt).toISOString() : ''
+  if (Object.prototype.hasOwnProperty.call(input, 'reminderAt')) patch.reminderAt = input.reminderAt ? new Date(input.reminderAt).toISOString() : ''
+  if (typeof input.source === 'string') patch.source = input.source.trim()
+  if (typeof input.agent === 'string' || typeof input.agentName === 'string') patch.agent = String(input.agent || input.agentName).trim()
+  if (typeof input.agentSessionId === 'string' || typeof input.sessionId === 'string' || typeof input.session === 'string') {
+    patch.agentSessionId = String(input.agentSessionId || input.sessionId || input.session).trim()
+  }
+  if (typeof input.repository === 'string' || typeof input.repo === 'string') patch.repository = String(input.repository || input.repo).trim()
+  if (typeof input.repositoryPath === 'string' || typeof input.repoPath === 'string') patch.repositoryPath = String(input.repositoryPath || input.repoPath).trim()
+  if (typeof input.appendDetail === 'string' && input.appendDetail.trim()) {
+    patch.detail = [currentTask.detail, input.appendDetail.trim()].filter(Boolean).join('\n\n')
+  }
+  return patch
+}
+
+async function addTasksFromApi(input) {
+  const rawTasks = Array.isArray(input?.tasks) ? input.tasks : [input]
+  const tasks = rawTasks.map((item) => normalizeExternalTask(item))
+  if (tasks.some((task) => !task.title)) {
     throw new Error('title is required')
   }
 
   const data = await readData()
   const nextData = await saveData({
     ...data,
-    tasks: [task, ...data.tasks],
+    tasks: [...tasks, ...data.tasks],
   })
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('data:updated', nextData)
   }
 
-  return { task, data: nextData }
+  return { task: tasks[0], tasks, data: nextData }
+}
+
+async function updateTaskFromApi(taskId, input) {
+  const data = await readData()
+  const task = data.tasks.find((item) => item.id === taskId)
+  if (!task) throw new Error('task not found')
+
+  const patch = normalizeTaskPatch(input, task)
+  const nextTask = { ...task, ...patch }
+  const nextData = await saveData({
+    ...data,
+    tasks: data.tasks.map((item) => (item.id === taskId ? nextTask : item)),
+  })
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('data:updated', nextData)
+  }
+
+  return { task: nextTask, data: nextData }
 }
 
 function isLoopbackRequest(request) {
@@ -299,8 +397,20 @@ async function handleApiRequest(request, response) {
 
     if (request.method === 'POST' && url.pathname === '/tasks') {
       const body = await readRequestJson(request)
-      const result = await addTaskFromApi(body)
+      const result = await addTasksFromApi(body)
       sendJson(response, 201, {
+        ok: true,
+        task: result.task,
+        tasks: result.tasks,
+      })
+      return
+    }
+
+    const taskPatchMatch = url.pathname.match(/^\/tasks\/([^/]+)$/)
+    if (request.method === 'PATCH' && taskPatchMatch) {
+      const body = await readRequestJson(request)
+      const result = await updateTaskFromApi(decodeURIComponent(taskPatchMatch[1]), body)
+      sendJson(response, 200, {
         ok: true,
         task: result.task,
       })
@@ -367,6 +477,87 @@ function formatDateTime(value) {
   }).format(new Date(value))
 }
 
+function escapeIcsText(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;')
+}
+
+function formatIcsDate(value) {
+  return new Date(value).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+}
+
+function buildTaskCalendarEvent(task) {
+  const eventAt = task.reminderAt || task.dueAt
+  if (!eventAt) {
+    throw new Error('这个任务没有提醒时间或截止时间，无法加入日历')
+  }
+  const start = new Date(eventAt)
+  if (Number.isNaN(start.getTime())) {
+    throw new Error('任务提醒时间无效')
+  }
+  const end = new Date(start.getTime() + 30 * 60_000)
+  const description = [
+    task.detail,
+    task.project ? `项目：${task.project}` : '',
+    task.tags?.length ? `标签：${task.tags.map((tag) => `#${tag}`).join(' ')}` : '',
+    task.agent ? `Agent：${task.agent}` : '',
+    task.agentSessionId ? `Session：${task.agentSessionId}` : '',
+    task.repository ? `代码库：${task.repository}` : '',
+  ].filter(Boolean).join('\n')
+  const alarmMinutes = task.reminderAt ? 0 : 10
+
+  return [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Todo Desk//Reminder//CN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${task.id || crypto.randomUUID()}@todo-desk.local`,
+    `DTSTAMP:${formatIcsDate(new Date())}`,
+    `DTSTART:${formatIcsDate(start)}`,
+    `DTEND:${formatIcsDate(end)}`,
+    `SUMMARY:${escapeIcsText(task.title || 'Todo Desk 提醒')}`,
+    description ? `DESCRIPTION:${escapeIcsText(description)}` : '',
+    'BEGIN:VALARM',
+    `TRIGGER:-PT${alarmMinutes}M`,
+    'ACTION:DISPLAY',
+    `DESCRIPTION:${escapeIcsText(task.title || 'Todo Desk 提醒')}`,
+    'END:VALARM',
+    'END:VEVENT',
+    'END:VCALENDAR',
+    '',
+  ].filter((line) => line !== '').join('\r\n')
+}
+
+async function openTaskInCalendar(task) {
+  await ensureStorage()
+  const safeName = `${Date.now()}-${String(task.title || 'todo-desk').replace(/[^\p{L}\p{N}-]+/gu, '-').slice(0, 48) || 'todo-desk'}.ics`
+  const filePath = join(getPaths().calendarDir, safeName)
+  await writeFile(filePath, buildTaskCalendarEvent(task), 'utf8')
+  await shell.openPath(filePath)
+  await writeLog('info', 'Task calendar event exported', { taskId: task.id, title: task.title, filePath })
+  return { ok: true, filePath }
+}
+
+function buildAgentSessionUrl(task) {
+  const agent = String(task?.agent || task?.source || '').trim().toLowerCase()
+  const sessionId = String(task?.agentSessionId || '').trim()
+  if (!sessionId) {
+    throw new Error('这个任务没有关联 agent session')
+  }
+  if (!agent.includes('codex')) {
+    throw new Error(`暂只支持跳转 Codex session：${task?.agent || task?.source || '未知 agent'}`)
+  }
+  if (!codexThreadIdPattern.test(sessionId)) {
+    throw new Error('Codex session id 格式不正确，无法跳转')
+  }
+  return `codex://threads/${sessionId}`
+}
+
 function formatTaskLine(task) {
   const tags = task.tags?.length ? ` #${task.tags.join(' #')}` : ''
   const due = task.dueAt ? ` 截止:${formatDateTime(task.dueAt)}` : ''
@@ -374,25 +565,78 @@ function formatTaskLine(task) {
   return `- ${task.title}${project}${due}${tags}`
 }
 
-function extractJsonObject(text) {
-  const trimmed = String(text || '').trim()
-  if (!trimmed) return {}
+async function requestAiEndpoint(url, payload, settings, context = 'AI 请求') {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), aiRequestTimeoutMs)
   try {
-    return JSON.parse(trimmed)
-  } catch {
-    const cleaned = trimmed.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim()
-    try {
-      return JSON.parse(cleaned)
-    } catch {
-      // Continue below and pull the first JSON-looking object out of a chatty model response.
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(settings.aiApiKey ? { Authorization: `Bearer ${settings.aiApiKey}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+    return {
+      response,
+      rawBody: await response.text(),
+      contentType: response.headers.get('content-type') || '',
     }
-    const match = cleaned.match(/\{[\s\S]*\}/) || trimmed.match(/\{[\s\S]*\}/)
-    if (!match) return {}
-    return JSON.parse(match[0])
+  } catch (error) {
+    clearTimeout(timeout)
+    const message = error?.name === 'AbortError' ? `请求超过 ${Math.round(aiRequestTimeoutMs / 1000)} 秒未返回` : error instanceof Error ? error.message : 'AI 网络请求失败'
+    await writeLog('error', `${context} failed before response`, safeAiMeta(settings, { endpoint: url, error: message }))
+    throw new Error(`AI 网络请求失败：${message}`)
   }
 }
 
-async function callAiTaskParser(text, settings) {
+async function callAiTaskParser(text, settings, images = []) {
+  await writeLog('info', 'AI parse request started', safeAiMeta(settings, { inputLength: text.length, imageCount: images.length }))
+
+  const requestEndpoint = (url, payload) => requestAiEndpoint(url, payload, settings, 'AI parse request')
+
+  let result
+  try {
+    result = await parseTasksWithAiAndImages(text, settings, requestEndpoint, { images })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await writeLog(
+      'error',
+      'AI parse request failed',
+      safeAiMeta(settings, {
+        inputLength: text.length,
+        imageCount: images.length,
+        error: message,
+      }),
+    )
+    throw error
+  }
+  if (result.usedFallback) {
+    await writeLog(
+      'warn',
+      'AI parse response used /v1 fallback endpoint',
+      safeAiMeta(settings, {
+        endpoint: result.endpoint,
+      }),
+    )
+  }
+  await writeLog(
+    'info',
+    'AI parse request succeeded',
+    safeAiMeta(settings, {
+      taskCount: result.tasks?.length ?? 0,
+      title: result.task?.title ?? '',
+      imageMode: result.imageMode,
+      imageCount: result.imageCount,
+      ocrErrors: result.ocrErrors,
+    }),
+  )
+  return result
+}
+
+async function callAiTaskMerger(tasks, settings) {
   if (!settings.aiEnabled) {
     return { ok: false, skipped: true, message: 'AI 未启用' }
   }
@@ -400,154 +644,34 @@ async function callAiTaskParser(text, settings) {
     return { ok: false, skipped: true, message: 'AI Base URL 或 Model 未配置' }
   }
 
-  const endpoint = buildAiEndpoint(settings.aiBaseUrl)
-  const today = new Date().toISOString()
-  const prompt = [
-    '你是 Todo 元数据解析器。只返回 JSON，不要解释。',
-    '根据用户输入识别任务字段：title, detail, status, priority, project, tags, dueAt, reminderAt。',
-    'status 只能是 doing/todo/done，默认 todo。',
-    'priority 只能是 high/medium/low，默认 medium。',
-    'tags 是字符串数组。',
-    'dueAt/reminderAt 必须是 ISO 8601 字符串；没有就返回空字符串。',
-    `当前时间：${today}`,
-    `用户输入：${text}`,
-  ].join('\n')
+  const payload = buildAiMergeRequestPayload(tasks, settings)
+  let endpoint = buildAiEndpoint(settings.aiBaseUrl)
+  await writeLog('info', 'AI merge request started', safeAiMeta(settings, { taskCount: tasks.length }))
 
-  await writeLog('info', 'AI parse request started', safeAiMeta(settings, { inputLength: text.length }))
-
-  const requestPayload = {
-    model: settings.aiModel,
-    messages: [
-      {
-        role: 'system',
-        content: 'Extract todo metadata as strict JSON.',
-      },
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
-    temperature: 0.1,
-  }
-
-  async function requestEndpoint(url) {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(settings.aiApiKey ? { Authorization: `Bearer ${settings.aiApiKey}` } : {}),
-      },
-      body: JSON.stringify(requestPayload),
-    })
-    return {
-      response,
-      rawBody: await response.text(),
-      contentType: response.headers.get('content-type') || '',
-    }
-  }
-
-  let aiResponse
-  try {
-    aiResponse = await requestEndpoint(endpoint)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'AI 网络请求失败'
-    await writeLog('error', 'AI parse request failed before response', safeAiMeta(settings, { error: message }))
-    throw new Error(`AI 网络请求失败：${message}`)
-  }
-
-  let { response, rawBody, contentType } = aiResponse
-
-  if (response.ok && looksLikeHtml(rawBody, contentType)) {
+  let { response, rawBody, contentType } = await requestAiEndpoint(endpoint, payload, settings, 'AI merge request')
+  if ((response.ok && looksLikeHtml(rawBody, contentType)) || (!response.ok && response.status === 404)) {
     const fallbackEndpoint = buildAiFallbackEndpoint(settings.aiBaseUrl)
     if (fallbackEndpoint) {
-      await writeLog(
-        'warn',
-        'AI parse response looked like HTML, retrying with /v1 endpoint',
-        safeAiMeta(settings, {
-          endpoint,
-          fallbackEndpoint,
-          status: response.status,
-          contentType,
-          responseSnippet: clipText(rawBody),
-        }),
-      )
-      try {
-        aiResponse = await requestEndpoint(fallbackEndpoint)
-        response = aiResponse.response
-        rawBody = aiResponse.rawBody
-        contentType = aiResponse.contentType
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'AI /v1 重试失败'
-        await writeLog(
-          'error',
-          'AI parse fallback /v1 request failed before response',
-          safeAiMeta(settings, { endpoint: fallbackEndpoint, error: message }),
-        )
-        throw new Error(`AI /v1 重试失败：${message}`)
-      }
+      await writeLog('warn', 'AI merge response used /v1 fallback endpoint', safeAiMeta(settings, { endpoint: fallbackEndpoint, originalStatus: response.status }))
+      endpoint = fallbackEndpoint
+      ;({ response, rawBody, contentType } = await requestAiEndpoint(endpoint, payload, settings, 'AI merge fallback request'))
     }
   }
-
   if (!response.ok) {
-    await writeLog(
-      'error',
-      'AI parse request returned non-2xx',
-      safeAiMeta(settings, {
-        status: response.status,
-        statusText: response.statusText,
-        contentType,
-        responseSnippet: clipText(rawBody),
-      }),
-    )
+    await writeLog('error', 'AI merge request failed', safeAiMeta(settings, { endpoint, status: response.status, body: clipText(rawBody, 400) }))
     throw new Error(`AI 请求失败 ${response.status} ${response.statusText || ''}：${clipText(rawBody, 180)}`)
   }
-
-  let body
-  try {
-    body = JSON.parse(rawBody)
-  } catch (error) {
-    await writeLog(
-      'error',
-      'AI parse response is not JSON',
-      safeAiMeta(settings, {
-        status: response.status,
-        contentType,
-        responseSnippet: clipText(rawBody),
-        error: error instanceof Error ? error.message : 'JSON parse failed',
-      }),
-    )
+  if (looksLikeHtml(rawBody, contentType)) {
+    await writeLog('error', 'AI merge response was html', safeAiMeta(settings, { endpoint, contentType, body: clipText(rawBody, 400) }))
     throw new Error(`AI 返回的不是 JSON，可能 Base URL 填错或被重定向：${clipText(rawBody, 180)}`)
   }
 
-  const content = body?.choices?.[0]?.message?.content ?? ''
-  let parsed
-  try {
-    parsed = extractJsonObject(content)
-  } catch (error) {
-    await writeLog(
-      'error',
-      'AI parse message content is not valid task JSON',
-      safeAiMeta(settings, {
-        contentType,
-        messageSnippet: clipText(content),
-        error: error instanceof Error ? error.message : 'task JSON parse failed',
-      }),
-    )
-    throw new Error(`AI 返回内容不是有效任务 JSON：${clipText(content, 180)}`)
-  }
-  const task = {
-    title: typeof parsed.title === 'string' ? parsed.title : text,
-    detail: typeof parsed.detail === 'string' ? parsed.detail : '',
-    status: ['doing', 'todo', 'done'].includes(parsed.status) ? parsed.status : 'todo',
-    priority: ['high', 'medium', 'low'].includes(parsed.priority) ? parsed.priority : 'medium',
-    project: typeof parsed.project === 'string' ? parsed.project : '',
-    tags: Array.isArray(parsed.tags) ? parsed.tags.map((tag) => String(tag)).filter(Boolean) : [],
-    dueAt: parsed.dueAt ? new Date(parsed.dueAt).toISOString() : '',
-    reminderAt: parsed.reminderAt ? new Date(parsed.reminderAt).toISOString() : '',
-  }
+  const body = JSON.parse(rawBody)
+  const content = body?.choices?.[0]?.message?.content ?? body?.choices?.[0]?.text ?? body
+  const merged = normalizeMergedTask(content, tasks)
 
-  await writeLog('info', 'AI parse request succeeded', safeAiMeta(settings, { title: task.title }))
-  return { ok: true, task }
+  await writeLog('info', 'AI merge request succeeded', safeAiMeta(settings, { title: merged.title, taskCount: tasks.length }))
+  return { ok: true, task: merged }
 }
 
 function buildLarkMarkdown(data, completedTask) {
@@ -606,8 +730,35 @@ function runLarkUpdate(doc, markdown) {
 
 function setDockState(docked, edge = '') {
   isDocked = docked
+  currentDockEdge = docked ? edge : ''
+  if (!docked) {
+    dockDragStartBounds = null
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
+    updateWindowButtonVisibility(mainWindow)
     mainWindow.webContents.send('dock:changed', { docked, edge })
+  }
+}
+
+function updateWindowButtonVisibility(window) {
+  if (process.platform !== 'darwin' || !window || window.isDestroyed()) return
+  window.setWindowButtonVisibility(!isDocked)
+}
+
+function setWindowBounds(window, bounds, animate = true) {
+  suppressMoveHandlingUntil = Date.now() + 350
+  window.setBounds(bounds, animate)
+}
+
+function clampBoundsToWorkArea(bounds, area) {
+  const width = Math.min(bounds.width, area.width)
+  const height = Math.min(bounds.height, area.height)
+  return {
+    ...bounds,
+    width,
+    height,
+    x: Math.min(Math.max(bounds.x, area.x), area.x + area.width - width),
+    y: Math.min(Math.max(bounds.y, area.y), area.y + area.height - height),
   }
 }
 
@@ -615,33 +766,97 @@ function dockWindowToEdge(window, edge, area) {
   if (!window || window.isDestroyed() || isDocked) return
   lastNormalBounds = window.getBounds()
   keepOnTopBeforeDock = window.isAlwaysOnTop()
-  const width = 136
+  const width = dockCollapsedWidth
   const height = Math.min(520, Math.max(360, area.height - 160))
   const y = area.y + Math.round((area.height - height) / 2)
   const x = edge === 'left' ? area.x : area.x + area.width - width
-  window.setMinimumSize(96, 260)
+  window.setMinimumSize(dockCollapsedWidth, 260)
   window.setAlwaysOnTop(true, 'floating')
-  window.setBounds({ x, y, width, height }, true)
+  const dockedBounds = { x, y, width, height }
+  dockDragStartBounds = dockedBounds
+  setWindowBounds(window, dockedBounds, true)
   setDockState(true, edge)
+}
+
+function setDockDetailOpen(open) {
+  if (!mainWindow || mainWindow.isDestroyed() || !isDocked) return { ok: false }
+  const current = mainWindow.getBounds()
+  const display = screen.getDisplayMatching(current)
+  const area = display.workArea
+  const width = Math.min(open ? dockExpandedWidth : dockCollapsedWidth, area.width)
+  const height = Math.min(current.height, area.height)
+  const x = currentDockEdge === 'left' ? area.x : area.x + area.width - width
+  const y = Math.min(Math.max(current.y, area.y), area.y + area.height - height)
+  const nextBounds = { x, y, width, height }
+  mainWindow.setMinimumSize(dockCollapsedWidth, 260)
+  dockDragStartBounds = nextBounds
+  setWindowBounds(mainWindow, nextBounds, false)
+  void writeLog('info', 'Dock detail window state changed', { open, edge: currentDockEdge, bounds: nextBounds })
+  return { ok: true, bounds: nextBounds }
 }
 
 function restoreDockedWindow(anchorBounds = null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const current = mainWindow.getBounds()
+  const display = screen.getDisplayMatching(anchorBounds || current)
+  const area = display.workArea
+  const isMiniRestore = currentAppMode === 'mini'
+  const fallbackWidth = isMiniRestore ? miniWindowWidth : 980
+  const fallbackHeight = isMiniRestore ? miniWindowHeight : 900
+  const restoreWidth = lastNormalBounds?.width || fallbackWidth
+  const restoreHeight = lastNormalBounds?.height || fallbackHeight
+  const anchoredX = anchorBounds
+    ? currentDockEdge === 'right'
+      ? anchorBounds.x + anchorBounds.width - restoreWidth
+      : anchorBounds.x
+    : current.x - (restoreWidth - current.width)
   const nextBounds = anchorBounds
     ? {
-        x: anchorBounds.x,
+        x: anchoredX,
         y: anchorBounds.y,
-        width: lastNormalBounds?.width || 980,
-        height: lastNormalBounds?.height || 900,
+        width: restoreWidth,
+        height: restoreHeight,
       }
     : lastNormalBounds
     ? { ...lastNormalBounds }
-    : { x: current.x - 844, y: current.y, width: 980, height: 900 }
-  mainWindow.setMinimumSize(760, 640)
-  mainWindow.setBounds(nextBounds, true)
+    : { x: anchoredX, y: current.y, width: restoreWidth, height: restoreHeight }
+  mainWindow.setMinimumSize(isMiniRestore ? miniWindowMinWidth : 760, isMiniRestore ? miniWindowMinHeight : 640)
+  setWindowBounds(mainWindow, clampBoundsToWorkArea(nextBounds, area), true)
   mainWindow.setAlwaysOnTop(keepOnTopBeforeDock)
   setDockState(false)
+}
+
+function maybeRestoreDockedWindow(window, phase) {
+  if (!window || window.isDestroyed() || !isDocked) return false
+  if (Date.now() < suppressMoveHandlingUntil) return false
+
+  const bounds = window.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const area = display.workArea
+  if (!dockDragStartBounds) {
+    dockDragStartBounds = bounds
+  }
+
+  const horizontalDelta = Math.abs(bounds.x - dockDragStartBounds.x)
+  const edgeDistance = currentDockEdge === 'left'
+    ? bounds.x - area.x
+    : area.x + area.width - (bounds.x + bounds.width)
+  const hasDetachedFromEdge = edgeDistance > dockDetachThreshold
+  const hasStartedManualDrag = horizontalDelta > 18 && edgeDistance > 8
+
+  if (!hasDetachedFromEdge && !hasStartedManualDrag) {
+    return false
+  }
+
+  void writeLog('info', 'Docked window detached from edge', {
+    edge: currentDockEdge,
+    edgeDistance,
+    horizontalDelta,
+    phase,
+    bounds,
+  })
+  restoreDockedWindow(bounds)
+  return true
 }
 
 function applyAppModeWindow(mode) {
@@ -655,10 +870,11 @@ function applyAppModeWindow(mode) {
     if (currentAppMode !== 'mini') {
       lastNormalModeBounds = bounds
     }
-    const width = Math.min(760, Math.max(520, Math.round(area.width * 0.42)))
-    const height = Math.min(720, Math.max(520, Math.round(area.height * 0.7)))
-    mainWindow.setMinimumSize(460, 420)
-    mainWindow.setBounds(
+    const width = Math.min(miniWindowWidth, area.width)
+    const height = Math.min(miniWindowHeight, area.height)
+    mainWindow.setMinimumSize(miniWindowMinWidth, miniWindowMinHeight)
+    setWindowBounds(
+      mainWindow,
       {
         x: Math.min(Math.max(bounds.x, area.x), area.x + area.width - width),
         y: Math.min(Math.max(bounds.y, area.y), area.y + area.height - height),
@@ -674,7 +890,8 @@ function applyAppModeWindow(mode) {
 
   const nextBounds = lastNormalModeBounds || { ...bounds, width: 980, height: 900 }
   mainWindow.setMinimumSize(760, 640)
-  mainWindow.setBounds(
+  setWindowBounds(
+    mainWindow,
     {
       x: Math.min(Math.max(nextBounds.x ?? bounds.x, area.x), area.x + area.width - 760),
       y: Math.min(Math.max(nextBounds.y ?? bounds.y, area.y), area.y + area.height - 640),
@@ -689,6 +906,7 @@ function applyAppModeWindow(mode) {
 
 function snapWindowToEdge(window) {
   if (!window || window.isDestroyed()) return
+  if (Date.now() < suppressMoveHandlingUntil) return
   const bounds = window.getBounds()
   const display = screen.getDisplayMatching(bounds)
   const area = display.workArea
@@ -697,11 +915,7 @@ function snapWindowToEdge(window) {
   let snapped = false
 
   if (isDocked) {
-    const leftDocked = bounds.x <= area.x + threshold
-    const rightDocked = bounds.x + bounds.width >= area.x + area.width - threshold
-    if (!leftDocked && !rightDocked) {
-      restoreDockedWindow(bounds)
-    }
+    maybeRestoreDockedWindow(window, 'moved')
     return
   }
 
@@ -723,7 +937,7 @@ function snapWindowToEdge(window) {
   }
 
   if (snapped) {
-    window.setBounds(nextBounds, true)
+    setWindowBounds(window, nextBounds, true)
   }
 }
 
@@ -742,10 +956,10 @@ async function createMainWindow() {
   await startApiServer(data.settings)
   currentAppMode = data.settings.appMode === 'mini' ? 'mini' : 'normal'
   mainWindow = new BrowserWindow({
-    width: currentAppMode === 'mini' ? 640 : 980,
-    height: currentAppMode === 'mini' ? 680 : 900,
-    minWidth: currentAppMode === 'mini' ? 460 : 760,
-    minHeight: currentAppMode === 'mini' ? 420 : 640,
+    width: currentAppMode === 'mini' ? miniWindowWidth : 980,
+    height: currentAppMode === 'mini' ? miniWindowHeight : 900,
+    minWidth: currentAppMode === 'mini' ? miniWindowMinWidth : 760,
+    minHeight: currentAppMode === 'mini' ? miniWindowMinHeight : 640,
     title: 'Todo Desk',
     backgroundColor: '#f7f2e8',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -758,10 +972,14 @@ async function createMainWindow() {
       sandbox: false,
     },
   })
+  updateWindowButtonVisibility(mainWindow)
 
   mainWindow.on('moved', async () => {
     const current = await readData()
     if (current.settings.snapToEdge) snapWindowToEdge(mainWindow)
+  })
+  mainWindow.on('move', () => {
+    maybeRestoreDockedWindow(mainWindow, 'move')
   })
 
   if (isDev) {
@@ -828,6 +1046,31 @@ ipcMain.handle('attachment:import', async () => {
   return imported
 })
 
+ipcMain.handle('attachment:paste', async () => {
+  const image = clipboard.readImage()
+  if (image.isEmpty()) return []
+
+  const buffer = image.toPNG()
+  if (!buffer.byteLength) return []
+
+  const saved = await saveAttachmentBuffer(buffer, `剪贴板图片 ${new Date().toLocaleString('zh-CN')}.png`)
+  return [saved]
+})
+
+ipcMain.handle('attachment:save-data-url', async (_event, payload) => {
+  const dataUrl = String(payload?.dataUrl || '')
+  const match = dataUrl.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i)
+  if (!match) return []
+
+  const mimeType = match[1].toLowerCase()
+  const ext = mimeType.includes('jpeg') ? '.jpg' : mimeType.includes('webp') ? '.webp' : '.png'
+  const buffer = Buffer.from(match[2], 'base64')
+  if (!buffer.byteLength) return []
+
+  const saved = await saveAttachmentBuffer(buffer, String(payload?.name || `粘贴图片 ${new Date().toLocaleString('zh-CN')}${ext}`), ext)
+  return [saved]
+})
+
 ipcMain.handle('storage:reveal', async () => {
   await ensureStorage()
   shell.showItemInFolder(getPaths().dataFile)
@@ -842,10 +1085,56 @@ ipcMain.handle('logs:reveal', async () => {
   return paths
 })
 
+ipcMain.handle('calendar:open-task', async (_event, task) => {
+  try {
+    return await openTaskInCalendar(task)
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : '加入日历失败',
+    }
+  }
+})
+
+ipcMain.handle('agent:open-session', async (_event, task) => {
+  try {
+    const url = buildAgentSessionUrl(task)
+    await shell.openExternal(url)
+    await writeLog('info', 'Opened agent session link', {
+      taskId: task?.id,
+      agent: task?.agent || task?.source || '',
+      agentSessionId: task?.agentSessionId || '',
+      url,
+    })
+    return { ok: true, url }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '打开 agent session 失败'
+    await writeLog('warn', 'Open agent session failed', {
+      taskId: task?.id,
+      agent: task?.agent || task?.source || '',
+      agentSessionId: task?.agentSessionId || '',
+      message,
+    })
+    return { ok: false, message }
+  }
+})
+
 ipcMain.handle('dock:restore', async () => {
   restoreDockedWindow()
   return { ok: true }
 })
+
+ipcMain.handle('dock:to-edge', async (_event, edge) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
+  if (isDocked) {
+    restoreDockedWindow()
+  }
+  const display = screen.getDisplayMatching(mainWindow.getBounds())
+  dockWindowToEdge(mainWindow, edge === 'left' ? 'left' : 'right', display.workArea)
+  return { ok: true }
+})
+
+ipcMain.handle('dock:detail-open', async (_event, open) => setDockDetailOpen(Boolean(open)))
 
 ipcMain.handle('window:apply-mode', async (_event, mode) => {
   applyAppModeWindow(mode === 'mini' ? 'mini' : 'normal')
@@ -854,11 +1143,22 @@ ipcMain.handle('window:apply-mode', async (_event, mode) => {
 
 ipcMain.handle('ai:parse-task', async (_event, payload) => {
   try {
-    return await callAiTaskParser(payload.text, payload.settings)
+    return await callAiTaskParser(payload.text, payload.settings, payload.images || [])
   } catch (error) {
     return {
       ok: false,
       message: error instanceof Error ? error.message : 'AI 解析失败',
+    }
+  }
+})
+
+ipcMain.handle('ai:merge-tasks', async (_event, payload) => {
+  try {
+    return await callAiTaskMerger(payload.tasks || [], payload.settings)
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'AI 合并失败',
     }
   }
 })

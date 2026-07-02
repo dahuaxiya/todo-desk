@@ -4,11 +4,18 @@ contextBridge.exposeInMainWorld('todoDesk', {
   loadData: () => ipcRenderer.invoke('data:load'),
   saveData: (data) => ipcRenderer.invoke('data:save', data),
   importImages: () => ipcRenderer.invoke('attachment:import'),
+  pasteImages: () => ipcRenderer.invoke('attachment:paste'),
+  savePastedImage: (payload) => ipcRenderer.invoke('attachment:save-data-url', payload),
   revealStorage: () => ipcRenderer.invoke('storage:reveal'),
   revealLogs: () => ipcRenderer.invoke('logs:reveal'),
+  openTaskInCalendar: (task) => ipcRenderer.invoke('calendar:open-task', task),
+  openAgentSession: (task) => ipcRenderer.invoke('agent:open-session', task),
   restoreDock: () => ipcRenderer.invoke('dock:restore'),
+  dockToEdge: (edge) => ipcRenderer.invoke('dock:to-edge', edge),
+  setDockDetailOpen: (open) => ipcRenderer.invoke('dock:detail-open', open),
   applyWindowMode: (mode) => ipcRenderer.invoke('window:apply-mode', mode),
   parseTask: (payload) => ipcRenderer.invoke('ai:parse-task', payload),
+  mergeTasks: (payload) => ipcRenderer.invoke('ai:merge-tasks', payload),
   syncToLark: (payload) => ipcRenderer.invoke('lark:sync', payload),
   onDataUpdated: (callback) => {
     const listener = (_event, data) => callback(data)

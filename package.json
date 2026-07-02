@@ -1,7 +1,7 @@
 {
   "name": "todo-desk",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "main": "electron/main.js",
   "type": "module",
   "scripts": {
@@ -10,11 +10,14 @@
     "build": "tsc -b && vite build",
     "dist": "npm run build && electron-builder",
     "lint": "oxlint",
+    "test:ai": "node scripts/test-ai-assistant.mjs",
+    "agent:install": "node scripts/install-agent-integration.mjs",
     "preview": "vite preview"
   },
   "build": {
     "appId": "com.codex.todo-desk",
     "productName": "Todo Desk",
+    "icon": "build/icon",
     "directories": {
       "output": "../../outputs/todo-desk-release"
     },

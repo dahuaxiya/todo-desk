@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
-import type { DragEvent, FormEvent, KeyboardEvent } from 'react'
-import type { AddMode, AppData, AppMode, AppSettings, Task, TaskImage, TaskPriority, TaskStatus } from './types'
+import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
+import type { AddMode, AppData, AppMode, AppSettings, Task, TaskImage, TaskPriority, TaskSortMode, TaskStatus } from './types'
 
 const storageKey = 'todo-desk-data'
 
@@ -18,6 +18,53 @@ const priorityConfig: Record<TaskPriority, { label: string }> = {
 }
 
 const taskStatuses = ['doing', 'todo', 'done'] as const
+
+const defaultColumnSorts: Record<TaskStatus, TaskSortMode> = {
+  doing: 'manual',
+  todo: 'manual',
+  done: 'completed-desc',
+}
+
+const sortModeConfig: Record<TaskSortMode, { label: string; shortLabel: string; menuLabel: string }> = {
+  manual: { label: '默认顺序', shortLabel: '默认', menuLabel: '默认' },
+  'priority-desc': { label: '优先级 高到低', shortLabel: '优先级', menuLabel: '高到低' },
+  'priority-asc': { label: '优先级 低到高', shortLabel: '优先级', menuLabel: '低到高' },
+  'created-desc': { label: '创建时间 新到旧', shortLabel: '创建', menuLabel: '新到旧' },
+  'created-asc': { label: '创建时间 旧到新', shortLabel: '创建', menuLabel: '旧到新' },
+  'due-asc': { label: '截止时间 近到远', shortLabel: '截止', menuLabel: '近到远' },
+  'due-desc': { label: '截止时间 远到近', shortLabel: '截止', menuLabel: '远到近' },
+  'updated-desc': { label: '更新时间 新到旧', shortLabel: '更新', menuLabel: '新到旧' },
+  'updated-asc': { label: '更新时间 旧到新', shortLabel: '更新', menuLabel: '旧到新' },
+  'completed-desc': { label: '完成时间 新到旧', shortLabel: '完成', menuLabel: '新到旧' },
+  'completed-asc': { label: '完成时间 旧到新', shortLabel: '完成', menuLabel: '旧到新' },
+}
+
+const sortModeGroups: Array<{ title: string; modes: TaskSortMode[] }> = [
+  { title: '默认', modes: ['manual'] },
+  { title: '优先级', modes: ['priority-desc', 'priority-asc'] },
+  { title: '创建', modes: ['created-desc', 'created-asc'] },
+  { title: '截止', modes: ['due-asc', 'due-desc'] },
+  { title: '更新', modes: ['updated-desc', 'updated-asc'] },
+  { title: '完成', modes: ['completed-desc', 'completed-asc'] },
+]
+
+function getSortGroupsForStatus(status: TaskStatus) {
+  if (status === 'done') return sortModeGroups
+  return sortModeGroups.filter((group) => !group.modes.some((mode) => mode.startsWith('completed-')))
+}
+
+function normalizeSortModeForStatus(status: TaskStatus, mode: TaskSortMode) {
+  if (status !== 'done' && mode.startsWith('completed-')) return defaultColumnSorts[status]
+  return mode
+}
+
+const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function canOpenAgentSession(task: Task) {
+  const agent = `${task.agent || ''} ${task.source || ''}`.toLowerCase()
+  const sessionId = task.agentSessionId?.trim() || ''
+  return agent.includes('codex') && codexThreadIdPattern.test(sessionId)
+}
 
 const appModeOptions: Array<{ value: AppMode; label: string }> = [
   { value: 'normal', label: '正常' },
@@ -40,6 +87,12 @@ const emptyTaskDraft = {
   reminderAt: '',
 }
 
+interface ImagePreviewState {
+  images: TaskImage[]
+  index: number
+  title: string
+}
+
 function createDefaultData(): AppData {
   const now = new Date().toISOString()
   return {
@@ -51,6 +104,7 @@ function createDefaultData(): AppData {
       snapToEdge: true,
       apiEnabled: true,
       apiPort: 47731,
+      desktopReminders: true,
       aiEnabled: false,
       aiBaseUrl: 'https://api.openai.com/v1',
       aiModel: 'gpt-4o-mini',
@@ -58,6 +112,7 @@ function createDefaultData(): AppData {
       appMode: 'normal',
       miniColumn: 'doing',
       addMode: 'quick',
+      columnSorts: defaultColumnSorts,
       edgeDocked: false,
     },
     tasks: [
@@ -92,6 +147,7 @@ function createDefaultData(): AppData {
         completedAt: '',
       },
     ],
+    trash: [],
     syncLog: [],
   }
 }
@@ -104,9 +160,14 @@ function mergeWithDefaults(value: AppData): AppData {
     settings: {
       ...defaults.settings,
       ...value.settings,
+      columnSorts: {
+        ...defaultColumnSorts,
+        ...value.settings?.columnSorts,
+      },
       edgeDocked: false,
     },
     tasks: Array.isArray(value.tasks) ? value.tasks : [],
+    trash: Array.isArray(value.trash) ? value.trash : [],
     syncLog: Array.isArray(value.syncLog) ? value.syncLog : [],
   }
 }
@@ -154,7 +215,7 @@ function formatDateTime(value: string) {
 }
 
 function getTaskTimeLabel(task: Task) {
-  if (task.completedAt) return `完成 ${formatDateTime(task.completedAt)}`
+  if (task.completedAt) return `创建 ${formatDateTime(task.createdAt)} · 完成 ${formatDateTime(task.completedAt)}`
   if (task.dueAt) return `截止 ${formatDateTime(task.dueAt)}`
   if (task.reminderAt) return `提醒 ${formatDateTime(task.reminderAt)}`
   return `创建 ${formatDateTime(task.createdAt)}`
@@ -176,6 +237,62 @@ function fuzzyIncludes(source: string, keyword: string) {
   return true
 }
 
+function compareText(left: string, right: string) {
+  return left.localeCompare(right, 'zh-CN')
+}
+
+function getTimeValue(value: string) {
+  if (!value) return null
+  const time = new Date(value).getTime()
+  if (Number.isNaN(time)) return null
+  return time
+}
+
+function compareByTime(left: Task, right: Task, field: keyof Pick<Task, 'createdAt' | 'dueAt' | 'updatedAt' | 'completedAt'>, direction: 'asc' | 'desc') {
+  const leftTime = getTimeValue(String(left[field] || ''))
+  const rightTime = getTimeValue(String(right[field] || ''))
+  if (leftTime === null && rightTime === null) return compareText(left.title, right.title)
+  if (leftTime === null) return 1
+  if (rightTime === null) return -1
+  const result = leftTime - rightTime
+  if (result !== 0) return direction === 'asc' ? result : -result
+  return compareText(left.title, right.title)
+}
+
+function sortTasksForColumn(tasks: Task[], mode: TaskSortMode) {
+  const priorityRank: Record<TaskPriority, number> = {
+    high: 3,
+    medium: 2,
+    low: 1,
+  }
+  const sorted = [...tasks]
+
+  switch (mode) {
+    case 'priority-desc':
+      return sorted.sort((left, right) => priorityRank[right.priority] - priorityRank[left.priority] || compareByTime(left, right, 'createdAt', 'desc'))
+    case 'priority-asc':
+      return sorted.sort((left, right) => priorityRank[left.priority] - priorityRank[right.priority] || compareByTime(left, right, 'createdAt', 'desc'))
+    case 'created-desc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'createdAt', 'desc'))
+    case 'created-asc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'createdAt', 'asc'))
+    case 'due-asc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'dueAt', 'asc'))
+    case 'due-desc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'dueAt', 'desc'))
+    case 'updated-desc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'updatedAt', 'desc'))
+    case 'updated-asc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'updatedAt', 'asc'))
+    case 'completed-desc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'completedAt', 'desc'))
+    case 'completed-asc':
+      return sorted.sort((left, right) => compareByTime(left, right, 'completedAt', 'asc'))
+    default:
+      return sorted
+  }
+}
+
 function taskSearchText(task: Task) {
   return [
     task.title,
@@ -186,6 +303,59 @@ function taskSearchText(task: Task) {
     task.tags.join(' '),
     task.dueAt ? formatDateTime(task.dueAt) : '',
   ].join(' ')
+}
+
+function formatTaskForClipboard(task: Task) {
+  const lines = [
+    task.title,
+    task.detail,
+    `状态：${statusConfig[task.status].label}`,
+    `优先级：${priorityConfig[task.priority].label}`,
+    task.project ? `项目：${task.project}` : '',
+    task.dueAt ? `截止：${formatDateTime(task.dueAt)}` : '',
+    task.reminderAt ? `提醒：${formatDateTime(task.reminderAt)}` : '',
+    task.completedAt ? `完成：${formatDateTime(task.completedAt)}` : '',
+    task.tags.length ? `标签：${task.tags.map((tag) => `#${tag}`).join(' ')}` : '',
+  ]
+
+  return lines.filter(Boolean).join('\n')
+}
+
+function mergeUniqueStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+}
+
+function pickMergedStatus(tasks: Task[]): TaskStatus {
+  if (tasks.some((task) => task.status === 'doing')) return 'doing'
+  if (tasks.some((task) => task.status === 'todo')) return 'todo'
+  return 'done'
+}
+
+function pickMergedPriority(tasks: Task[]): TaskPriority {
+  if (tasks.some((task) => task.priority === 'high')) return 'high'
+  if (tasks.some((task) => task.priority === 'medium')) return 'medium'
+  return 'low'
+}
+
+function pickEarliestDate(values: string[]) {
+  return values.filter(Boolean).sort((left, right) => new Date(left).getTime() - new Date(right).getTime())[0] || ''
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  document.execCommand('copy')
+  textarea.remove()
 }
 
 function parseTags(value: string) {
@@ -226,6 +396,31 @@ function applyParsedTaskToDraft(parsed: Partial<Task>, fallbackText: string, sta
   }
 }
 
+function createTaskFromDraft(
+  draftValue: ReturnType<typeof applyParsedTaskToDraft>,
+  fallbackTitle: string,
+  images: TaskImage[] = [],
+): Task {
+  const now = new Date().toISOString()
+  const status = draftValue.status
+  return {
+    id: crypto.randomUUID(),
+    title: draftValue.title.trim() || fallbackTitle,
+    detail: draftValue.detail.trim(),
+    status,
+    priority: draftValue.priority,
+    project: draftValue.project.trim(),
+    tags: parseTags(draftValue.tags),
+    dueAt: fromLocalInputValue(draftValue.dueAt),
+    reminderAt: fromLocalInputValue(draftValue.reminderAt),
+    imagePaths: images,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: status === 'done' ? now : '',
+    remindedAt: '',
+  }
+}
+
 function App() {
   const [data, setData] = useState<AppData>(() => createDefaultData())
   const [isLoaded, setIsLoaded] = useState(false)
@@ -236,10 +431,17 @@ function App() {
   const [attachedImages, setAttachedImages] = useState<TaskImage[]>([])
   const [syncState, setSyncState] = useState('尚未同步')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [trashOpen, setTrashOpen] = useState(false)
   const [quickText, setQuickText] = useState('')
   const [aiState, setAiState] = useState('AI 元数据识别未启用')
+  const [submitState, setSubmitState] = useState('')
+  const [mergingMode, setMergingMode] = useState<'' | 'plain' | 'ai'>('')
   const [draggingTaskId, setDraggingTaskId] = useState('')
   const [dockState, setDockState] = useState({ docked: false, edge: '' })
+  const [dockDetailOpen, setDockDetailOpenState] = useState(false)
+  const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null)
+  const [multiSelectedTaskIds, setMultiSelectedTaskIds] = useState<string[]>([])
+  const [openSortColumn, setOpenSortColumn] = useState<TaskStatus | ''>('')
 
   useEffect(() => {
     loadData()
@@ -277,13 +479,11 @@ function App() {
 
   const groupedTasks = useMemo(
     () => ({
-      doing: filteredTasks.filter((task) => task.status === 'doing'),
-      todo: filteredTasks.filter((task) => task.status === 'todo'),
-      done: filteredTasks
-        .filter((task) => task.status === 'done')
-        .sort((left, right) => String(right.completedAt).localeCompare(String(left.completedAt))),
+      doing: sortTasksForColumn(filteredTasks.filter((task) => task.status === 'doing'), data.settings.columnSorts.doing),
+      todo: sortTasksForColumn(filteredTasks.filter((task) => task.status === 'todo'), data.settings.columnSorts.todo),
+      done: sortTasksForColumn(filteredTasks.filter((task) => task.status === 'done'), data.settings.columnSorts.done),
     }),
-    [filteredTasks],
+    [data.settings.columnSorts, filteredTasks],
   )
 
   const doingCount = data.tasks.filter((task) => task.status === 'doing').length
@@ -291,12 +491,176 @@ function App() {
   const overdueCount = data.tasks.filter(
     (task) => task.status !== 'done' && task.dueAt && new Date(task.dueAt).getTime() < Date.now(),
   ).length
+  const miniTasks = groupedTasks[data.settings.miniColumn]
+  const selectedDockTask = dockState.docked ? miniTasks.find((task) => task.id === selectedTaskId) : undefined
+  const selectedDockTaskId = selectedDockTask?.id || ''
+  const expandedDockTask = dockDetailOpen ? selectedDockTask : undefined
+  const multiSelectedTasks = useMemo(
+    () => multiSelectedTaskIds
+      .map((taskId) => data.tasks.find((task) => task.id === taskId))
+      .filter((task): task is Task => Boolean(task)),
+    [data.tasks, multiSelectedTaskIds],
+  )
+
+  useEffect(() => {
+    if (!window.todoDesk?.setDockDetailOpen) return
+    void window.todoDesk.setDockDetailOpen(Boolean(dockState.docked && expandedDockTask))
+  }, [dockState.docked, expandedDockTask])
+
+  useEffect(() => {
+    if (dockDetailOpen && !selectedDockTaskId) {
+      setDockDetailOpenState(false)
+    }
+  }, [dockDetailOpen, selectedDockTaskId])
 
   const persist = useCallback(async (nextData: AppData) => {
     const saved = await saveData(nextData)
     setData(saved)
     return saved
   }, [])
+
+  useEffect(() => {
+    const taskIds = new Set(data.tasks.map((task) => task.id))
+    setMultiSelectedTaskIds((current) => current.filter((taskId) => taskIds.has(taskId)))
+    setSelectedTaskId((current) => (current && !taskIds.has(current) ? '' : current))
+  }, [data.tasks])
+
+  function selectTask(taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) {
+    const isMultiSelect = Boolean(event?.metaKey || event?.ctrlKey)
+    if (isMultiSelect) {
+      setMultiSelectedTaskIds((current) => {
+        const base = current.length || !selectedTaskId || selectedTaskId === taskId ? current : [selectedTaskId, ...current]
+        const exists = base.includes(taskId)
+        const next = exists ? base.filter((id) => id !== taskId) : [...base, taskId]
+        setSelectedTaskId(next[next.length - 1] ?? '')
+        return next
+      })
+      return
+    }
+
+    setMultiSelectedTaskIds([])
+    setSelectedTaskId((current) => (current === taskId ? '' : taskId))
+  }
+
+  function selectDockTask(taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) {
+    const isMultiSelect = Boolean(event?.metaKey || event?.ctrlKey)
+    if (isMultiSelect) {
+      setDockDetailOpenState(false)
+      selectTask(taskId, event)
+      return
+    }
+
+    setMultiSelectedTaskIds([])
+    setSelectedTaskId(taskId)
+    setDockDetailOpenState(true)
+  }
+
+  function buildPlainMergedTask(tasks: Task[]): Pick<Task, 'title' | 'detail'> {
+    return {
+      title: tasks.map((task) => task.title).join(' / '),
+      detail: tasks.map((task) => [task.title, task.detail].filter(Boolean).join('\n')).join('\n\n'),
+    }
+  }
+
+  async function mergeSelectedTasks(mode: 'plain' | 'ai') {
+    if (mergingMode) return
+    if (multiSelectedTasks.length < 2) {
+      setSyncState('至少按 Command 选择两个任务')
+      return
+    }
+
+    const sourceTasks = multiSelectedTasks
+    let mergedContent = buildPlainMergedTask(sourceTasks)
+
+    setMergingMode(mode)
+    setSyncState(mode === 'ai' ? `正在 AI 合并 ${sourceTasks.length} 个任务...` : `正在合并 ${sourceTasks.length} 个任务...`)
+    setAiState(mode === 'ai' ? 'AI 合并中...' : '普通合并中...')
+
+    if (mode === 'ai') {
+      if (!window.todoDesk?.mergeTasks) {
+        setSyncState('AI 合并需要桌面 App 运行')
+        setAiState('AI 合并需要桌面 App 运行')
+        setMergingMode('')
+        return
+      }
+      try {
+        const result = await window.todoDesk.mergeTasks({ tasks: sourceTasks, settings: data.settings })
+        if (!result.ok || !result.task) {
+          const message = result.message || 'AI 合并失败'
+          setSyncState(message)
+          setAiState(message)
+          setMergingMode('')
+          return
+        }
+        mergedContent = {
+          title: result.task.title?.trim() || mergedContent.title,
+          detail: result.task.detail?.trim() || mergedContent.detail,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'AI 合并失败'
+        setSyncState(message)
+        setAiState(message)
+        setMergingMode('')
+        return
+      }
+    }
+
+    const now = new Date().toISOString()
+    const sourceIdSet = new Set(sourceTasks.map((task) => task.id))
+    const firstSourceIndex = data.tasks.findIndex((task) => task.id === sourceTasks[0].id)
+    const mergedTask: Task = {
+      id: crypto.randomUUID(),
+      title: mergedContent.title,
+      detail: mergedContent.detail,
+      status: pickMergedStatus(sourceTasks),
+      priority: pickMergedPriority(sourceTasks),
+      project: mergeUniqueStrings(sourceTasks.map((task) => task.project)).join(' / '),
+      tags: mergeUniqueStrings(sourceTasks.flatMap((task) => task.tags)),
+      dueAt: pickEarliestDate(sourceTasks.map((task) => task.dueAt)),
+      reminderAt: pickEarliestDate(sourceTasks.map((task) => task.reminderAt)),
+      imagePaths: sourceTasks.flatMap((task) => task.imagePaths),
+      createdAt: now,
+      updatedAt: now,
+      completedAt: sourceTasks.every((task) => task.status === 'done') ? now : '',
+      remindedAt: '',
+      source: mode === 'ai' ? 'ai-merge' : 'merge',
+      agent: mergeUniqueStrings(sourceTasks.map((task) => task.agent || '')).join(' / '),
+      agentSessionId: mergeUniqueStrings(sourceTasks.map((task) => task.agentSessionId || '')).join(' / '),
+      repository: mergeUniqueStrings(sourceTasks.map((task) => task.repository || '')).join(' / '),
+      repositoryPath: mergeUniqueStrings(sourceTasks.map((task) => task.repositoryPath || '')).join(' / '),
+    }
+    const deletedAt = now
+    const nextTasks = data.tasks.filter((task) => !sourceIdSet.has(task.id))
+    nextTasks.splice(Math.max(0, firstSourceIndex), 0, mergedTask)
+    const trashedTasks = sourceTasks.map((task) => ({
+      ...task,
+      deletedAt,
+      updatedAt: deletedAt,
+    }))
+    try {
+      await persist({
+        ...data,
+        tasks: nextTasks,
+        trash: [...trashedTasks, ...(data.trash ?? [])],
+      })
+      setSelectedTaskId(mergedTask.id)
+      setMultiSelectedTaskIds([])
+      const doneMessage = mode === 'ai' ? 'AI 合并完成，原任务已放入回收箱' : '普通合并完成，原任务已放入回收箱'
+      setSyncState(doneMessage)
+      setAiState(doneMessage)
+      if (sourceIdSet.has(editingTaskId)) {
+        setEditingTaskId('')
+        setDraft(emptyTaskDraft)
+        setAttachedImages([])
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '合并保存失败'
+      setSyncState(message)
+      setAiState(message)
+    } finally {
+      setMergingMode('')
+    }
+  }
 
   function buildTaskFromDraft(existing?: Task): Task {
     const now = new Date().toISOString()
@@ -354,69 +718,78 @@ function App() {
     }
   }
 
-  async function parseTextToDraft(text: string, status: TaskStatus) {
+  async function parseTextToDrafts(text: string, status: TaskStatus, images: TaskImage[] = []) {
     const trimmed = text.trim()
-    if (!trimmed) return { ...emptyTaskDraft, status }
+    if (!trimmed && images.length === 0) return [{ ...emptyTaskDraft, status }]
     if (!data.settings.aiEnabled) {
       setAiState('AI 元数据识别未启用')
-      return { ...emptyTaskDraft, title: trimmed, status }
+      return [{ ...emptyTaskDraft, title: trimmed, status }]
     }
     if (!window.todoDesk?.parseTask) {
       setAiState('AI 解析需要桌面 App 运行')
-      return { ...emptyTaskDraft, title: trimmed, status }
+      return [{ ...emptyTaskDraft, title: trimmed, status }]
     }
 
-    setAiState('正在识别时间、优先级和标签...')
+    setAiState(images.length ? '正在识别图片、任务和时间...' : '正在识别任务、时间和标签...')
     try {
-      const result = await window.todoDesk.parseTask({ text: trimmed, settings: data.settings })
-      if (result.ok && result.task) {
-        setAiState('AI 已填充元数据')
-        return applyParsedTaskToDraft(result.task, trimmed, status)
+      const result = await window.todoDesk.parseTask({ text: trimmed, settings: data.settings, images })
+      const parsedTasks = result.tasks?.length ? result.tasks : result.task ? [result.task] : []
+      if (result.ok && parsedTasks.length) {
+        const imageSource = result.imageMode === 'ocr' ? 'OCR' : images.length ? '图片' : '文本'
+        setAiState(parsedTasks.length > 1 ? `AI 已从${imageSource}识别 ${parsedTasks.length} 个任务` : 'AI 已填充元数据')
+        return parsedTasks.map((task) => applyParsedTaskToDraft(task, trimmed, status))
       }
       setAiState(result.message || 'AI 解析失败，已按普通文本添加')
     } catch (error) {
       setAiState(error instanceof Error ? error.message : 'AI 解析失败，已按普通文本添加')
     }
-    return { ...emptyTaskDraft, title: trimmed, status }
+    return [{ ...emptyTaskDraft, title: trimmed, status }]
+  }
+
+  async function parseTextToDraft(text: string, status: TaskStatus, images: TaskImage[] = []) {
+    const drafts = await parseTextToDrafts(text, status, images)
+    return drafts[0] ?? { ...emptyTaskDraft, title: text.trim(), status }
   }
 
   async function handleQuickSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const trimmed = quickText.trim()
-    if (!trimmed) return
+    // Mini mode does not show an attachment tray, so never apply hidden stale images there.
+    const quickImages = data.settings.appMode === 'mini' ? [] : attachedImages
+    if (!trimmed && quickImages.length === 0) return
+    if (submitState) return
     const targetStatus =
-      data.settings.appMode === 'mini' && data.settings.miniColumn !== 'done' ? data.settings.miniColumn : 'todo'
-    const parsedDraft = await parseTextToDraft(trimmed, targetStatus)
-    const now = new Date().toISOString()
-    const nextTask: Task = {
-      id: crypto.randomUUID(),
-      title: parsedDraft.title.trim() || trimmed,
-      detail: parsedDraft.detail.trim(),
-      status: parsedDraft.status,
-      priority: parsedDraft.priority,
-      project: parsedDraft.project.trim(),
-      tags: parseTags(parsedDraft.tags),
-      dueAt: fromLocalInputValue(parsedDraft.dueAt),
-      reminderAt: fromLocalInputValue(parsedDraft.reminderAt),
-      imagePaths: [],
-      createdAt: now,
-      updatedAt: now,
-      completedAt: parsedDraft.status === 'done' ? now : '',
-      remindedAt: '',
+      (dockState.docked || data.settings.appMode === 'mini') && data.settings.miniColumn !== 'done'
+        ? data.settings.miniColumn
+        : 'todo'
+    setSubmitState('正在添加...')
+    setAiState(data.settings.aiEnabled ? '正在解析并添加任务...' : '正在添加任务...')
+    try {
+      const parsedDrafts = await parseTextToDrafts(trimmed, targetStatus, quickImages)
+      const nextTasks = parsedDrafts.map((parsedDraft) => createTaskFromDraft(parsedDraft, trimmed || '图片中的任务', quickImages))
+      const saved = await persist({ ...data, tasks: [...nextTasks, ...data.tasks] })
+      setData(saved)
+      setSelectedTaskId(nextTasks[0]?.id ?? '')
+      setQuickText('')
+      setAttachedImages([])
+      const message = nextTasks.length > 1 ? `已添加 ${nextTasks.length} 个任务` : `已添加：${nextTasks[0]?.title || '任务'}`
+      setSubmitState(message)
+      setAiState(message)
+      window.setTimeout(() => setSubmitState(''), 1800)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '添加任务失败'
+      setSubmitState(message)
+      setAiState(message)
     }
-    const saved = await persist({ ...data, tasks: [nextTask, ...data.tasks] })
-    setData(saved)
-    setSelectedTaskId(nextTask.id)
-    setQuickText('')
   }
 
   async function fillDraftWithAi() {
     const source = [draft.title, draft.detail].filter(Boolean).join('\n')
-    if (!source.trim()) {
-      setAiState('先输入标题或详情')
+    if (!source.trim() && attachedImages.length === 0) {
+      setAiState('先输入标题、详情或附加图片')
       return
     }
-    const parsedDraft = await parseTextToDraft(source, draft.status)
+    const parsedDraft = await parseTextToDraft(source, draft.status, attachedImages)
     setDraft(parsedDraft)
   }
 
@@ -545,7 +918,31 @@ function App() {
   }, [selectedTaskId, completeTask])
 
   useEffect(() => {
+    if (!imagePreview) return undefined
+
+    function handlePreviewKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setImagePreview(null)
+        return
+      }
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      event.preventDefault()
+      setImagePreview((current) => {
+        if (!current || current.images.length <= 1) return current
+        const direction = event.key === 'ArrowRight' ? 1 : -1
+        const nextIndex = (current.index + direction + current.images.length) % current.images.length
+        return { ...current, index: nextIndex }
+      })
+    }
+
+    window.addEventListener('keydown', handlePreviewKeyDown)
+    return () => window.removeEventListener('keydown', handlePreviewKeyDown)
+  }, [imagePreview])
+
+  useEffect(() => {
     if (!('Notification' in window)) return
+    if (!data.settings.desktopReminders) return
 
     const timer = window.setInterval(() => {
       const dueReminder = data.tasks.find(
@@ -575,11 +972,20 @@ function App() {
     }, 30_000)
 
     return () => window.clearInterval(timer)
-  }, [data.tasks, updateTask])
+  }, [data.settings.desktopReminders, data.tasks, updateTask])
 
   async function deleteTask(taskId: string) {
+    const taskToDelete = data.tasks.find((task) => task.id === taskId)
+    if (!taskToDelete) return
+
+    const deletedAt = new Date().toISOString()
     const nextTasks = data.tasks.filter((task) => task.id !== taskId)
-    await persist({ ...data, tasks: nextTasks })
+    const trashedTask = {
+      ...taskToDelete,
+      deletedAt,
+      updatedAt: deletedAt,
+    }
+    await persist({ ...data, tasks: nextTasks, trash: [trashedTask, ...(data.trash ?? [])] })
     if (selectedTaskId === taskId) {
       setSelectedTaskId(nextTasks[0]?.id ?? '')
     }
@@ -588,9 +994,34 @@ function App() {
     }
   }
 
+  async function restoreTask(taskId: string) {
+    const taskToRestore = data.trash.find((task) => task.id === taskId)
+    if (!taskToRestore) return
+
+    const restoredAt = new Date().toISOString()
+    const { deletedAt: _deletedAt, ...restoredTask } = taskToRestore
+    const nextData = await persist({
+      ...data,
+      tasks: [{ ...restoredTask, updatedAt: restoredAt }, ...data.tasks],
+      trash: data.trash.filter((task) => task.id !== taskId),
+    })
+    setData(nextData)
+    setSelectedTaskId(taskId)
+  }
+
+  async function purgeTask(taskId: string) {
+    await persist({ ...data, trash: data.trash.filter((task) => task.id !== taskId) })
+  }
+
+  async function emptyTrash() {
+    await persist({ ...data, trash: [] })
+  }
+
   async function updateSettings(patch: Partial<AppSettings>) {
     if (patch.appMode && patch.appMode !== data.settings.appMode) {
       await window.todoDesk?.applyWindowMode?.(patch.appMode)
+      setEditingTaskId('')
+      setAttachedImages([])
     }
     const nextData = {
       ...data,
@@ -600,6 +1031,16 @@ function App() {
       },
     }
     await persist(nextData)
+  }
+
+  async function updateColumnSort(status: TaskStatus, sortMode: TaskSortMode) {
+    setOpenSortColumn('')
+    await updateSettings({
+      columnSorts: {
+        ...data.settings.columnSorts,
+        [status]: sortMode,
+      },
+    })
   }
 
   async function importImages() {
@@ -613,8 +1054,79 @@ function App() {
     }
   }
 
+  async function pasteImagesFromClipboard() {
+    if (!window.todoDesk?.pasteImages) {
+      setSyncState('粘贴图片需要桌面 App 运行')
+      return
+    }
+    const images = await window.todoDesk.pasteImages()
+    if (images.length) {
+      setAttachedImages((current) => [...current, ...images])
+      setAiState(`已从剪贴板附加 ${images.length} 张图片`)
+      return
+    }
+    setAiState('剪贴板里没有可用图片')
+  }
+
+  async function handlePasteImages(event: ClipboardEvent<HTMLElement>) {
+    const imageItems = Array.from(event.clipboardData?.items || []).filter((item) => item.type.startsWith('image/'))
+    if (imageItems.length === 0) return
+    event.preventDefault()
+
+    if (!window.todoDesk?.savePastedImage) {
+      setSyncState('粘贴图片需要桌面 App 运行')
+      return
+    }
+
+    const savedImages: TaskImage[] = []
+    for (const item of imageItems) {
+      const file = item.getAsFile()
+      if (!file) continue
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(new Error('读取剪贴板图片失败'))
+        reader.readAsDataURL(file)
+      })
+      const images = await window.todoDesk.savePastedImage({
+        name: file.name || `粘贴图片 ${new Date().toLocaleString('zh-CN')}.png`,
+        dataUrl,
+      })
+      savedImages.push(...images)
+    }
+
+    if (savedImages.length) {
+      setAttachedImages((current) => [...current, ...savedImages])
+      setAiState(`已粘贴 ${savedImages.length} 张图片`)
+    }
+  }
+
   function removeImage(path: string) {
     setAttachedImages((current) => current.filter((image) => image.path !== path))
+  }
+
+  function renderAttachedImages() {
+    return (
+      <div className="image-row">
+        {attachedImages.map((image) => (
+          <button
+            key={image.path}
+            className="image-chip"
+            type="button"
+            title="移除图片"
+            onClick={() => removeImage(image.path)}
+          >
+            <img src={image.url} alt="" />
+          </button>
+        ))}
+        <button className="ghost-button" type="button" onClick={importImages}>
+          附加图片
+        </button>
+        <button className="ghost-button" type="button" onClick={pasteImagesFromClipboard}>
+          粘贴图片
+        </button>
+      </div>
+    )
   }
 
   async function revealStorage() {
@@ -639,6 +1151,58 @@ function App() {
     }
   }
 
+  function openImagePreview(images: TaskImage[], index: number, title: string) {
+    if (!images.length) return
+    setImagePreview({ images, index, title })
+  }
+
+  async function copyTask(task: Task) {
+    try {
+      await copyTextToClipboard(formatTaskForClipboard(task))
+      setSyncState(`已复制：${task.title}`)
+      setAiState(`已复制：${task.title}`)
+    } catch (error) {
+      setSyncState(error instanceof Error ? error.message : '复制失败')
+    }
+  }
+
+  async function openCalendar(task: Task) {
+    if (!task.reminderAt && !task.dueAt) {
+      setSyncState('这个任务没有提醒时间或截止时间')
+      setAiState('先给任务设置提醒时间或截止时间')
+      return
+    }
+    if (!window.todoDesk?.openTaskInCalendar) {
+      setSyncState('加入日历需要桌面 App 运行')
+      return
+    }
+    const result = await window.todoDesk.openTaskInCalendar(task)
+    const message = result.ok ? '已生成日历事件并打开系统日历' : result.message || '加入日历失败'
+    setSyncState(message)
+    setAiState(message)
+  }
+
+  async function openAgentSession(task: Task) {
+    if (!window.todoDesk?.openAgentSession) {
+      setSyncState('跳转 session 需要桌面 App 运行')
+      return
+    }
+    const result = await window.todoDesk.openAgentSession(task)
+    const message = result.ok ? '已打开关联 Codex session' : result.message || '打开 agent session 失败'
+    setSyncState(message)
+    setAiState(message)
+  }
+
+  async function dockToEdge(edge: 'left' | 'right') {
+    if (!window.todoDesk?.dockToEdge) {
+      setSyncState('贴附需要桌面 App 运行')
+      return
+    }
+    setSelectedTaskId('')
+    setDockDetailOpenState(false)
+    await window.todoDesk.dockToEdge(edge)
+  }
+
   if (!isLoaded) {
     return (
       <main className="loading-shell">
@@ -649,26 +1213,153 @@ function App() {
   }
 
   const isQuickComposer = !editingTaskId && data.settings.addMode === 'quick'
-  const miniTasks = groupedTasks[data.settings.miniColumn]
+  const hasExpandedTask = dockState.docked ? Boolean(expandedDockTask) : Boolean(selectedTaskId)
 
   if (dockState.docked) {
     return (
-      <main className={`app-shell dock-shell dock-${dockState.edge || 'right'}`}>
-        <button className="dock-restore" type="button" onClick={() => window.todoDesk?.restoreDock()}>
-          ↔
-        </button>
+      <main className={`app-shell dock-shell dock-${dockState.edge || 'right'} ${expandedDockTask ? 'dock-has-popover' : ''}`}>
         <section className="dock-card">
-          <h1>{statusConfig[data.settings.miniColumn].label}</h1>
-          <div className="dock-list">
-            {miniTasks.slice(0, 8).map((task) => (
-              <button key={task.id} type="button" onClick={() => setSelectedTaskId(task.id)}>
-                <strong>{task.title}</strong>
-                <small>{getTaskTimeLabel(task)}</small>
-              </button>
-            ))}
-            {miniTasks.length === 0 && <span>暂无任务</span>}
+          <div className="dock-top-actions">
+            <button className="dock-restore" type="button" title="恢复窗口" onClick={() => window.todoDesk?.restoreDock()}>
+              ↔
+            </button>
+            <button className="dock-collapse" type="button" title="收起详情" disabled={!hasExpandedTask} onClick={() => setDockDetailOpenState(false)}>
+              ⌃
+            </button>
           </div>
+          <h1>{statusConfig[data.settings.miniColumn].label}</h1>
+          <div className={`dock-body ${multiSelectedTasks.length > 1 ? 'has-merge' : ''}`}>
+            {multiSelectedTasks.length > 1 && (
+              <div className="dock-merge-bar">
+                <span>{multiSelectedTasks.length} 项</span>
+                <button type="button" disabled={Boolean(mergingMode)} onClick={() => mergeSelectedTasks('plain')}>
+                  {mergingMode === 'plain' ? '合并中' : '合并'}
+                </button>
+                <button type="button" disabled={Boolean(mergingMode)} onClick={() => mergeSelectedTasks('ai')}>
+                  {mergingMode === 'ai' ? 'AI 中' : 'AI'}
+                </button>
+              </div>
+            )}
+            <div className="dock-list">
+              {miniTasks.map((task) => (
+                <article
+                  key={task.id}
+                  className={`dock-task-item ${task.id === selectedTaskId ? 'selected' : ''} ${multiSelectedTaskIds.includes(task.id) ? 'multi-selected' : ''}`}
+                >
+                  <button
+                    className="dock-task-head"
+                    type="button"
+                    onClick={(event) => selectDockTask(task.id, event)}
+                  >
+                    <strong>{task.title}</strong>
+                    <small>{getTaskTimeLabel(task)}</small>
+                  </button>
+                </article>
+              ))}
+              {miniTasks.length === 0 && <span className="dock-empty">暂无任务</span>}
+            </div>
+          </div>
+          <form className="dock-add-form" onSubmit={handleQuickSubmit}>
+            <input
+              value={quickText}
+              onChange={(event) => setQuickText(event.target.value)}
+              placeholder="添加任务"
+            />
+            <button className="primary-button" type="submit" title="添加任务" disabled={submitState === '正在添加...'}>
+              {submitState === '正在添加...' ? '...' : '+'}
+            </button>
+          </form>
         </section>
+        {expandedDockTask && (
+          <aside className="dock-popover" aria-label="任务详情">
+            <header>
+              <span className={`priority priority-${expandedDockTask.priority}`}>{priorityConfig[expandedDockTask.priority].label}</span>
+              <button type="button" title="收起详情" onClick={() => setDockDetailOpenState(false)}>
+                ×
+              </button>
+            </header>
+            <strong>{expandedDockTask.title}</strong>
+            {expandedDockTask.detail && <p>{expandedDockTask.detail}</p>}
+            <dl>
+              <div>
+                <dt>创建</dt>
+                <dd>{formatDateTime(expandedDockTask.createdAt)}</dd>
+              </div>
+              <div>
+                <dt>状态</dt>
+                <dd>{statusConfig[expandedDockTask.status].label}</dd>
+              </div>
+              {expandedDockTask.project && (
+                <div>
+                  <dt>项目</dt>
+                  <dd>{expandedDockTask.project}</dd>
+                </div>
+              )}
+              {expandedDockTask.dueAt && (
+                <div>
+                  <dt>截止</dt>
+                  <dd>{formatDateTime(expandedDockTask.dueAt)}</dd>
+                </div>
+              )}
+              {expandedDockTask.reminderAt && (
+                <div>
+                  <dt>提醒</dt>
+                  <dd>{formatDateTime(expandedDockTask.reminderAt)}</dd>
+                </div>
+              )}
+            </dl>
+            {expandedDockTask.tags.length > 0 && (
+              <div className="dock-detail-meta">
+                {expandedDockTask.tags.map((tag) => (
+                  <span key={tag}>#{tag}</span>
+                ))}
+              </div>
+            )}
+            {expandedDockTask.imagePaths.length > 0 && (
+              <div className="preview-grid inline-preview-grid">
+                {expandedDockTask.imagePaths.map((image, index) => (
+                  <button
+                    key={image.path}
+                    className="preview-thumb"
+                    type="button"
+                    title="查看大图"
+                    onClick={() => openImagePreview(expandedDockTask.imagePaths, index, expandedDockTask.title)}
+                  >
+                    <img src={image.url} alt={image.name} />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="dock-detail-actions">
+              {expandedDockTask.status !== 'done' && (
+                <button type="button" onClick={() => moveTask(expandedDockTask.id, 'done')}>
+                  完成
+                </button>
+              )}
+              {expandedDockTask.status !== 'doing' && (
+                <button type="button" onClick={() => moveTask(expandedDockTask.id, 'doing')}>
+                  做
+                </button>
+              )}
+              <button type="button" onClick={() => copyTask(expandedDockTask)}>
+                复制
+              </button>
+              {canOpenAgentSession(expandedDockTask) && (
+                <button type="button" onClick={() => openAgentSession(expandedDockTask)}>
+                  会话
+                </button>
+              )}
+              {(expandedDockTask.reminderAt || expandedDockTask.dueAt) && (
+                <button type="button" onClick={() => openCalendar(expandedDockTask)}>
+                  日历
+                </button>
+              )}
+              <button type="button" onClick={() => startEdit(expandedDockTask)}>
+                编辑
+              </button>
+            </div>
+          </aside>
+        )}
       </main>
     )
   }
@@ -685,8 +1376,20 @@ function App() {
             </div>
           </div>
           <div className="title-actions">
+            <button
+              className="ghost-icon-button"
+              type="button"
+              title="全部任务收起"
+              disabled={!hasExpandedTask}
+              onClick={() => setSelectedTaskId('')}
+            >
+              ⌃
+            </button>
             <button className="ghost-icon-button" type="button" title="返回正常模式" onClick={() => updateSettings({ appMode: 'normal' })}>
               ↗
+            </button>
+            <button className="ghost-icon-button" type="button" title={`回收箱 ${data.trash.length}`} onClick={() => setTrashOpen(true)}>
+              🗑
             </button>
             <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
               ⚙
@@ -710,28 +1413,44 @@ function App() {
           </div>
 
           <div className="mini-list">
+            {multiSelectedTasks.length > 1 && (
+              <SelectionMergeBar
+                count={multiSelectedTasks.length}
+                onPlainMerge={() => mergeSelectedTasks('plain')}
+                onAiMerge={() => mergeSelectedTasks('ai')}
+                onClear={() => setMultiSelectedTaskIds([])}
+                mergingMode={mergingMode}
+              />
+            )}
             {miniTasks.length === 0 && <p className="empty-state">这里暂时没有事项</p>}
             {miniTasks.map((task) => (
-            <MiniTaskRow
+              <MiniTaskRow
                 key={task.id}
                 task={task}
                 selected={task.id === selectedTaskId}
-                onSelect={(taskId) => setSelectedTaskId((current) => (current === taskId ? '' : taskId))}
+                multiSelected={multiSelectedTaskIds.includes(task.id)}
+                onSelect={selectTask}
+                onToggleExpand={(taskId) => setSelectedTaskId((current) => (current === taskId ? '' : taskId))}
                 onEdit={startEdit}
                 onToggleDone={toggleDone}
                 onMove={moveTask}
+                onDelete={deleteTask}
+                onPreviewImages={openImagePreview}
+                onCopy={copyTask}
+                onOpenCalendar={openCalendar}
+                onOpenAgentSession={openAgentSession}
               />
             ))}
           </div>
 
-          <form className="mini-quick-add" onSubmit={handleQuickSubmit}>
+          <form className="mini-quick-add" onSubmit={handleQuickSubmit} onPaste={handlePasteImages}>
             <input
               value={quickText}
               onChange={(event) => setQuickText(event.target.value)}
               placeholder="添加任务"
             />
-            <button className="primary-button" type="submit">
-              AI
+            <button className="primary-button" type="submit" disabled={submitState === '正在添加...'}>
+              {submitState === '正在添加...' ? '...' : 'AI'}
             </button>
           </form>
         </section>
@@ -764,6 +1483,30 @@ function App() {
             </aside>
           </div>
         )}
+
+        {trashOpen && (
+          <TrashDialog
+            tasks={data.trash}
+            onClose={() => setTrashOpen(false)}
+            onRestore={restoreTask}
+            onPurge={purgeTask}
+            onEmpty={emptyTrash}
+          />
+        )}
+
+        {imagePreview && (
+          <ImagePreviewDialog
+            preview={imagePreview}
+            onClose={() => setImagePreview(null)}
+            onMove={(direction) =>
+              setImagePreview((current) => {
+                if (!current || current.images.length <= 1) return current
+                const nextIndex = (current.index + direction + current.images.length) % current.images.length
+                return { ...current, index: nextIndex }
+              })
+            }
+          />
+        )}
       </main>
     )
   }
@@ -793,6 +1536,32 @@ function App() {
               </button>
             ))}
           </div>
+          <button
+            className={`ghost-icon-button pin-button ${data.settings.keepOnTop ? 'active' : ''}`}
+            type="button"
+            title={data.settings.keepOnTop ? '取消置顶' : '窗口置顶'}
+            onClick={() => updateSettings({ keepOnTop: !data.settings.keepOnTop })}
+          >
+            ⌃
+          </button>
+          <button
+            className="ghost-icon-button"
+            type="button"
+            title="全部任务收起"
+            disabled={!hasExpandedTask}
+            onClick={() => setSelectedTaskId('')}
+          >
+            ▴
+          </button>
+          <button className="ghost-icon-button" type="button" title={`回收箱 ${data.trash.length}`} onClick={() => setTrashOpen(true)}>
+            🗑
+          </button>
+          <button className="ghost-icon-button" type="button" title="贴附到左侧" onClick={() => dockToEdge('left')}>
+            ⇤
+          </button>
+          <button className="ghost-icon-button" type="button" title="贴附到右侧" onClick={() => dockToEdge('right')}>
+            ⇥
+          </button>
           <span className={`sync-dot ${data.settings.larkDoc ? 'ready' : ''}`} title={syncState} />
           <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
             ⚙
@@ -821,15 +1590,30 @@ function App() {
         <span>API {data.settings.apiEnabled ? `127.0.0.1:${data.settings.apiPort}` : '已关闭'}</span>
       </div>
 
+      {multiSelectedTasks.length > 1 && (
+        <SelectionMergeBar
+          count={multiSelectedTasks.length}
+          onPlainMerge={() => mergeSelectedTasks('plain')}
+          onAiMerge={() => mergeSelectedTasks('ai')}
+          onClear={() => setMultiSelectedTaskIds([])}
+          mergingMode={mergingMode}
+        />
+      )}
+
       <section className="board board-three">
         {taskStatuses.map((status) => (
           <TaskColumn
             key={status}
             status={status}
             tasks={groupedTasks[status]}
+            sortMode={data.settings.columnSorts[status]}
+            sortOpen={openSortColumn === status}
             selectedTaskId={selectedTaskId}
+            multiSelectedTaskIds={multiSelectedTaskIds}
             onAdd={() => startCreate(status === 'done' ? 'todo' : status)}
-            onSelect={setSelectedTaskId}
+            onToggleSort={() => setOpenSortColumn((current) => (current === status ? '' : status))}
+            onSortChange={(sortMode) => updateColumnSort(status, sortMode)}
+            onSelect={selectTask}
             onEdit={startEdit}
             onComplete={completeTask}
             onToggleDone={toggleDone}
@@ -838,6 +1622,10 @@ function App() {
             onDropTask={moveTask}
             onMove={moveTask}
             onDelete={deleteTask}
+            onPreviewImages={openImagePreview}
+            onCopy={copyTask}
+            onOpenCalendar={openCalendar}
+            onOpenAgentSession={openAgentSession}
           />
         ))}
       </section>
@@ -846,7 +1634,7 @@ function App() {
         <header className="section-head">
           <div>
             <h2>{editingTaskId ? '编辑任务' : '添加任务'}</h2>
-            <p>{isQuickComposer ? '输入一句话，AI 自动识别时间和元数据' : '手动维护完整任务信息'}</p>
+            <p>{isQuickComposer ? '输入一句话或粘贴截图，AI 自动识别任务' : '手动维护完整任务信息，也可以粘贴截图'}</p>
           </div>
           {!editingTaskId && (
             <div className="mode-switch" role="group" aria-label="添加任务模式">
@@ -865,21 +1653,23 @@ function App() {
         </header>
 
         {isQuickComposer ? (
-          <form className="quick-form" onSubmit={handleQuickSubmit}>
+          <form className="quick-form" onSubmit={handleQuickSubmit} onPaste={handlePasteImages}>
             <textarea
               value={quickText}
               onChange={(event) => setQuickText(event.target.value)}
-              placeholder="例如：明天下午 3 点提醒我整理周报，归到工作，优先级高"
+              placeholder="输入文字，或附加截图后让 AI 从图片里识别任务"
+              disabled={submitState === '正在添加...'}
             />
+            {renderAttachedImages()}
             <div className="form-actions">
-              <span>{aiState}</span>
-              <button className="primary-button" type="submit">
-                智能添加
+              <span>{submitState || aiState}</span>
+              <button className="primary-button" type="submit" disabled={submitState === '正在添加...'}>
+                {submitState === '正在添加...' ? '添加中...' : '智能添加'}
               </button>
             </div>
           </form>
         ) : (
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} onPaste={handlePasteImages}>
           <div className="form-grid">
             <input
               className="title-input"
@@ -946,22 +1736,7 @@ function App() {
             onChange={(event) => setDraft((current) => ({ ...current, detail: event.target.value }))}
             placeholder="补充细节、下一步动作或上下文"
           />
-          <div className="image-row">
-            {attachedImages.map((image) => (
-              <button
-                key={image.path}
-                className="image-chip"
-                type="button"
-                title="移除图片"
-                onClick={() => removeImage(image.path)}
-              >
-                <img src={image.url} alt="" />
-              </button>
-            ))}
-            <button className="ghost-button" type="button" onClick={importImages}>
-              附加图片
-            </button>
-          </div>
+          {renderAttachedImages()}
           <div className="form-actions">
             <span>{aiState}</span>
             <button type="button" onClick={fillDraftWithAi}>
@@ -1014,6 +1789,14 @@ function App() {
                   onChange={(event) => updateSettings({ syncOnComplete: event.target.checked })}
                 />
                 完成后同步飞书
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={data.settings.desktopReminders}
+                  onChange={(event) => updateSettings({ desktopReminders: event.target.checked })}
+                />
+                到点弹出 macOS 提醒
               </label>
               <label>
                 <input
@@ -1133,6 +1916,30 @@ function App() {
           </aside>
         </div>
       )}
+
+      {trashOpen && (
+        <TrashDialog
+          tasks={data.trash}
+          onClose={() => setTrashOpen(false)}
+          onRestore={restoreTask}
+          onPurge={purgeTask}
+          onEmpty={emptyTrash}
+        />
+      )}
+
+      {imagePreview && (
+        <ImagePreviewDialog
+          preview={imagePreview}
+          onClose={() => setImagePreview(null)}
+          onMove={(direction) =>
+            setImagePreview((current) => {
+              if (!current || current.images.length <= 1) return current
+              const nextIndex = (current.index + direction + current.images.length) % current.images.length
+              return { ...current, index: nextIndex }
+            })
+          }
+        />
+      )}
     </main>
   )
 }
@@ -1140,9 +1947,14 @@ function App() {
 interface TaskColumnProps {
   status: TaskStatus
   tasks: Task[]
+  sortMode: TaskSortMode
+  sortOpen: boolean
   selectedTaskId: string
+  multiSelectedTaskIds: string[]
   onAdd: () => void
-  onSelect: (taskId: string) => void
+  onToggleSort: () => void
+  onSortChange: (sortMode: TaskSortMode) => void
+  onSelect: (taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) => void
   onEdit: (task: Task) => void
   onComplete: (taskId: string) => void
   onToggleDone: (taskId: string) => void
@@ -1151,68 +1963,178 @@ interface TaskColumnProps {
   onDropTask: (taskId: string, status: TaskStatus) => void
   onMove: (taskId: string, status: TaskStatus) => void
   onDelete: (taskId: string) => void
+  onPreviewImages: (images: TaskImage[], index: number, title: string) => void
+  onCopy: (task: Task) => void
+  onOpenCalendar: (task: Task) => void
+  onOpenAgentSession: (task: Task) => void
 }
 
 interface MiniTaskRowProps {
   task: Task
   selected: boolean
-  onSelect: (taskId: string) => void
+  multiSelected: boolean
+  onSelect: (taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) => void
+  onToggleExpand: (taskId: string) => void
   onEdit: (task: Task) => void
   onToggleDone: (taskId: string) => void
   onMove: (taskId: string, status: TaskStatus) => void
+  onDelete: (taskId: string) => void
+  onPreviewImages: (images: TaskImage[], index: number, title: string) => void
+  onCopy: (task: Task) => void
+  onOpenCalendar: (task: Task) => void
+  onOpenAgentSession: (task: Task) => void
 }
 
-function MiniTaskRow({ task, selected, onSelect, onEdit, onToggleDone, onMove }: MiniTaskRowProps) {
+interface SelectionMergeBarProps {
+  count: number
+  onPlainMerge: () => void
+  onAiMerge: () => void
+  onClear: () => void
+  mergingMode: '' | 'plain' | 'ai'
+}
+
+function SelectionMergeBar({ count, onPlainMerge, onAiMerge, onClear, mergingMode }: SelectionMergeBarProps) {
+  return (
+    <div className="selection-merge-bar">
+      <span>{mergingMode ? (mergingMode === 'ai' ? 'AI 合并中...' : '普通合并中...') : `已选择 ${count} 个任务`}</span>
+      <button type="button" disabled={Boolean(mergingMode)} onClick={onPlainMerge}>
+        {mergingMode === 'plain' ? '合并中...' : '普通合并'}
+      </button>
+      <button type="button" disabled={Boolean(mergingMode)} onClick={onAiMerge}>
+        {mergingMode === 'ai' ? 'AI 合并中...' : 'AI 合并'}
+      </button>
+      <button type="button" disabled={Boolean(mergingMode)} onClick={onClear}>
+        取消
+      </button>
+    </div>
+  )
+}
+
+function MiniTaskRow({ task, selected, multiSelected, onSelect, onToggleExpand, onEdit, onToggleDone, onMove, onDelete, onPreviewImages, onCopy, onOpenCalendar, onOpenAgentSession }: MiniTaskRowProps) {
   const isDone = task.status === 'done'
 
   return (
-    <article className={`mini-task-row ${selected ? 'expanded' : ''}`}>
+    <article
+      className={`mini-task-row ${selected ? 'expanded' : ''} ${multiSelected ? 'multi-selected' : ''}`}
+      onClick={(event) => onSelect(task.id, event)}
+      onDoubleClick={() => onEdit(task)}
+    >
       <div className="mini-task-main">
         <button
           className={`check ${isDone ? 'checked' : ''}`}
           type="button"
           aria-label={isDone ? '取消完成' : '完成任务'}
-          onClick={() => onToggleDone(task.id)}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleDone(task.id)
+          }}
         >
           ✓
         </button>
-        <button className="mini-task-copy" type="button" onClick={() => onSelect(task.id)} onDoubleClick={() => onEdit(task)}>
+        <div className="mini-task-copy">
           <strong>{task.title}</strong>
           <small>{getTaskTimeLabel(task)}</small>
-        </button>
+        </div>
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
-        <button className="mini-expand" type="button" onClick={() => onSelect(selected ? '' : task.id)}>
+        <button
+          className="mini-expand"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleExpand(task.id)
+          }}
+        >
           {selected ? '⌃' : '⌄'}
         </button>
       </div>
       {selected && (
         <div className="mini-task-detail">
-          {task.detail && <p>{task.detail}</p>}
-          <div className="tag-list">
-            <span>{statusConfig[task.status].label}</span>
-            {task.project && <span>{task.project}</span>}
-            {task.tags.map((tag) => (
-              <span key={tag}>#{tag}</span>
-            ))}
+          <div className="mini-task-detail-scroll">
+            {task.detail && <p>{task.detail}</p>}
+            <div className="tag-list">
+              <span>{statusConfig[task.status].label}</span>
+              {task.project && <span>{task.project}</span>}
+              {task.tags.map((tag) => (
+                <span key={tag}>#{tag}</span>
+              ))}
+            </div>
+            {task.imagePaths.length > 0 && (
+              <div className="preview-grid inline-preview-grid">
+                {task.imagePaths.map((image, index) => (
+                  <button
+                    key={image.path}
+                    className="preview-thumb"
+                    type="button"
+                    title="查看大图"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onPreviewImages(task.imagePaths, index, task.title)
+                    }}
+                  >
+                    <img src={image.url} alt={image.name} />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="card-actions">
+          <div className="card-actions mini-task-actions">
             {!isDone && (
-              <button type="button" onClick={() => onMove(task.id, 'done')}>
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onMove(task.id, 'done')
+              }}>
                 完成
               </button>
             )}
             {task.status !== 'doing' && (
-              <button type="button" onClick={() => onMove(task.id, 'doing')}>
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onMove(task.id, 'doing')
+              }}>
                 正在做
               </button>
             )}
             {task.status !== 'todo' && (
-              <button type="button" onClick={() => onMove(task.id, 'todo')}>
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onMove(task.id, 'todo')
+              }}>
                 Todo
               </button>
             )}
-            <button type="button" onClick={() => onEdit(task)}>
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onCopy(task)
+            }}>
+              复制
+            </button>
+            {canOpenAgentSession(task) && (
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onOpenAgentSession(task)
+              }}>
+                会话
+              </button>
+            )}
+            {(task.reminderAt || task.dueAt) && (
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onOpenCalendar(task)
+              }}>
+                日历
+              </button>
+            )}
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onEdit(task)
+            }}>
               编辑
+            </button>
+            <button className="danger-button" type="button" onClick={(event) => {
+              event.stopPropagation()
+              onDelete(task.id)
+            }}>
+              删除
             </button>
           </div>
         </div>
@@ -1221,11 +2143,131 @@ function MiniTaskRow({ task, selected, onSelect, onEdit, onToggleDone, onMove }:
   )
 }
 
+interface TrashDialogProps {
+  tasks: Task[]
+  onClose: () => void
+  onRestore: (taskId: string) => void
+  onPurge: (taskId: string) => void
+  onEmpty: () => void
+}
+
+function TrashDialog({ tasks, onClose, onRestore, onPurge, onEmpty }: TrashDialogProps) {
+  const sortedTasks = [...tasks].sort((left, right) => String(right.deletedAt).localeCompare(String(left.deletedAt)))
+
+  return (
+    <div className="settings-backdrop" role="presentation" onMouseDown={onClose}>
+      <aside
+        className="settings-panel trash-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="回收箱"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="settings-head">
+          <div>
+            <h2>回收箱</h2>
+            <p>删除过的任务会先放在这里，可以恢复或永久删除。</p>
+          </div>
+          <button className="icon-button" type="button" title="关闭回收箱" onClick={onClose}>
+            ×
+          </button>
+        </header>
+
+        <div className="trash-actions">
+          <span>{tasks.length} 个已删除任务</span>
+          <button type="button" disabled={tasks.length === 0} onClick={onEmpty}>
+            清空回收箱
+          </button>
+        </div>
+
+        <div className="trash-list">
+          {sortedTasks.length === 0 && <p className="empty-state">回收箱是空的</p>}
+          {sortedTasks.map((task) => (
+            <article className="trash-item" key={task.id}>
+              <div>
+                <strong>{task.title}</strong>
+                <small>
+                  删除 {task.deletedAt ? formatDateTime(task.deletedAt) : '未知'} · {statusConfig[task.status].label}
+                </small>
+              </div>
+              <div className="trash-item-actions">
+                <button type="button" onClick={() => onRestore(task.id)}>
+                  恢复
+                </button>
+                <button className="danger-button" type="button" onClick={() => onPurge(task.id)}>
+                  永久删除
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+interface ImagePreviewDialogProps {
+  preview: ImagePreviewState
+  onClose: () => void
+  onMove: (direction: number) => void
+}
+
+function ImagePreviewDialog({ preview, onClose, onMove }: ImagePreviewDialogProps) {
+  const image = preview.images[preview.index]
+  const hasMultiple = preview.images.length > 1
+
+  if (!image) return null
+
+  return (
+    <div className="image-preview-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="image-preview-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="图片预览"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="image-preview-head">
+          <div>
+            <h2>{preview.title}</h2>
+            <p>
+              {image.name}
+              {hasMultiple ? ` · ${preview.index + 1}/${preview.images.length}` : ''}
+            </p>
+          </div>
+          <button className="icon-button" type="button" title="关闭预览" onClick={onClose}>
+            ×
+          </button>
+        </header>
+
+        <div className="image-preview-stage">
+          {hasMultiple && (
+            <button className="image-preview-nav nav-left" type="button" title="上一张" onClick={() => onMove(-1)}>
+              ‹
+            </button>
+          )}
+          <img src={image.url} alt={image.name} />
+          {hasMultiple && (
+            <button className="image-preview-nav nav-right" type="button" title="下一张" onClick={() => onMove(1)}>
+              ›
+            </button>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function TaskColumn({
   status,
   tasks,
+  sortMode,
+  sortOpen,
   selectedTaskId,
+  multiSelectedTaskIds,
   onAdd,
+  onToggleSort,
+  onSortChange,
   onSelect,
   onEdit,
   onComplete,
@@ -1235,8 +2277,14 @@ function TaskColumn({
   onDropTask,
   onMove,
   onDelete,
+  onPreviewImages,
+  onCopy,
+  onOpenCalendar,
+  onOpenAgentSession,
 }: TaskColumnProps) {
   const isDragTarget = Boolean(draggingTaskId)
+  const visibleSortMode = normalizeSortModeForStatus(status, sortMode)
+  const visibleSortGroups = getSortGroupsForStatus(status)
 
   function handleDragOver(event: DragEvent<HTMLElement>) {
     if (!draggingTaskId) return
@@ -1253,7 +2301,7 @@ function TaskColumn({
 
   return (
     <section
-      className={`column column-${status} ${isDragTarget ? 'drop-ready' : ''}`}
+      className={`column column-${status} ${sortOpen ? 'sort-open' : ''} ${isDragTarget ? 'drop-ready' : ''}`}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
@@ -1265,12 +2313,51 @@ function TaskColumn({
             <small>{tasks.length}</small>
           </h2>
         </div>
-        {status !== 'done' && (
-          <button type="button" title="新增任务" onClick={onAdd}>
-            +
+        <div className="column-actions">
+          <button
+            className={`sort-button ${sortOpen ? 'active' : ''}`}
+            type="button"
+            title={`排序：${sortModeConfig[visibleSortMode].label}`}
+            aria-label={`排序：${sortModeConfig[visibleSortMode].label}`}
+            aria-expanded={sortOpen}
+            onClick={onToggleSort}
+          >
+            <span className="sort-icon" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
           </button>
-        )}
+          {status !== 'done' && (
+            <button type="button" title="新增任务" onClick={onAdd}>
+              +
+            </button>
+          )}
+        </div>
       </header>
+      {sortOpen && (
+        <div className="sort-panel">
+          <div className="sort-panel-head">
+            <strong>排序方式</strong>
+            <span>{sortModeConfig[visibleSortMode].shortLabel}</span>
+          </div>
+          {visibleSortGroups.map((group) => (
+            <div className={`sort-group ${group.modes.length === 1 ? 'single-option' : ''}`} key={group.title}>
+              <span>{group.title}</span>
+              {group.modes.map((mode) => (
+                <button
+                  key={mode}
+                  className={mode === visibleSortMode ? 'active' : ''}
+                  type="button"
+                  onClick={() => onSortChange(mode)}
+                >
+                  {sortModeConfig[mode].menuLabel}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="task-list">
         {tasks.length === 0 && <p className="empty-state">这里暂时没有事项</p>}
         {tasks.map((task) => (
@@ -1278,13 +2365,19 @@ function TaskColumn({
             key={task.id}
             task={task}
             selected={task.id === selectedTaskId}
-            onSelect={(taskId) => onSelect(selectedTaskId === taskId ? '' : taskId)}
+            multiSelected={multiSelectedTaskIds.includes(task.id)}
+            onSelect={onSelect}
+            onSelectWithEvent={onSelect}
             onEdit={onEdit}
             onComplete={onComplete}
             onToggleDone={onToggleDone}
             onDragStart={onDragStart}
             onMove={onMove}
             onDelete={onDelete}
+            onPreviewImages={onPreviewImages}
+            onCopy={onCopy}
+            onOpenCalendar={onOpenCalendar}
+            onOpenAgentSession={onOpenAgentSession}
           />
         ))}
       </div>
@@ -1295,34 +2388,46 @@ function TaskColumn({
 interface TaskCardProps {
   task: Task
   selected: boolean
+  multiSelected: boolean
   compact?: boolean
   onSelect: (taskId: string) => void
+  onSelectWithEvent: (taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) => void
   onEdit: (task: Task) => void
   onComplete: (taskId: string) => void
   onToggleDone: (taskId: string) => void
   onDragStart: (taskId: string) => void
   onMove: (taskId: string, status: TaskStatus) => void
   onDelete: (taskId: string) => void
+  onPreviewImages: (images: TaskImage[], index: number, title: string) => void
+  onCopy: (task: Task) => void
+  onOpenCalendar: (task: Task) => void
+  onOpenAgentSession: (task: Task) => void
 }
 
 function TaskCard({
   task,
   selected,
+  multiSelected,
   compact = false,
   onSelect,
+  onSelectWithEvent,
   onEdit,
   onComplete,
   onToggleDone,
   onDragStart,
   onMove,
   onDelete,
+  onPreviewImages,
+  onCopy,
+  onOpenCalendar,
+  onOpenAgentSession,
 }: TaskCardProps) {
   const isDone = task.status === 'done'
   const isOverdue = !isDone && task.dueAt && new Date(task.dueAt).getTime() < Date.now()
 
   return (
     <article
-      className={`task-card ${selected ? 'selected' : ''} ${compact ? 'compact' : ''}`}
+      className={`task-card ${selected ? 'selected' : ''} ${multiSelected ? 'multi-selected' : ''} ${compact ? 'compact' : ''}`}
       draggable
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'move'
@@ -1330,25 +2435,31 @@ function TaskCard({
         onDragStart(task.id)
       }}
       onDragEnd={() => onDragStart('')}
+      onClick={(event: ReactMouseEvent<HTMLElement>) => {
+        if (event.metaKey || event.ctrlKey) {
+          onSelectWithEvent(task.id, event)
+          return
+        }
+        onSelect(task.id)
+      }}
+      onDoubleClick={() => onEdit(task)}
     >
       <div className="task-main">
         <button
           className={`check ${isDone ? 'checked' : ''}`}
           type="button"
           aria-label={isDone ? '取消完成' : '完成任务'}
-          onClick={() => onToggleDone(task.id)}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleDone(task.id)
+          }}
         >
           ✓
         </button>
-        <button
-          className="task-copy"
-          type="button"
-          onClick={() => onSelect(task.id)}
-          onDoubleClick={() => onEdit(task)}
-        >
+        <div className="task-copy">
           <strong>{task.title}</strong>
           {!compact && task.detail && <small>{task.detail}</small>}
-        </button>
+        </div>
       </div>
       <div className="meta-row">
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
@@ -1393,8 +2504,19 @@ function TaskCard({
           </dl>
           {task.imagePaths.length > 0 && (
             <div className="preview-grid inline-preview-grid">
-              {task.imagePaths.map((image) => (
-                <img key={image.path} src={image.url} alt={image.name} />
+              {task.imagePaths.map((image, index) => (
+                <button
+                  key={image.path}
+                  className="preview-thumb"
+                  type="button"
+                  title="查看大图"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onPreviewImages(task.imagePaths, index, task.title)
+                  }}
+                >
+                  <img src={image.url} alt={image.name} />
+                </button>
               ))}
             </div>
           )}
@@ -1409,33 +2531,76 @@ function TaskCard({
       )}
       <div className="card-actions">
         {!isDone ? (
-          <button type="button" onClick={() => onComplete(task.id)}>
+          <button type="button" onClick={(event) => {
+            event.stopPropagation()
+            onComplete(task.id)
+          }}>
             完成
           </button>
         ) : (
           <>
-            <button type="button" onClick={() => onMove(task.id, 'todo')}>
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onMove(task.id, 'todo')
+            }}>
               转待办
             </button>
-            <button type="button" onClick={() => onMove(task.id, 'doing')}>
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onMove(task.id, 'doing')
+            }}>
               继续做
             </button>
           </>
         )}
         {!isDone && task.status !== 'doing' && (
-          <button type="button" onClick={() => onMove(task.id, 'doing')}>
+          <button type="button" onClick={(event) => {
+            event.stopPropagation()
+            onMove(task.id, 'doing')
+          }}>
             开始
           </button>
         )}
         {!isDone && task.status !== 'todo' && (
-          <button type="button" onClick={() => onMove(task.id, 'todo')}>
+          <button type="button" onClick={(event) => {
+            event.stopPropagation()
+            onMove(task.id, 'todo')
+          }}>
             待办
           </button>
         )}
-        <button type="button" onClick={() => onEdit(task)}>
+        <button type="button" onClick={(event) => {
+          event.stopPropagation()
+          onCopy(task)
+        }}>
+          复制
+        </button>
+        {canOpenAgentSession(task) && (
+          <button type="button" onClick={(event) => {
+            event.stopPropagation()
+            onOpenAgentSession(task)
+          }}>
+            会话
+          </button>
+        )}
+        {(task.reminderAt || task.dueAt) && (
+          <button type="button" onClick={(event) => {
+            event.stopPropagation()
+            onOpenCalendar(task)
+          }}>
+            日历
+          </button>
+        )}
+        <button type="button" onClick={(event) => {
+          event.stopPropagation()
+          onEdit(task)
+        }}>
           编辑
         </button>
-        <button type="button" onClick={() => onDelete(task.id)}>
+        <button type="button" onClick={(event) => {
+          event.stopPropagation()
+          onDelete(task.id)
+        }}>
           删除
         </button>
       </div>
