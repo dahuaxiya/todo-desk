@@ -1683,7 +1683,7 @@ select:focus-visible {
   grid-row: 1;
   display: grid;
   align-content: start;
-  gap: 6px;
+  gap: 7px;
   min-height: 0;
   overflow: hidden auto;
 }
@@ -1696,9 +1696,9 @@ select:focus-visible {
 .dock-empty {
   -webkit-app-region: no-drag;
   display: grid;
-  gap: 3px;
+  gap: 4px;
   width: 100%;
-  min-height: 34px;
+  min-height: 58px;
   padding: 7px 8px;
   overflow: hidden;
   border: 1px solid rgba(48, 43, 35, 0.14);
@@ -1712,10 +1712,10 @@ select:focus-visible {
 }
 
 .dock-task-item.selected {
-  overflow: visible;
+  overflow: hidden;
   border-color: #e0ad1e;
   background: #fff7df;
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: 0 0 0 1px rgba(224, 173, 30, 0.18);
 }
 
 .dock-merge-bar {
@@ -1750,7 +1750,7 @@ select:focus-visible {
 
 .dock-task-head {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
   padding: 0;
   border: 0;
@@ -1777,26 +1777,32 @@ select:focus-visible {
 
 .dock-task-head strong {
   font-size: 12px;
+  line-height: 1.22;
 }
 
 .dock-task-item.selected .dock-task-head strong {
-  display: block;
-  overflow: visible;
-  text-overflow: clip;
+  display: -webkit-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: normal;
-  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .dock-task-item.selected .dock-task-head small {
-  display: block;
-  overflow: visible;
-  text-overflow: clip;
+  display: -webkit-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
 }
 
 .dock-task-head small {
   color: var(--ink-muted);
   font-size: 10px;
+  line-height: 1.25;
+  -webkit-line-clamp: 1;
 }
 
 .dock-empty {
