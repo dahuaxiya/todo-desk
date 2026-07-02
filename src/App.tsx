@@ -18,6 +18,13 @@ const priorityConfig: Record<TaskPriority, { label: string }> = {
 }
 
 const taskStatuses = ['doing', 'todo', 'done'] as const
+type TaskOriginFilter = 'all' | 'ai' | 'human'
+
+const originFilterOptions: Array<{ value: TaskOriginFilter; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'ai', label: 'AI' },
+  { value: 'human', label: '人工' },
+]
 
 const defaultColumnSorts: Record<TaskStatus, TaskSortMode> = {
   doing: 'manual',
@@ -73,6 +80,12 @@ function canOpenAgentSession(task: Task) {
 
 function isAgentCreatedTask(task: Task) {
   return task.origin?.kind === 'agent'
+}
+
+function matchesOriginFilter(task: Task, filter: TaskOriginFilter) {
+  if (filter === 'all') return true
+  const isAgentTask = isAgentCreatedTask(task)
+  return filter === 'ai' ? isAgentTask : !isAgentTask
 }
 
 function createHumanTaskOrigin(createdVia: string): TaskOrigin {
@@ -180,6 +193,32 @@ interface ImagePreviewState {
   images: TaskImage[]
   index: number
   title: string
+}
+
+interface OriginFilterControlProps {
+  value: TaskOriginFilter
+  counts: Record<TaskOriginFilter, number>
+  onChange: (value: TaskOriginFilter) => void
+  compact?: boolean
+}
+
+function OriginFilterControl({ value, counts, onChange, compact = false }: OriginFilterControlProps) {
+  return (
+    <div className={`origin-filter ${compact ? 'compact-origin-filter' : ''}`} role="group" aria-label="任务来源分类">
+      {originFilterOptions.map((option) => (
+        <button
+          key={option.value}
+          className={value === option.value ? 'active' : ''}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+        >
+          <span>{option.label}</span>
+          <small>{counts[option.value]}</small>
+        </button>
+      ))}
+    </div>
+  )
 }
 
 function createDefaultData(): AppData {
@@ -518,6 +557,7 @@ function App() {
   const [data, setData] = useState<AppData>(() => createDefaultData())
   const [isLoaded, setIsLoaded] = useState(false)
   const [search, setSearch] = useState('')
+  const [originFilter, setOriginFilter] = useState<TaskOriginFilter>('all')
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
   const [editingTaskId, setEditingTaskId] = useState<string>('')
   const [draft, setDraft] = useState(emptyTaskDraft)
@@ -565,10 +605,24 @@ function App() {
     })
   }, [])
 
-  const filteredTasks = useMemo(() => {
+  const searchedTasks = useMemo(() => {
     const keyword = normalizeKeywords(search)
     return data.tasks.filter((task) => fuzzyIncludes(taskSearchText(task), keyword))
   }, [data.tasks, search])
+
+  const originFilterCounts = useMemo(() => {
+    const ai = searchedTasks.filter(isAgentCreatedTask).length
+    return {
+      all: searchedTasks.length,
+      ai,
+      human: searchedTasks.length - ai,
+    }
+  }, [searchedTasks])
+
+  const filteredTasks = useMemo(
+    () => searchedTasks.filter((task) => matchesOriginFilter(task, originFilter)),
+    [originFilter, searchedTasks],
+  )
 
   const groupedTasks = useMemo(
     () => ({
@@ -594,6 +648,13 @@ function App() {
       .filter((task): task is Task => Boolean(task)),
     [data.tasks, multiSelectedTaskIds],
   )
+
+  function updateOriginFilter(nextFilter: TaskOriginFilter) {
+    setOriginFilter(nextFilter)
+    setSelectedTaskId('')
+    setMultiSelectedTaskIds([])
+    closeDockDetailWindow()
+  }
 
   const openDockDetailWindow = useCallback(async () => {
     if (!dockState.docked || dockDetailOpen) return
@@ -1531,6 +1592,12 @@ function App() {
               </button>
             ))}
           </div>
+          <OriginFilterControl
+            value={originFilter}
+            counts={originFilterCounts}
+            onChange={updateOriginFilter}
+            compact
+          />
 
           <div className="mini-list">
             {multiSelectedTasks.length > 1 && (
@@ -1699,6 +1766,11 @@ function App() {
             placeholder="模糊搜索标题、详情、标签"
           />
         </label>
+        <OriginFilterControl
+          value={originFilter}
+          counts={originFilterCounts}
+          onChange={updateOriginFilter}
+        />
         <button className="primary-button" type="button" onClick={() => startCreate('todo')}>
           新建任务 +
         </button>
@@ -2486,6 +2558,7 @@ function TaskColumn({
             task={task}
             selected={task.id === selectedTaskId}
             multiSelected={multiSelectedTaskIds.includes(task.id)}
+            compact={task.id !== selectedTaskId}
             onSelect={onSelect}
             onSelectWithEvent={onSelect}
             onEdit={onEdit}
@@ -2649,81 +2722,83 @@ function TaskCard({
           ))}
         </div>
       )}
-      <div className="card-actions">
-        {!isDone ? (
-          <button type="button" onClick={(event) => {
-            event.stopPropagation()
-            onComplete(task.id)
-          }}>
-            完成
-          </button>
-        ) : (
-          <>
+      {!compact && (
+        <div className="card-actions">
+          {!isDone ? (
             <button type="button" onClick={(event) => {
               event.stopPropagation()
-              onMove(task.id, 'todo')
+              onComplete(task.id)
             }}>
-              转待办
+              完成
             </button>
+          ) : (
+            <>
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onMove(task.id, 'todo')
+              }}>
+                转待办
+              </button>
+              <button type="button" onClick={(event) => {
+                event.stopPropagation()
+                onMove(task.id, 'doing')
+              }}>
+                继续做
+              </button>
+            </>
+          )}
+          {!isDone && task.status !== 'doing' && (
             <button type="button" onClick={(event) => {
               event.stopPropagation()
               onMove(task.id, 'doing')
             }}>
-              继续做
+              开始
             </button>
-          </>
-        )}
-        {!isDone && task.status !== 'doing' && (
+          )}
+          {!isDone && task.status !== 'todo' && (
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onMove(task.id, 'todo')
+            }}>
+              待办
+            </button>
+          )}
           <button type="button" onClick={(event) => {
             event.stopPropagation()
-            onMove(task.id, 'doing')
+            onCopy(task)
           }}>
-            开始
+            复制
           </button>
-        )}
-        {!isDone && task.status !== 'todo' && (
+          {canOpenAgentSession(task) && (
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onOpenAgentSession(task)
+            }}>
+              会话
+            </button>
+          )}
+          {(task.reminderAt || task.dueAt) && (
+            <button type="button" onClick={(event) => {
+              event.stopPropagation()
+              onOpenCalendar(task)
+            }}>
+              日历
+            </button>
+          )}
           <button type="button" onClick={(event) => {
             event.stopPropagation()
-            onMove(task.id, 'todo')
+            onEdit(task)
           }}>
-            待办
+            编辑
           </button>
-        )}
-        <button type="button" onClick={(event) => {
-          event.stopPropagation()
-          onCopy(task)
-        }}>
-          复制
-        </button>
-        {canOpenAgentSession(task) && (
           <button type="button" onClick={(event) => {
             event.stopPropagation()
-            onOpenAgentSession(task)
+            onDelete(task.id)
           }}>
-            会话
+            删除
           </button>
-        )}
-        {(task.reminderAt || task.dueAt) && (
-          <button type="button" onClick={(event) => {
-            event.stopPropagation()
-            onOpenCalendar(task)
-          }}>
-            日历
-          </button>
-        )}
-        <button type="button" onClick={(event) => {
-          event.stopPropagation()
-          onEdit(task)
-        }}>
-          编辑
-        </button>
-        <button type="button" onClick={(event) => {
-          event.stopPropagation()
-          onDelete(task.id)
-        }}>
-          删除
-        </button>
-      </div>
+        </div>
+      )}
     </article>
   )
 }

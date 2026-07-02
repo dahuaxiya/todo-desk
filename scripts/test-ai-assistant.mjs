@@ -10,6 +10,7 @@ import {
   normalizeMergedTask,
   parseTasksWithAi,
   parseTasksWithAiAndImages,
+  parseTasksWithLocalFallback,
 } from '../electron/ai-task-parser.js'
 
 const defaultDataFile = join(homedir(), 'Library/Application Support/todo-desk/todo-desk-data.json')
@@ -263,7 +264,7 @@ async function runImagePayloadSmokeTest(settings) {
       },
     )
 
-    if (callCount !== 2) throw new Error(`OCR fallback 期望调用模型 2 次，实际 ${callCount}`)
+    if (callCount !== 3) throw new Error(`OCR fallback 期望调用模型 3 次，实际 ${callCount}`)
     if (ocrFallbackResult.imageMode !== 'ocr') {
       throw new Error(`OCR fallback imageMode 期望 ocr，实际 ${ocrFallbackResult.imageMode}`)
     }
@@ -274,6 +275,56 @@ async function runImagePayloadSmokeTest(settings) {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+async function runEndpointNetworkFallbackSmokeTest(settings) {
+  let calls = 0
+  const result = await parseTasksWithAi('今晚 11 点去夜市', { ...settings, aiBaseUrl: 'http://example.test/coding' }, async (url) => {
+    calls += 1
+    if (!/\/v1\/chat\/completions$/.test(url)) {
+      throw new Error('fetch failed')
+    }
+    return {
+      response: { ok: true, status: 200, statusText: 'OK' },
+      contentType: 'application/json',
+      rawBody: JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                tasks: [
+                  {
+                    title: '去夜市',
+                    detail: '',
+                    status: 'todo',
+                    priority: 'medium',
+                    project: '',
+                    tags: [],
+                    dueAt: '',
+                    reminderAt: '2026-07-02T23:00:00+08:00',
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+    }
+  })
+
+  if (!result.usedFallback || calls !== 2 || result.task.title !== '去夜市') {
+    throw new Error('AI endpoint network fallback smoke test 失败')
+  }
+  console.log('[PASS] AI endpoint network fallback smoke test: primary fetch failure retries /v1 endpoint')
+}
+
+function runLocalTimeFallbackSmokeTest() {
+  const tasks = parseTasksWithLocalFallback('今晚 11 点去夜市', { now: '2026-07-02T22:03:00+08:00' })
+  const task = tasks[0]
+  if (!task || task.title !== '去夜市' || formatLocalDateMinute(task.reminderAt) !== '2026-07-02 23:00') {
+    throw new Error(`local time fallback smoke test 失败：${JSON.stringify(task)}`)
+  }
+  console.log('[PASS] local time fallback smoke test: plain event time becomes reminderAt')
 }
 
 async function runAiMergeSmokeTest(settings) {
@@ -488,6 +539,8 @@ async function main() {
   }
 
   await runImagePayloadSmokeTest(settings)
+  await runEndpointNetworkFallbackSmokeTest(settings)
+  runLocalTimeFallbackSmokeTest()
   await runAiMergeSmokeTest(settings)
   await runApiMetadataSmokeTest()
 

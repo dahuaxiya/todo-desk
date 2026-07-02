@@ -64,6 +64,7 @@ export function buildAiTaskParserPrompt(text, now = new Date().toISOString()) {
     'priority 只能是 high/medium/low，默认 medium。',
     'tags 是字符串数组。',
     'dueAt/reminderAt 必须是 ISO 8601 字符串；用户未指定时区时按 Asia/Shanghai 输出 +08:00，不要用 Z；没有就返回空字符串。',
+    '如果用户说“今晚 11 点去夜市”“明天上午 10 点开会”这类行动发生时间，即使没有写“提醒”，也把该时间作为 reminderAt；只有“截止、之前、前完成、deadline”等才作为 dueAt。',
     `当前时间：${now}`,
     `用户输入：${text}`,
   ].join('\n')
@@ -234,6 +235,72 @@ function normalizeParsedTask(value, fallbackTitle) {
   }
 }
 
+function toLocalIso(date) {
+  const offset = -date.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  const abs = Math.abs(offset)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:00${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+}
+
+function stripRecognizedTime(text, match) {
+  return String(text || '')
+    .replace(match[0], '')
+    .replace(/^(提醒我|记得|到点|要)\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function parseRelativeDateTime(text, now = new Date()) {
+  const input = String(text || '')
+  const dateMatch = input.match(/(今天|今晚|今夜|明天|明晚|后天)?\s*(凌晨|早上|上午|中午|下午|晚上|今晚|明晚)?\s*(\d{1,2})\s*(?:点|:|：)\s*(\d{1,2})?/)
+  if (!dateMatch) return null
+
+  const dateWord = dateMatch[1] || ''
+  const period = dateMatch[2] || ''
+  let hour = Number(dateMatch[3])
+  const minute = dateMatch[4] === undefined || dateMatch[4] === '' ? 0 : Number(dateMatch[4])
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || hour > 24 || minute > 59) return null
+
+  const date = new Date(now)
+  if (dateWord === '明天' || dateWord === '明晚') date.setDate(date.getDate() + 1)
+  if (dateWord === '后天') date.setDate(date.getDate() + 2)
+
+  const periodText = `${dateWord}${period}`
+  if (/(下午|晚上|今晚|今夜|明晚)/.test(periodText) && hour < 12) hour += 12
+  if (/中午/.test(periodText) && hour < 11) hour += 12
+  if (/凌晨/.test(periodText) && hour === 12) hour = 0
+  if (hour === 24) hour = 0
+
+  date.setHours(hour, minute, 0, 0)
+  if (!dateWord && date.getTime() <= now.getTime()) {
+    date.setDate(date.getDate() + 1)
+  }
+
+  return {
+    at: toLocalIso(date),
+    match: dateMatch,
+  }
+}
+
+export function parseTasksWithLocalFallback(text, options = {}) {
+  const parsedTime = parseRelativeDateTime(text, options.now ? new Date(options.now) : new Date())
+  if (!parsedTime) return []
+
+  const title = stripRecognizedTime(text, parsedTime.match) || String(text || '').trim() || '待办事项'
+  const isDue = /(截止|到期|deadline|due|之前|前完成|前做完|前处理完)/i.test(String(text || ''))
+  return [{
+    title,
+    detail: '',
+    status: 'todo',
+    priority: 'medium',
+    project: '',
+    tags: [],
+    dueAt: isDue ? new Date(parsedTime.at).toISOString() : '',
+    reminderAt: isDue ? '' : new Date(parsedTime.at).toISOString(),
+  }]
+}
+
 export function normalizeParsedTasks(value, fallbackTitle) {
   const normalizedFallbackTitle = fallbackTitle?.trim() || '图片中的任务'
   const candidates = readTaskCandidates(value)
@@ -256,19 +323,25 @@ export async function parseTasksWithAi(text, settings, requestEndpoint, options 
   let usedEndpoint = endpoint
   let usedFallback = false
 
-  let aiResponse = await requestEndpoint(endpoint, requestPayload, settings)
+  const fallbackEndpoint = buildAiFallbackEndpoint(settings.aiBaseUrl)
+  let aiResponse
+  try {
+    aiResponse = await requestEndpoint(endpoint, requestPayload, settings)
+  } catch (error) {
+    if (!fallbackEndpoint) throw error
+    usedEndpoint = fallbackEndpoint
+    usedFallback = true
+    aiResponse = await requestEndpoint(fallbackEndpoint, requestPayload, settings)
+  }
   let { response, rawBody, contentType } = aiResponse
 
-  if (response.ok && looksLikeHtml(rawBody, contentType)) {
-    const fallbackEndpoint = buildAiFallbackEndpoint(settings.aiBaseUrl)
-    if (fallbackEndpoint) {
-      usedEndpoint = fallbackEndpoint
-      usedFallback = true
-      aiResponse = await requestEndpoint(fallbackEndpoint, requestPayload, settings)
-      response = aiResponse.response
-      rawBody = aiResponse.rawBody
-      contentType = aiResponse.contentType
-    }
+  if (fallbackEndpoint && !usedFallback && (!response.ok || looksLikeHtml(rawBody, contentType))) {
+    usedEndpoint = fallbackEndpoint
+    usedFallback = true
+    aiResponse = await requestEndpoint(fallbackEndpoint, requestPayload, settings)
+    response = aiResponse.response
+    rawBody = aiResponse.rawBody
+    contentType = aiResponse.contentType
   }
 
   if (!response.ok) {

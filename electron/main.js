@@ -5,7 +5,7 @@ import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promis
 import http from 'node:http'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages } from './ai-task-parser.js'
+import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -1284,6 +1284,23 @@ ipcMain.handle('ai:parse-task', async (_event, payload) => {
   try {
     return await callAiTaskParser(payload.text, payload.settings, payload.images || [])
   } catch (error) {
+    const localTasks = parseTasksWithLocalFallback(payload.text)
+    if (localTasks.length) {
+      await writeLog('warn', 'AI parse request used local fallback', {
+        inputLength: String(payload.text || '').length,
+        taskCount: localTasks.length,
+        error: error instanceof Error ? error.message : 'AI 解析失败',
+      })
+      return {
+        ok: true,
+        task: localTasks[0],
+        tasks: localTasks,
+        usedLocalFallback: true,
+        imageMode: 'local',
+        imageCount: 0,
+        message: 'AI 请求失败，已使用本地时间识别',
+      }
+    }
     return {
       ok: false,
       message: error instanceof Error ? error.message : 'AI 解析失败',
