@@ -1521,6 +1521,7 @@ select:focus-visible {
 }
 
 .dock-card {
+  -webkit-app-region: no-drag;
   grid-column: 1;
   grid-row: 1;
   align-self: stretch;
@@ -1678,6 +1679,7 @@ select:focus-visible {
 }
 
 .dock-body {
+  -webkit-app-region: no-drag;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
@@ -1691,12 +1693,15 @@ select:focus-visible {
 }
 
 .dock-list {
+  -webkit-app-region: no-drag;
   grid-row: 1;
   display: grid;
   align-content: start;
   gap: 7px;
   min-height: 0;
   overflow: hidden auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 
 .dock-body.has-merge .dock-list {
@@ -1760,6 +1765,7 @@ select:focus-visible {
 }
 
 .dock-task-head {
+  -webkit-app-region: no-drag;
   display: grid;
   gap: 4px;
   min-width: 0;
