@@ -27,6 +27,8 @@ const dockDetailWidth = 260
 const dockDetailGap = 12
 const dockExpandedWidth = dockCollapsedWidth + dockDetailGap + dockDetailWidth
 const dockDetachThreshold = 96
+const normalWindowBackground = '#f7f2e8'
+const dockWindowBackground = '#f8edcf'
 const aiRequestTimeoutMs = 45_000
 const miniWindowWidth = 300
 const miniWindowHeight = 350
@@ -735,6 +737,7 @@ function setDockState(docked, edge = '') {
     dockDragStartBounds = null
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBackgroundColor(docked ? dockWindowBackground : normalWindowBackground)
     updateWindowButtonVisibility(mainWindow)
     mainWindow.webContents.send('dock:changed', { docked, edge })
   }
@@ -746,6 +749,15 @@ function updateWindowButtonVisibility(window) {
 }
 
 function setWindowBounds(window, bounds, animate = true) {
+  const current = window.getBounds()
+  if (
+    current.x === bounds.x
+    && current.y === bounds.y
+    && current.width === bounds.width
+    && current.height === bounds.height
+  ) {
+    return
+  }
   suppressMoveHandlingUntil = Date.now() + 350
   window.setBounds(bounds, animate)
 }
@@ -771,6 +783,7 @@ function dockWindowToEdge(window, edge, area) {
   const y = area.y + Math.round((area.height - height) / 2)
   const x = edge === 'left' ? area.x : area.x + area.width - width
   window.setMinimumSize(dockCollapsedWidth, 260)
+  window.setBackgroundColor(dockWindowBackground)
   window.setAlwaysOnTop(true, 'floating')
   const dockedBounds = { x, y, width, height }
   dockDragStartBounds = dockedBounds
@@ -961,7 +974,7 @@ async function createMainWindow() {
     minWidth: currentAppMode === 'mini' ? miniWindowMinWidth : 760,
     minHeight: currentAppMode === 'mini' ? miniWindowMinHeight : 640,
     title: 'Todo Desk',
-    backgroundColor: '#f7f2e8',
+    backgroundColor: normalWindowBackground,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     frame: process.platform !== 'darwin',
     alwaysOnTop: Boolean(data.settings.keepOnTop),

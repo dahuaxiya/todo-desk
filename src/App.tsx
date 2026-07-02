@@ -502,16 +502,23 @@ function App() {
     [data.tasks, multiSelectedTaskIds],
   )
 
-  useEffect(() => {
-    if (!window.todoDesk?.setDockDetailOpen) return
-    void window.todoDesk.setDockDetailOpen(Boolean(dockState.docked && expandedDockTask))
-  }, [dockState.docked, expandedDockTask])
+  const openDockDetailWindow = useCallback(async () => {
+    if (!dockState.docked || dockDetailOpen) return
+    await window.todoDesk?.setDockDetailOpen?.(true)
+  }, [dockDetailOpen, dockState.docked])
+
+  const closeDockDetailWindow = useCallback(() => {
+    setDockDetailOpenState(false)
+    if (dockState.docked) {
+      void window.todoDesk?.setDockDetailOpen?.(false)
+    }
+  }, [dockState.docked])
 
   useEffect(() => {
     if (dockDetailOpen && !selectedDockTaskId) {
-      setDockDetailOpenState(false)
+      closeDockDetailWindow()
     }
-  }, [dockDetailOpen, selectedDockTaskId])
+  }, [closeDockDetailWindow, dockDetailOpen, selectedDockTaskId])
 
   const persist = useCallback(async (nextData: AppData) => {
     const saved = await saveData(nextData)
@@ -542,18 +549,28 @@ function App() {
     setSelectedTaskId((current) => (current === taskId ? '' : taskId))
   }
 
-  function selectDockTask(taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) {
+  async function selectDockTask(taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) {
     const isMultiSelect = Boolean(event?.metaKey || event?.ctrlKey)
     if (isMultiSelect) {
-      setDockDetailOpenState(false)
+      closeDockDetailWindow()
       selectTask(taskId, event)
       return
     }
 
     setMultiSelectedTaskIds([])
     const isSameTask = selectedTaskId === taskId
+    const shouldOpenDetail = isSameTask ? !dockDetailOpen : true
+
+    if (shouldOpenDetail) {
+      // Expand the native window before mounting the detail pane to avoid a one-frame flash.
+      await openDockDetailWindow()
+      setSelectedTaskId(taskId)
+      setDockDetailOpenState(true)
+      return
+    }
+
     setSelectedTaskId(taskId)
-    setDockDetailOpenState((current) => (isSameTask ? !current : true))
+    closeDockDetailWindow()
   }
 
   function buildPlainMergedTask(tasks: Task[]): Pick<Task, 'title' | 'detail'> {
@@ -1224,7 +1241,7 @@ function App() {
             <button className="dock-restore" type="button" title="恢复窗口" onClick={() => window.todoDesk?.restoreDock()}>
               ↔
             </button>
-            <button className="dock-collapse" type="button" title="收起详情" disabled={!hasExpandedTask} onClick={() => setDockDetailOpenState(false)}>
+            <button className="dock-collapse" type="button" title="收起详情" disabled={!hasExpandedTask} onClick={closeDockDetailWindow}>
               ⌃
             </button>
           </div>
@@ -1275,7 +1292,7 @@ function App() {
           <aside className="dock-popover" aria-label="任务详情">
             <header>
               <span className={`priority priority-${expandedDockTask.priority}`}>{priorityConfig[expandedDockTask.priority].label}</span>
-              <button type="button" title="收起详情" onClick={() => setDockDetailOpenState(false)}>
+              <button type="button" title="收起详情" onClick={closeDockDetailWindow}>
                 ×
               </button>
             </header>
