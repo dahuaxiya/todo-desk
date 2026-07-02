@@ -11,6 +11,10 @@ import urllib.error
 import urllib.request
 
 
+def compact(value: dict) -> dict:
+    return {key: item for key, item in value.items() if item not in ("", None, {})}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Add a task to Todo Desk via its localhost API.")
     parser.add_argument("--title", required=True)
@@ -33,6 +37,25 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    origin = {
+        "kind": "agent",
+        "channel": "todo-desk-skill",
+        "createdVia": "todo-desk-skill/add_work",
+        "confidence": "explicit",
+        "agent": compact({
+            "name": args.agent,
+            "sessionId": args.agent_session_id,
+            "tool": args.agent,
+        }),
+        "repository": compact({
+            "name": args.repository,
+            "path": args.repository_path,
+        }),
+        "client": {
+            "name": "todo-desk-skill",
+            "version": "1",
+        },
+    }
     payload = {
         "title": args.title,
         "detail": args.detail,
@@ -47,6 +70,7 @@ def main() -> int:
         "agentSessionId": args.agent_session_id,
         "repository": args.repository,
         "repositoryPath": args.repository_path,
+        "origin": origin,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(

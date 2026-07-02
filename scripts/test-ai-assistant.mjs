@@ -328,12 +328,30 @@ async function runApiMetadataSmokeTest() {
     agentSessionId: 'session-123',
     repository: 'todo-desk',
     repositoryPath: '/tmp/todo-desk',
+    origin: {
+      kind: 'agent',
+      channel: 'todo-desk-skill',
+      createdVia: 'todo-desk-skill/add_work',
+      confidence: 'explicit',
+      agent: {
+        name: 'codex',
+        sessionId: 'session-123',
+        tool: 'codex',
+      },
+      repository: {
+        name: 'todo-desk',
+        path: '/tmp/todo-desk',
+      },
+    },
   }
   const required = ['agent', 'agentSessionId', 'repository', 'repositoryPath']
   for (const key of required) {
     if (!task[key]) throw new Error(`API metadata smoke test 缺少 ${key}`)
   }
-  console.log('[PASS] API metadata smoke test: agent/session/repository fields are part of task payload contract')
+  if (task.origin.kind !== 'agent' || task.origin.confidence !== 'explicit') {
+    throw new Error('API metadata smoke test 缺少明确的 agent origin')
+  }
+  console.log('[PASS] API metadata smoke test: explicit origin plus legacy metadata are part of task payload contract')
 }
 
 function formatLocalDateMinute(value) {

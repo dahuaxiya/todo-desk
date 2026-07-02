@@ -98,6 +98,7 @@ python3 ${updateScript} \\
 要求：
 - \`session-id\` 必须来自当前运行时，不要编造；常见来源包括 \`CODEX_THREAD_ID\`、\`CLAUDE_SESSION_ID\`、\`KIMI_SESSION_ID\`、\`CURSOR_SESSION_ID\` 或该工具暴露的等价会话/线程 id。
 - 创建任务时 \`tags\` 至少包含当前 \`agent\` 和 \`session-id\`，并同时传 \`--agent\` 与 \`--agent-session-id\`。
+- \`add_work.py\` 会显式写入 \`origin.kind=agent\` 和 \`origin.channel=todo-desk-skill\`；不要只靠 \`source\`、\`repository\` 等上下文字段表达任务来源。
 - 拿不到 \`session-id\`、Todo Desk 未启动或 API 不可用时，不要假装成功；直接告诉用户当前 Todo Desk 挂载阻塞。
 - 只有用户明确同意完成时，才能把任务状态更新为 \`done\`。
 `

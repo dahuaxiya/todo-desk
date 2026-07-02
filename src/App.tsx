@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import type { AddMode, AppData, AppMode, AppSettings, Task, TaskImage, TaskPriority, TaskSortMode, TaskStatus } from './types'
+import type { AddMode, AppData, AppMode, AppSettings, Task, TaskImage, TaskOrigin, TaskPriority, TaskSortMode, TaskStatus } from './types'
 
 const storageKey = 'todo-desk-data'
 
@@ -59,23 +59,100 @@ function normalizeSortModeForStatus(status: TaskStatus, mode: TaskSortMode) {
 }
 
 const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const agentTaskSources = new Set(['api', 'codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
+const originKinds = new Set<TaskOrigin['kind']>(['human', 'agent', 'integration', 'system', 'legacy'])
+const originChannels = new Set<TaskOrigin['channel']>(['ui', 'local-api', 'todo-desk-skill', 'import', 'automation'])
+const originConfidences = new Set<TaskOrigin['confidence']>(['explicit', 'legacy-inferred'])
+const legacyAgentSources = new Set(['codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
+const uiDerivedSources = new Set(['merge', 'ai-merge'])
 
 function canOpenAgentSession(task: Task) {
-  const agent = `${task.agent || ''} ${task.source || ''}`.toLowerCase()
-  const sessionId = task.agentSessionId?.trim() || ''
+  const agent = `${task.origin?.agent?.name || ''} ${task.origin?.agent?.tool || ''} ${task.agent || ''} ${task.source || ''}`.toLowerCase()
+  const sessionId = task.origin?.agent?.sessionId?.trim() || task.agentSessionId?.trim() || ''
   return agent.includes('codex') && codexThreadIdPattern.test(sessionId)
 }
 
 function isAgentCreatedTask(task: Task) {
-  const source = (task.source || '').trim().toLowerCase()
+  return task.origin?.kind === 'agent'
+}
+
+function createHumanTaskOrigin(createdVia: string): TaskOrigin {
+  return {
+    kind: 'human',
+    channel: 'ui',
+    createdVia,
+    confidence: 'explicit',
+  }
+}
+
+function hasValidOrigin(task: Task) {
+  const origin = task.origin
   return Boolean(
-    task.agent?.trim()
-    || task.agentSessionId?.trim()
-    || task.repository?.trim()
-    || task.repositoryPath?.trim()
-    || agentTaskSources.has(source),
+    origin
+    && originKinds.has(origin.kind)
+    && originChannels.has(origin.channel)
+    && originConfidences.has(origin.confidence)
+    && origin.createdVia?.trim(),
   )
+}
+
+function normalizeTaskOrigin(task: Task): Task {
+  if (hasValidOrigin(task)) return task
+
+  const source = (task.source || '').trim().toLowerCase()
+  if (task.agent?.trim() || task.agentSessionId?.trim() || legacyAgentSources.has(source)) {
+    return {
+      ...task,
+      origin: {
+        kind: 'agent',
+        channel: 'local-api',
+        createdVia: source || 'legacy-api',
+        confidence: 'legacy-inferred',
+        agent: {
+          name: task.agent?.trim() || source || 'unknown',
+          sessionId: task.agentSessionId?.trim() || undefined,
+          tool: task.agent?.trim() || source || undefined,
+        },
+        repository: {
+          name: task.repository?.trim() || undefined,
+          path: task.repositoryPath?.trim() || undefined,
+        },
+      },
+    }
+  }
+
+  if (uiDerivedSources.has(source)) {
+    return {
+      ...task,
+      origin: {
+        kind: 'human',
+        channel: 'ui',
+        createdVia: source,
+        confidence: 'legacy-inferred',
+      },
+    }
+  }
+
+  if (source) {
+    return {
+      ...task,
+      origin: {
+        kind: source === 'api' ? 'integration' : 'legacy',
+        channel: 'local-api',
+        createdVia: source,
+        confidence: 'legacy-inferred',
+      },
+    }
+  }
+
+  return {
+    ...task,
+    origin: {
+      kind: 'human',
+      channel: 'ui',
+      createdVia: 'legacy-ui',
+      confidence: 'legacy-inferred',
+    },
+  }
 }
 
 const appModeOptions: Array<{ value: AppMode; label: string }> = [
@@ -108,7 +185,7 @@ interface ImagePreviewState {
 function createDefaultData(): AppData {
   const now = new Date().toISOString()
   return {
-    version: 1,
+    version: 2,
     settings: {
       larkDoc: '',
       syncOnComplete: true,
@@ -142,6 +219,7 @@ function createDefaultData(): AppData {
         createdAt: now,
         updatedAt: now,
         completedAt: '',
+        origin: createHumanTaskOrigin('seed-data'),
       },
       {
         id: crypto.randomUUID(),
@@ -157,6 +235,7 @@ function createDefaultData(): AppData {
         createdAt: now,
         updatedAt: now,
         completedAt: '',
+        origin: createHumanTaskOrigin('seed-data'),
       },
     ],
     trash: [],
@@ -178,8 +257,8 @@ function mergeWithDefaults(value: AppData): AppData {
       },
       edgeDocked: false,
     },
-    tasks: Array.isArray(value.tasks) ? value.tasks : [],
-    trash: Array.isArray(value.trash) ? value.trash : [],
+    tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTaskOrigin) : [],
+    trash: Array.isArray(value.trash) ? value.trash.map(normalizeTaskOrigin) : [],
     syncLog: Array.isArray(value.syncLog) ? value.syncLog : [],
   }
 }
@@ -412,6 +491,7 @@ function createTaskFromDraft(
   draftValue: ReturnType<typeof applyParsedTaskToDraft>,
   fallbackTitle: string,
   images: TaskImage[] = [],
+  createdVia = 'ui-quick-add',
 ): Task {
   const now = new Date().toISOString()
   const status = draftValue.status
@@ -429,6 +509,7 @@ function createTaskFromDraft(
     createdAt: now,
     updatedAt: now,
     completedAt: status === 'done' ? now : '',
+    origin: createHumanTaskOrigin(createdVia),
     remindedAt: '',
   }
 }
@@ -652,6 +733,7 @@ function App() {
       createdAt: now,
       updatedAt: now,
       completedAt: sourceTasks.every((task) => task.status === 'done') ? now : '',
+      origin: createHumanTaskOrigin(mode === 'ai' ? 'ui-ai-merge' : 'ui-merge'),
       remindedAt: '',
       source: mode === 'ai' ? 'ai-merge' : 'merge',
       agent: mergeUniqueStrings(sourceTasks.map((task) => task.agent || '')).join(' / '),
@@ -711,7 +793,13 @@ function App() {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       completedAt: willBeDone ? existing?.completedAt || now : wasDone ? '' : existing?.completedAt || '',
+      origin: existing?.origin ?? createHumanTaskOrigin('ui-form'),
       remindedAt: existing?.remindedAt ?? '',
+      source: existing?.source,
+      agent: existing?.agent,
+      agentSessionId: existing?.agentSessionId,
+      repository: existing?.repository,
+      repositoryPath: existing?.repositoryPath,
     }
   }
 
@@ -796,7 +884,7 @@ function App() {
     setAiState(data.settings.aiEnabled ? '正在解析并添加任务...' : '正在添加任务...')
     try {
       const parsedDrafts = await parseTextToDrafts(trimmed, targetStatus, quickImages)
-      const nextTasks = parsedDrafts.map((parsedDraft) => createTaskFromDraft(parsedDraft, trimmed || '图片中的任务', quickImages))
+      const nextTasks = parsedDrafts.map((parsedDraft) => createTaskFromDraft(parsedDraft, trimmed || '图片中的任务', quickImages, 'ui-quick-add'))
       const saved = await persist({ ...data, tasks: [...nextTasks, ...data.tasks] })
       setData(saved)
       setSelectedTaskId(nextTasks[0]?.id ?? '')

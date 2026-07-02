@@ -9,7 +9,7 @@ import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, c
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
-const appDataVersion = 1
+const appDataVersion = 2
 let mainWindow = null
 let apiServer = null
 let apiPort = null
@@ -35,6 +35,121 @@ const miniWindowHeight = 350
 const miniWindowMinWidth = 300
 const miniWindowMinHeight = 350
 const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const originKinds = new Set(['human', 'agent', 'integration', 'system', 'legacy'])
+const originChannels = new Set(['ui', 'local-api', 'todo-desk-skill', 'import', 'automation'])
+const originConfidences = new Set(['explicit', 'legacy-inferred'])
+const legacyAgentSources = new Set(['codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
+const uiDerivedSources = new Set(['merge', 'ai-merge'])
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== ''))
+}
+
+function normalizeString(value) {
+  return String(value || '').trim()
+}
+
+function humanOrigin(createdVia, confidence = 'explicit') {
+  return {
+    kind: 'human',
+    channel: 'ui',
+    createdVia,
+    confidence,
+  }
+}
+
+function normalizeExplicitOrigin(origin) {
+  if (!origin || typeof origin !== 'object') return null
+  const kind = normalizeString(origin.kind)
+  if (!originKinds.has(kind)) return null
+  const channel = normalizeString(origin.channel)
+  const confidence = normalizeString(origin.confidence)
+  const agent = origin.agent && typeof origin.agent === 'object'
+    ? compactObject({
+        name: normalizeString(origin.agent.name),
+        sessionId: normalizeString(origin.agent.sessionId),
+        tool: normalizeString(origin.agent.tool),
+      })
+    : undefined
+  const repository = origin.repository && typeof origin.repository === 'object'
+    ? compactObject({
+        name: normalizeString(origin.repository.name),
+        path: normalizeString(origin.repository.path),
+        remote: normalizeString(origin.repository.remote),
+        branch: normalizeString(origin.repository.branch),
+      })
+    : undefined
+  const client = origin.client && typeof origin.client === 'object'
+    ? compactObject({
+        name: normalizeString(origin.client.name),
+        version: normalizeString(origin.client.version),
+      })
+    : undefined
+
+  return compactObject({
+    kind,
+    channel: originChannels.has(channel) ? channel : kind === 'human' ? 'ui' : 'local-api',
+    createdVia: normalizeString(origin.createdVia) || 'unknown',
+    confidence: originConfidences.has(confidence) ? confidence : 'explicit',
+    agent: agent?.name ? agent : undefined,
+    repository: Object.keys(repository || {}).length ? repository : undefined,
+    client: client?.name ? client : undefined,
+  })
+}
+
+function inferOriginFromTask(task, confidence = 'legacy-inferred') {
+  const source = normalizeString(task.source).toLowerCase()
+  const agentName = normalizeString(task.agent || task.agentName || (legacyAgentSources.has(source) ? source : ''))
+  const sessionId = normalizeString(task.agentSessionId || task.sessionId || task.session)
+  const repositoryName = normalizeString(task.repository || task.repo)
+  const repositoryPath = normalizeString(task.repositoryPath || task.repoPath)
+
+  if (agentName || sessionId || legacyAgentSources.has(source)) {
+    const agent = compactObject({
+      name: agentName || source || 'unknown',
+      sessionId,
+      tool: agentName || source,
+    })
+    const repository = compactObject({
+      name: repositoryName,
+      path: repositoryPath,
+    })
+    return compactObject({
+      kind: 'agent',
+      channel: confidence === 'explicit' && source === 'todo-desk-skill' ? 'todo-desk-skill' : 'local-api',
+      createdVia: source || 'legacy-api',
+      confidence,
+      agent,
+      repository: Object.keys(repository).length ? repository : undefined,
+    })
+  }
+
+  if (uiDerivedSources.has(source)) {
+    return {
+      kind: 'human',
+      channel: 'ui',
+      createdVia: source,
+      confidence,
+    }
+  }
+
+  if (source) {
+    return {
+      kind: source === 'api' ? 'integration' : 'legacy',
+      channel: 'local-api',
+      createdVia: source,
+      confidence,
+    }
+  }
+
+  return humanOrigin('legacy-ui', confidence)
+}
+
+function normalizeTaskOrigin(task, confidence = 'legacy-inferred') {
+  const explicit = normalizeExplicitOrigin(task.origin)
+  if (explicit) return { ...task, origin: explicit }
+  return { ...task, origin: inferOriginFromTask(task, confidence) }
+}
 
 function getPaths() {
   const userData = app.getPath('userData')
@@ -114,6 +229,7 @@ function getDefaultData() {
         createdAt: now,
         updatedAt: now,
         completedAt: '',
+        origin: humanOrigin('seed-data'),
       },
       {
         id: crypto.randomUUID(),
@@ -129,6 +245,7 @@ function getDefaultData() {
         createdAt: now,
         updatedAt: now,
         completedAt: '',
+        origin: humanOrigin('seed-data'),
       },
     ],
     trash: [],
@@ -168,8 +285,8 @@ async function readData() {
         ...data.settings?.columnSorts,
       },
     },
-    tasks: Array.isArray(data.tasks) ? data.tasks : [],
-    trash: Array.isArray(data.trash) ? data.trash : [],
+    tasks: Array.isArray(data.tasks) ? data.tasks.map((task) => normalizeTaskOrigin(task)) : [],
+    trash: Array.isArray(data.trash) ? data.trash.map((task) => normalizeTaskOrigin(task)) : [],
     syncLog: Array.isArray(data.syncLog) ? data.syncLog : [],
   }
 }
@@ -178,6 +295,8 @@ async function saveData(nextData) {
   const normalized = {
     ...nextData,
     version: appDataVersion,
+    tasks: Array.isArray(nextData.tasks) ? nextData.tasks.map((task) => normalizeTaskOrigin(task)) : [],
+    trash: Array.isArray(nextData.trash) ? nextData.trash.map((task) => normalizeTaskOrigin(task)) : [],
   }
   await ensureStorage()
   await writeJson(getPaths().dataFile, normalized)
@@ -239,6 +358,12 @@ function normalizeExternalTask(input) {
   const now = new Date().toISOString()
   const status = ['doing', 'todo', 'done'].includes(input.status) ? input.status : 'doing'
   const priority = ['low', 'medium', 'high'].includes(input.priority) ? input.priority : 'medium'
+  const explicitOrigin = normalizeExplicitOrigin(input.origin)
+  const source = normalizeString(input.source || 'api')
+  const agent = normalizeString(input.agent || input.agentName || explicitOrigin?.agent?.name)
+  const agentSessionId = normalizeString(input.agentSessionId || input.sessionId || input.session || explicitOrigin?.agent?.sessionId)
+  const repository = normalizeString(input.repository || input.repo || explicitOrigin?.repository?.name)
+  const repositoryPath = normalizeString(input.repositoryPath || input.repoPath || explicitOrigin?.repository?.path)
   const tags = Array.isArray(input.tags)
     ? input.tags.map((tag) => String(tag).trim()).filter(Boolean)
     : typeof input.tags === 'string'
@@ -266,7 +391,7 @@ function normalizeExternalTask(input) {
     })
     .filter(Boolean)
 
-  return {
+  const task = {
     id: crypto.randomUUID(),
     title: String(input.title || input.summary || 'AI 当前工作').trim(),
     detail: String(input.detail || input.description || '').trim(),
@@ -280,12 +405,13 @@ function normalizeExternalTask(input) {
     createdAt: now,
     updatedAt: now,
     completedAt: status === 'done' ? now : '',
-    source: String(input.source || 'api').trim(),
-    agent: String(input.agent || input.agentName || '').trim(),
-    agentSessionId: String(input.agentSessionId || input.sessionId || input.session || '').trim(),
-    repository: String(input.repository || input.repo || '').trim(),
-    repositoryPath: String(input.repositoryPath || input.repoPath || '').trim(),
+    source,
+    agent,
+    agentSessionId,
+    repository,
+    repositoryPath,
   }
+  return normalizeTaskOrigin({ ...task, origin: explicitOrigin || input.origin }, 'explicit')
 }
 
 function normalizeTaskPatch(input, currentTask) {
@@ -505,9 +631,9 @@ function buildTaskCalendarEvent(task) {
     task.detail,
     task.project ? `项目：${task.project}` : '',
     task.tags?.length ? `标签：${task.tags.map((tag) => `#${tag}`).join(' ')}` : '',
-    task.agent ? `Agent：${task.agent}` : '',
-    task.agentSessionId ? `Session：${task.agentSessionId}` : '',
-    task.repository ? `代码库：${task.repository}` : '',
+    task.agent || task.origin?.agent?.name ? `Agent：${task.agent || task.origin?.agent?.name}` : '',
+    task.agentSessionId || task.origin?.agent?.sessionId ? `Session：${task.agentSessionId || task.origin?.agent?.sessionId}` : '',
+    task.repository || task.origin?.repository?.name ? `代码库：${task.repository || task.origin?.repository?.name}` : '',
   ].filter(Boolean).join('\n')
   const alarmMinutes = task.reminderAt ? 0 : 10
 
@@ -546,8 +672,8 @@ async function openTaskInCalendar(task) {
 }
 
 function buildAgentSessionUrl(task) {
-  const agent = String(task?.agent || task?.source || '').trim().toLowerCase()
-  const sessionId = String(task?.agentSessionId || '').trim()
+  const agent = String(task?.origin?.agent?.name || task?.origin?.agent?.tool || task?.agent || task?.source || '').trim().toLowerCase()
+  const sessionId = String(task?.origin?.agent?.sessionId || task?.agentSessionId || '').trim()
   if (!sessionId) {
     throw new Error('这个任务没有关联 agent session')
   }
@@ -1115,8 +1241,8 @@ ipcMain.handle('agent:open-session', async (_event, task) => {
     await shell.openExternal(url)
     await writeLog('info', 'Opened agent session link', {
       taskId: task?.id,
-      agent: task?.agent || task?.source || '',
-      agentSessionId: task?.agentSessionId || '',
+      agent: task?.origin?.agent?.name || task?.agent || task?.source || '',
+      agentSessionId: task?.origin?.agent?.sessionId || task?.agentSessionId || '',
       url,
     })
     return { ok: true, url }
@@ -1124,8 +1250,8 @@ ipcMain.handle('agent:open-session', async (_event, task) => {
     const message = error instanceof Error ? error.message : '打开 agent session 失败'
     await writeLog('warn', 'Open agent session failed', {
       taskId: task?.id,
-      agent: task?.agent || task?.source || '',
-      agentSessionId: task?.agentSessionId || '',
+      agent: task?.origin?.agent?.name || task?.agent || task?.source || '',
+      agentSessionId: task?.origin?.agent?.sessionId || task?.agentSessionId || '',
       message,
     })
     return { ok: false, message }

@@ -21,6 +21,32 @@ export interface TaskImage {
   url: string
 }
 
+export type TaskOriginKind = 'human' | 'agent' | 'integration' | 'system' | 'legacy'
+export type TaskOriginChannel = 'ui' | 'local-api' | 'todo-desk-skill' | 'import' | 'automation'
+export type TaskOriginConfidence = 'explicit' | 'legacy-inferred'
+
+export interface TaskOrigin {
+  kind: TaskOriginKind
+  channel: TaskOriginChannel
+  createdVia: string
+  confidence: TaskOriginConfidence
+  agent?: {
+    name: string
+    sessionId?: string
+    tool?: string
+  }
+  repository?: {
+    name?: string
+    path?: string
+    remote?: string
+    branch?: string
+  }
+  client?: {
+    name: string
+    version?: string
+  }
+}
+
 export interface Task {
   id: string
   title: string
@@ -35,6 +61,7 @@ export interface Task {
   createdAt: string
   updatedAt: string
   completedAt: string
+  origin: TaskOrigin
   remindedAt?: string
   deletedAt?: string
   source?: string

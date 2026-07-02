@@ -47,6 +47,7 @@ Fields:
 - `due-at` and `reminder-at` accept ISO 8601 timestamps.
 - `source` defaults to the current agent/tool name when supplied by the caller, otherwise `codex`.
 - `agent`, `agent-session-id`, `repository`, and `repository-path` attach work to the current agent run and codebase.
+- The script also sends `origin.kind=agent`, `origin.channel=todo-desk-skill`, and `origin.confidence=explicit`. Todo Desk uses `origin.kind` as the authoritative source classification for UI styling and avoids guessing from metadata fields.
 - `agent-session-id` is required for current-work logging. If the current session id is unavailable, do not create, update, or complete the Todo Desk task; tell the user that logging is blocked instead of inventing or leaving the value empty.
 
 ## Update Work Status

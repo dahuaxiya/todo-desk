@@ -126,13 +126,35 @@ curl -X POST http://127.0.0.1:47731/tasks \
     "agent": "codex",
     "agentSessionId": "019-session-id",
     "repository": "todo-desk",
-    "repositoryPath": "/Users/dxm/Documents/Codex/2026-06-30/todo-todo/work/todo-desk"
+    "repositoryPath": "/Users/dxm/Documents/Codex/2026-06-30/todo-todo/work/todo-desk",
+    "origin": {
+      "kind": "agent",
+      "channel": "todo-desk-skill",
+      "createdVia": "todo-desk-skill/add_work",
+      "confidence": "explicit",
+      "agent": {
+        "name": "codex",
+        "sessionId": "019-session-id",
+        "tool": "codex"
+      },
+      "repository": {
+        "name": "todo-desk",
+        "path": "/Users/dxm/Documents/Codex/2026-06-30/todo-todo/work/todo-desk"
+      }
+    }
   }'
 ```
 
 任务 JSON 可以带 `images` 或 `imagePaths`，值可以是图片路径字符串数组，也可以是 `{ "name": "...", "path": "...", "url": "file://..." }` 对象数组。API 会把这些图片引用保存到任务里，图片文件本身需要调用方保证存在。
 
-agent 相关字段用于把任务挂到某个 AI 和它的会话上：
+`origin` 是任务来源的权威字段，UI 是否使用 agent 蓝紫卡片只看 `origin.kind === "agent"`。建议新调用方显式传：
+
+- `origin.kind`：`human`、`agent`、`integration`、`system` 或 `legacy`。
+- `origin.channel`：`ui`、`local-api`、`todo-desk-skill`、`import` 或 `automation`。
+- `origin.createdVia`：创建入口，例如 `todo-desk-skill/add_work`。
+- `origin.confidence`：新任务传 `explicit`，旧数据迁移会标记为 `legacy-inferred`。
+
+agent 相关旧字段仍保留，用于兼容旧调用方、会话跳转和任务上下文：
 
 - `source`：来源，例如 `codex`、`claude`、`cursor`、`api`。
 - `agent`：处理该任务的 agent 名称。
