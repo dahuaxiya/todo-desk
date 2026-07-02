@@ -59,11 +59,23 @@ function normalizeSortModeForStatus(status: TaskStatus, mode: TaskSortMode) {
 }
 
 const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const agentTaskSources = new Set(['api', 'codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
 
 function canOpenAgentSession(task: Task) {
   const agent = `${task.agent || ''} ${task.source || ''}`.toLowerCase()
   const sessionId = task.agentSessionId?.trim() || ''
   return agent.includes('codex') && codexThreadIdPattern.test(sessionId)
+}
+
+function isAgentCreatedTask(task: Task) {
+  const source = (task.source || '').trim().toLowerCase()
+  return Boolean(
+    task.agent?.trim()
+    || task.agentSessionId?.trim()
+    || task.repository?.trim()
+    || task.repositoryPath?.trim()
+    || agentTaskSources.has(source),
+  )
 }
 
 const appModeOptions: Array<{ value: AppMode; label: string }> = [
@@ -1262,7 +1274,7 @@ function App() {
               {miniTasks.map((task) => (
                 <article
                   key={task.id}
-                  className={`dock-task-item ${task.id === selectedTaskId ? 'selected' : ''} ${multiSelectedTaskIds.includes(task.id) ? 'multi-selected' : ''}`}
+                  className={`dock-task-item ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${task.id === selectedTaskId ? 'selected' : ''} ${multiSelectedTaskIds.includes(task.id) ? 'multi-selected' : ''}`}
                 >
                   <button
                     className="dock-task-head"
@@ -2035,7 +2047,7 @@ function MiniTaskRow({ task, selected, multiSelected, onSelect, onToggleExpand, 
 
   return (
     <article
-      className={`mini-task-row ${selected ? 'expanded' : ''} ${multiSelected ? 'multi-selected' : ''}`}
+      className={`mini-task-row ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${selected ? 'expanded' : ''} ${multiSelected ? 'multi-selected' : ''}`}
       onClick={(event) => onSelect(task.id, event)}
       onDoubleClick={() => onEdit(task)}
     >
@@ -2447,7 +2459,7 @@ function TaskCard({
 
   return (
     <article
-      className={`task-card ${selected ? 'selected' : ''} ${multiSelected ? 'multi-selected' : ''} ${compact ? 'compact' : ''}`}
+      className={`task-card ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${selected ? 'selected' : ''} ${multiSelected ? 'multi-selected' : ''} ${compact ? 'compact' : ''}`}
       draggable
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'move'

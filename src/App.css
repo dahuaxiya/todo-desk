@@ -1743,6 +1743,29 @@ select:focus-visible {
   box-shadow: 0 0 0 1px rgba(224, 173, 30, 0.18);
 }
 
+.mini-task-row.agent-task,
+.task-card.agent-task,
+.dock-task-item.agent-task {
+  border-color: rgba(92, 92, 214, 0.36);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.96), rgba(248, 244, 255, 0.92));
+  box-shadow: inset 3px 0 0 #6567e8;
+}
+
+.mini-task-row.agent-task.expanded,
+.task-card.agent-task.selected,
+.dock-task-item.agent-task.selected {
+  border-color: rgba(92, 92, 214, 0.58);
+  background: linear-gradient(135deg, rgba(233, 242, 255, 0.98), rgba(246, 240, 255, 0.96));
+  box-shadow: inset 3px 0 0 #6567e8, 0 0 0 1px rgba(92, 92, 214, 0.18);
+}
+
+.mini-task-row.agent-task.multi-selected,
+.task-card.agent-task.multi-selected,
+.dock-task-item.agent-task.multi-selected {
+  border-color: #1d6f86;
+  box-shadow: inset 3px 0 0 #6567e8, 0 0 0 2px rgba(29, 111, 134, 0.14);
+}
+
 .dock-merge-bar {
   -webkit-app-region: no-drag;
   grid-row: 1;
