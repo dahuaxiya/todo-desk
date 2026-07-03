@@ -1,134 +1,117 @@
 # Todo Desk
 
-Todo Desk 是一个便笺风格的桌面 Todo 工具，适合把“我正在做什么、下一步要做什么、AI agent 正在处理什么”放在桌面边缘持续可见。它用 Electron 提供桌面窗口、吸边、本地 JSON 存储和飞书 CLI 同步，用 React/Vite 提供跨端 UI。
+Todo Desk 是一个便笺风格的桌面 Todo 工具，用来记录当前正在做的事、待办事项、已完成事项，以及 AI agent 正在处理的工作。
 
-## 界面预览
+它基于 Electron + React/Vite 构建，数据默认保存在本地 JSON 文件中，支持飞书文档同步，并提供本机 API 让 Codex、Claude、Kimi、Cursor 等 agent 创建和更新任务。
+
+## 截图
 
 主界面：
 
-![Todo Desk main UI](docs/images/todo-desk-ui.png)
+![Todo Desk 主界面](docs/images/todo-desk-ui.png)
 
-小卡 / 贴边形态：
+小卡 / 贴边模式：
 
-![Todo Desk mini mode](docs/images/todo-desk-mini-prototype.png)
+![Todo Desk 小卡模式](docs/images/todo-desk-mini-prototype.png)
 
-近期 UI 方案和细节参考：
+## 功能
 
-| 桌面工作台 | 小卡插件 | AI 收件箱 | 贴边便笺 |
-| --- | --- | --- | --- |
-| ![Desktop workbench](docs/images/prototypes/todo-desk-ui-option-b-pro-kanban.png) | ![Mini widget](docs/images/prototypes/todo-desk-ui-option-d-mini-widget.png) | ![AI inbox](docs/images/prototypes/todo-desk-ui-option-c-ai-inbox.png) | ![Edge notes](docs/images/prototypes/todo-desk-ui-option-a-edge-notes.png) |
-
-## 能做什么
-
-任务管理：
-
-- 当前工作 / Todo / 已完成三段看板，任务可以在不同状态间移动。
-- 正常模式、小卡模式和左右贴边模式，适合长时间放在桌面旁边。
-- 勾选完成、查看已完成、回收站恢复或永久删除。
-- 支持模糊搜索标题、详情、标签、项目和日期。
-- 支持截止时间、提醒时间、项目/分组、标签、优先级和附加图片。
-
-AI 辅助：
-
-- 添加任务时可以用自然语言一次输入多件事，AI 会拆分并补齐状态、时间、项目、标签和优先级。
-- 支持粘贴截图或选择图片；模型支持视觉时优先走视觉理解，不支持时退回本机 OCR。
-- 多选任务后可用普通合并或 AI 合并。
-- 本机 `127.0.0.1` API 允许 Codex、Claude、Kimi、Cursor 等 agent 把当前工作写入 Todo Desk。
-
-同步和恢复：
-
-- 数据默认保存为本地 JSON，适合备份和迁移。
-- 勾选完成时可自动追加同步到飞书文档。
-- 到点 macOS 桌面提醒；有提醒/截止时间的任务可以生成系统日历事件。
-- 浏览器降级模式使用 `localStorage`，方便后续扩展 PWA/移动端。
+- 当前工作、Todo、已完成三段任务视图。
+- 正常窗口、小卡模式、置顶、左右贴边。
+- 任务标题、详情、优先级、项目/分组、标签、截止时间、提醒时间。
+- 添加任务时支持粘贴剪贴板图片，也可以选择本地图片。
+- 已完成记录保留，删除任务进入回收站。
+- 支持按标题、详情、标签、项目和日期模糊搜索。
+- 本地 JSON 存储，方便备份和迁移。
+- 勾选完成后可同步到飞书文档。
+- macOS 本地提醒和 `.ics` 日历事件导出。
+- AI 解析任务文本、图片和时间信息。
+- 本机 `127.0.0.1` API，支持 agent/session/repository 元数据。
 
 ## 快速开始
-
-启动桌面开发版：
 
 ```bash
 npm install
 npm run dev
 ```
 
-只看 Web UI：
+只启动 Web UI：
 
 ```bash
 npm run web:dev
 ```
 
-配置 AI agent 自动接入：
+构建：
 
 ```bash
-npm run agent:install -- --dry-run
-npm run agent:install
+npm run build
 ```
 
-`--dry-run` 只展示将写入哪些全局配置；正式安装前应该由用户确认。完整说明见 [Agent 自动接入](#agent-自动接入)。
-
-## 常用命令
-
-```bash
-npm run dev       # 启动 Electron 桌面开发版
-npm run web:dev   # 只启动 Web UI
-npm run build     # 构建前端产物
-npm run test:ai   # 检查 AI 和图片解析链路
-```
-
-## 打包
-
-生成 macOS 可运行 `.app` 目录包：
+打包 macOS `.app` 目录：
 
 ```bash
 npm run build
 npx electron-builder --mac --dir
 ```
 
-当前产物路径：
+## 常用命令
 
-```text
-/Users/dxm/Documents/Codex/2026-06-30/todo-todo/outputs/todo-desk-release/mac-arm64/Todo Desk.app
+```bash
+npm run dev             # 启动 Vite 和 Electron
+npm run web:dev         # 只启动 Web UI
+npm run build           # 类型检查并构建前端产物
+npm run dist            # 构建并调用 electron-builder
+npm run lint            # 运行 oxlint
+npm run test:ai         # 检查 AI 解析和图片/OCR 流程
+npm run agent:install   # 安装 Todo Desk agent 接入配置
 ```
 
-`npm run dist` 会尝试生成 DMG/zip。当前机器没有有效 Apple Developer ID，签名会跳过；这不影响 `--dir` 生成的 `.app` 在本机打开，但正式分发给别人前需要补签名和公证。
+## 数据存储
 
-## 原生构建
-
-可以改成原生构建，但需要先选目标：
-
-- 只追求 macOS 体验：用 SwiftUI + AppKit 重写窗口、吸边、菜单和通知，继续复用现在的 JSON 数据结构、飞书 CLI 调用和 AI 解析逻辑。这条路桌面体验最好，但不跨端。
-- 想减少 Electron 套壳又保留跨端：迁到 Tauri，React UI 大部分可以复用，后端改成 Rust/WebView 能减体积，也比完全重写稳。
-- 想移动端也一起做：Flutter 或 React Native 可行，但要重做桌面窗口细节，投入最大。
-
-当前版本还是 Electron。短期如果要摆脱笨重套壳，我更建议先做 Tauri 迁移；如果只要 Mac 端便笺体验，才值得直接做 SwiftUI 版。
-
-## 数据位置
-
-macOS 下 Electron 数据默认在：
+macOS 下默认数据目录：
 
 ```text
-~/Library/Application Support/todo-desk/todo-desk-data.json
-~/Library/Application Support/todo-desk/attachments/
+~/Library/Application Support/todo-desk/
 ```
 
-数据文件是普通 JSON，适合备份和迁移。
+主要内容：
 
-主要字段：
+- `todo-desk-data.json`：任务、回收站、同步记录、设置和窗口状态。
+- `attachments/`：任务图片附件。
 
-- `tasks`：正常看板里的任务。
-- `trash`：删除过的任务，额外带 `deletedAt`，恢复时会回到 `tasks`。
-- `syncLog`：飞书同步记录。
-- `settings`：窗口、AI、本机 API 和飞书配置。
+数据文件是普通 JSON，可以手动备份或迁移。
 
-## 本机 AI 写入接口
+## AI 解析
 
-Todo Desk 启动后默认监听：
+在应用设置中打开 AI 解析，并配置兼容 OpenAI Chat Completions 的接口：
+
+- Base URL
+- Model
+- API Key，如果服务需要
+
+添加任务时，可以直接输入自然语言。Todo Desk 会尽量解析标题、详情、状态、优先级、项目、标签、截止时间和提醒时间。
+
+如果任务带图片，桌面端会优先使用模型视觉能力；如果模型或网关不支持图片输入，会退回本机 OCR，再把识别文字交给同一套解析流程。
+
+## 飞书同步
+
+飞书同步依赖本机 `lark-cli`。
+
+先确认已登录：
+
+```bash
+lark-cli auth status
+```
+
+然后在 Todo Desk 设置中填写飞书文档 URL 或 token。开启“完成后同步”后，勾选任务完成会向文档追加一段 Markdown 快照。
+
+## 本机 API
+
+应用启动后默认监听：
 
 ```text
 http://127.0.0.1:47731
 ```
-
-接口只接受本机回环地址请求。可以在 App 右上角齿轮的“后台设置”里关闭接口或修改端口。
 
 健康检查：
 
@@ -136,203 +119,82 @@ http://127.0.0.1:47731
 curl http://127.0.0.1:47731/health
 ```
 
-添加一条当前工作：
+创建任务：
 
 ```bash
 curl -X POST http://127.0.0.1:47731/tasks \
   -H 'Content-Type: application/json' \
   -d '{
-    "title": "Codex 正在处理 Todo Desk",
-    "detail": "记录当前 AI 工作内容和下一步动作",
+    "title": "检查发布说明",
+    "detail": "发布前确认待合并改动",
     "status": "doing",
     "priority": "medium",
-    "project": "AI 工作",
-    "tags": "codex todo-desk",
-    "source": "codex",
-    "agent": "codex",
-    "agentSessionId": "019-session-id",
-    "repository": "todo-desk",
-    "repositoryPath": "/Users/dxm/Documents/Codex/2026-06-30/todo-todo/work/todo-desk",
+    "project": "Todo Desk",
+    "tags": "codex release",
     "origin": {
       "kind": "agent",
-      "channel": "todo-desk-skill",
-      "createdVia": "todo-desk-skill/add_work",
-      "confidence": "explicit",
-      "agent": {
-        "name": "codex",
-        "sessionId": "019-session-id",
-        "tool": "codex"
-      },
-      "repository": {
-        "name": "todo-desk",
-        "path": "/Users/dxm/Documents/Codex/2026-06-30/todo-todo/work/todo-desk"
-      }
+      "channel": "local-api",
+      "confidence": "explicit"
     }
   }'
 ```
 
-任务 JSON 可以带 `images` 或 `imagePaths`，值可以是图片路径字符串数组，也可以是 `{ "name": "...", "path": "...", "url": "file://..." }` 对象数组。API 会把这些图片引用保存到任务里，图片文件本身需要调用方保证存在。
-
-`origin` 是任务来源的权威字段，UI 是否使用 agent 蓝紫卡片只看 `origin.kind === "agent"`。建议新调用方显式传：
-
-- `origin.kind`：`human`、`agent`、`integration`、`system` 或 `legacy`。
-- `origin.channel`：`ui`、`local-api`、`todo-desk-skill`、`import` 或 `automation`。
-- `origin.createdVia`：创建入口，例如 `todo-desk-skill/add_work`。
-- `origin.confidence`：新任务传 `explicit`，旧数据迁移会标记为 `legacy-inferred`。
-
-agent 相关旧字段仍保留，用于兼容旧调用方、会话跳转和任务上下文：
-
-- `source`：来源，例如 `codex`、`claude`、`cursor`、`api`。
-- `agent`：处理该任务的 agent 名称。
-- `agentSessionId`：agent 的会话、线程或 run id。
-- `repository`：代码库短名，适合做任务 tag 或筛选。
-- `repositoryPath`：本地代码库路径。
-
-更新任务状态或补充处理记录：
-
-```bash
-curl -X PATCH http://127.0.0.1:47731/tasks/<task-id> \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "status": "doing",
-    "agent": "codex",
-    "agentSessionId": "019-session-id",
-    "repository": "todo-desk",
-    "appendDetail": "Codex 已开始处理 AI 合并反馈问题"
-  }'
-```
-
-完成时：
+更新任务：
 
 ```bash
 curl -X PATCH http://127.0.0.1:47731/tasks/<task-id> \
   -H 'Content-Type: application/json' \
   -d '{
     "status": "done",
-    "appendDetail": "已完成实现并通过本地验证"
+    "appendDetail": "已完成本地验证"
   }'
 ```
 
-批量添加多条工作：
+`origin.kind` 是任务来源的权威字段。agent 创建的任务应使用 `origin.kind = "agent"`，并尽量带上 agent、session id、repository 和 repository path。
+
+## Agent 接入
+
+仓库内提供了 Todo Desk skill 和自动安装脚本，可以把工作挂载规则写入常见 AI coding agent 的全局配置。
+
+先预览会写哪些文件：
 
 ```bash
-curl -X POST http://127.0.0.1:47731/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "tasks": [
-      {
-        "title": "整理飞书同步测试用例",
-        "status": "todo",
-        "priority": "medium",
-        "project": "QA",
-        "tags": "feishu test"
-      },
-      {
-        "title": "确认 App icon",
-        "status": "done",
-        "priority": "low",
-        "project": "Todo Desk",
-        "tags": "icon"
-      }
-    ]
-  }'
-```
-
-也可以直接用配套 skill 脚本：
-
-```bash
-python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
-  --title "当前 AI 工作" \
-  --detail "正在处理某个需求" \
-  --status doing \
-  --priority medium \
-  --project "AI 工作" \
-  --tags codex,todo \
-  --agent codex \
-  --agent-session-id "019-session-id" \
-  --repository "todo-desk" \
-  --repository-path "/path/to/todo-desk" \
-  --due-at "2026-07-01T18:00:00+08:00" \
-  --reminder-at "2026-07-01T17:30:00+08:00"
-```
-
-## Agent 自动接入
-
-从 GitHub 拉下仓库后，agent 可以按下面的顺序准备接入，但是否正式写入全局配置由 agent 的主人决定：
-
-```bash
-npm install
 npm run agent:install -- --dry-run
+```
+
+确认后再正式安装：
+
+```bash
 npm run agent:install
 ```
 
-`--dry-run` 只展示会写哪些文件，不会改用户环境。主人确认后再执行正式安装；如果 Todo Desk app 暂时没启动，可以加 `--skip-api-check` 先安装规则和 skill：
-
-```bash
-npm run agent:install -- --skip-api-check
-```
-
-脚本会把仓库内 `skills/todo-desk` 同步到 Codex、Claude、Kimi、Cursor 和通用 `~/.agents` skill 目录，并在各 agent 的全局指令/规则里写入 Todo Desk 工作挂载规则。写入是幂等的，使用 `todo-desk-agent-bootstrap` marker 管理，重复运行只会更新同一段内容。
-
-会写入的位置：
-
-- `~/.agents/skills/todo-desk` 和 `~/.agents/AGENTS.md`
-- `~/.codex/skills/todo-desk` 和 `~/.codex/AGENTS.md`
-- `~/.claude/skills/todo-desk` 和 `~/.claude/CLAUDE.md`
-- `~/.kimi/extra-skills/todo-desk`、`~/.kimi-code/config.toml` 和 `~/.kimi-code/AGENTS.md`
-- `~/.cursor/skills-cursor/todo-desk` 和 `~/.cursor/rules/todo-desk.mdc`
-
-如果只想配置部分工具，可以指定 targets：
+只安装部分 agent：
 
 ```bash
 npm run agent:install -- --targets codex,claude
 ```
 
-完整步骤、主人确认话术、验证命令和不配置时的处理方式见 [docs/agent-bootstrap.md](docs/agent-bootstrap.md)。
+支持的配置目标：
 
-## AI 元数据识别
+- `~/.agents`
+- `~/.codex`
+- `~/.claude`
+- `~/.kimi-code`
+- `~/.cursor`
 
-在右上角齿轮里打开“添加任务时启用 AI 解析”，填写兼容 OpenAI Chat Completions 的 `Base URL`、`Model` 和可选 `API Key`。文本添加模式下可以输入一句话，也可以一次输入多件事，例如“今天修 release；明天下午 3 点提醒我整理周报；已经完成 App icon”，应用会让模型返回结构化 JSON，并自动创建多条任务，填充标题、详情、状态、优先级、项目、标签、截止时间和提醒时间。
+完整说明见 [docs/agent-bootstrap.md](docs/agent-bootstrap.md)。
 
-附加图片后可以不输入文字。可以点“附加图片”选择文件，也可以在添加任务输入区域直接 `⌘V` 粘贴截图，或点“粘贴图片”读取当前剪贴板图片。桌面端会把图片作为 Chat Completions `image_url` 内容发送给模型；如果模型或网关返回不支持图片、多模态或 `image_url`，应用会调用本机 `tesseract` 做 OCR，再把识别出的文字交给同一个任务解析流程。OCR 只是后备能力，中文截图最好使用支持视觉的模型，或者给 Tesseract 安装中文语言数据。应用会自动优先选择本机存在的 `chi_sim`、`chi_tra`、`eng`，没有中文语言包时会退回 `eng`。
+## 项目结构
 
-这部分只在本机 Electron 进程里发起请求，配置保存在本地 JSON 文件中；浏览器降级模式不会调用 AI。
-
-多选任务后可以使用“AI 合并”。合并时会显示“AI 合并中”，请求超过 45 秒会返回明确失败提示；如果 Base URL 没带 `/v1` 且网关需要 `/v1/chat/completions`，应用会自动尝试 fallback。模型返回 `{"title":"","detail":""}`、Markdown fenced JSON、或 `description` 字段时都能解析，合并成功后会创建新任务，原任务进入回收箱。
-
-可以用下面的命令检查当前 AI 和图片解析链路：
-
-```bash
-npm run test:ai
+```text
+electron/                 Electron 主进程和 preload
+src/                      React 应用
+scripts/                  工具脚本和 agent 接入安装脚本
+skills/todo-desk/         Todo Desk agent skill
+docs/                     文档和截图
 ```
 
-## 提醒和手机同步
+## 说明
 
-当前已落地两种提醒能力：
-
-- macOS 桌面提醒：设置里打开“到点弹出 macOS 提醒”，任务到 `reminderAt` 后会弹系统通知，并写入 `remindedAt` 避免重复提醒。Electron 官方 Notification 文档说明 macOS 通知底层使用 Apple `UNNotification`，正式分发时应做代码签名；未签名本机包在某些系统设置下通知可能不稳定。参考：[Electron Notifications](https://electronjs.org/docs/latest/tutorial/notifications)、[Electron Notification API](https://electronjs.org/docs/latest/api/notification)。
-- 系统日历提醒：任务有 `reminderAt` 或 `dueAt` 时，展开任务卡后会出现“日历”按钮。点击后应用会生成 `.ics` 文件并交给系统日历打开。这个方式不绑定品牌，macOS Calendar、Google Calendar、飞书日历或其他能导入 `.ics` 的日历都可以接住；只要手机也同步同一个日历账号，就能在手机上收到提醒。
-
-移动端/手机提醒的可行路径：
-
-- Android 原生 App：可以用 Android Calendar Provider 写入系统日历事件和提醒。Android 官方文档说明 Calendar Provider 支持对 calendars、events、attendees、reminders 做 query/insert/update/delete，适合把 Todo Desk 的 `dueAt/reminderAt` 同步成手机日历提醒。参考：[Android Calendar Provider](https://developer.android.com/identity/providers/calendar-provider)。
-- 云日历：后续可以接 Google Calendar API 或飞书日历 API，桌面端把任务同步到云日历，手机通过系统日历 App 接收提醒。这条跨品牌最好，但需要 OAuth/云账号授权。
-- vivo 手机厂商推送：不能由当前 Electron 桌面 App 直接推到 vivo 手机。vivo 官方消息推送面向移动应用/服务端推送链路，官方文档中心提到服务端 SDK 和 HTTP API；第三方厂商通道文档也要求先在 vivo 开放平台申请推送服务，拿到 AppID/AppKey/AppSecret，再把 vivo Push SDK 接入 Android App。也就是说，要做 vivo 原生提醒，需要新增 Android 客户端或接入已有移动端。参考：[vivo 消息推送](https://developers.vivo.com/product/d/messagePush)、[vivo 文档中心](https://developers.vivo.com/doc/d/6b683b474cf64fdab1a0738035c8868e)、[vivo 通道接入准备](https://help.aliyun.com/en/document_detail/434679.html)。
-
-短期已经实现的是 macOS 本地通知和 `.ics` 日历导入；如果要真正的手机自动同步，下一步更建议先做云日历同步，再考虑 vivo Push。
-
-## 飞书同步
-
-先确认本机 `lark-cli` 已登录可用：
-
-```bash
-lark-cli auth status
-```
-
-在应用里填入飞书文档 URL 或 token，保持“完成后同步”开启。勾选完成任务后，应用会追加一段 Markdown 到飞书文档，内容包括：
-
-- 当前正在做
-- 未完成 Todo
-- 已完成
-
-当前同步是“应用到飞书文档”的备份/快照，不从飞书文档反向恢复结构化数据。如果后续要做真正双向云同步，建议改用飞书多维表格或云空间 JSON 文件。
+- 浏览器降级模式使用 `localStorage`，不包含原生文件存储、系统通知、本机 OCR 等桌面能力。
+- 正式分发 macOS 应用前，需要补齐签名和公证流程。
