@@ -1,42 +1,50 @@
 # Todo Desk
 
-一个便笺风格的桌面 Todo 工具。它用 Electron 提供桌面窗口、吸边、本地 JSON 存储和飞书 CLI 同步，用 React/Vite 提供跨端 UI。
+Todo Desk 是一个便笺风格的桌面 Todo 工具，适合把“我正在做什么、下一步要做什么、AI agent 正在处理什么”放在桌面边缘持续可见。它用 Electron 提供桌面窗口、吸边、本地 JSON 存储和飞书 CLI 同步，用 React/Vite 提供跨端 UI。
 
-![Todo Desk UI](docs/images/todo-desk-ui.png)
+## 界面预览
 
-小卡独立界面原型：
+主界面：
 
-![Todo Desk Mini Prototype](docs/images/todo-desk-mini-prototype.png)
+![Todo Desk main UI](docs/images/todo-desk-ui.png)
 
-本轮 UI 修改建议稿：
+小卡 / 贴边形态：
 
-![Todo Desk UI Suggestions](docs/images/todo-desk-ui-suggestions.png)
+![Todo Desk mini mode](docs/images/todo-desk-mini-prototype.png)
 
-## 已实现
+近期 UI 方案和细节参考：
 
-- 当前工作 / Todo / 已完成三段看板
-- 任务卡片可在“正在做 / Todo / 已完成”之间拖拽移动
-- 正常模式和小卡模式切换；小卡模式只展示一个指定列表
-- 拖到左右屏幕边缘后进入贴边长条状态，减少遮挡
-- 添加任务支持“只填文本”和“详细表单”两种模式；文本模式可一次输入多件事并拆成多条任务
-- 可配置 AI Base URL / Model / API Key，添加任务时自动识别多任务、图片内容、时间、优先级、项目和标签
-- 每个任务卡片都会显示时间，优先展示完成、截止、提醒时间，否则展示创建时间
-- 左侧勾选完成，完成时可自动同步飞书
-- 已完成事项永久保留，按完成时间倒序展示
-- 删除任务先进入独立回收箱，可恢复或永久删除
-- 模糊搜索标题、详情、标签、项目和日期
-- 本地 JSON 数据恢复，数据文件可从界面按钮直接定位
-- 飞书文档 URL/token 配置，调用 `lark-cli docs +update --mode append`
-- 截止时间、提醒时间、项目/分组、标签、优先级
-- 到点 macOS 桌面提醒，可在设置里关闭；带提醒/截止时间的任务可以一键生成系统日历事件
-- 附加图片，桌面端会复制到应用数据目录；支持从文件选择或剪贴板粘贴截图；AI 会优先使用模型视觉能力，不支持图片时退回本机 OCR
-- 置顶和靠近屏幕边缘自动吸边
-- 本机 `127.0.0.1` API，方便 Codex/Claude/Cursor 等 AI 把当前工作写入 Todo Desk，也支持 agent/session/repo 元数据和状态更新
-- 配套 Codex skill：`/Users/dxm/.codex/skills/todo-desk`
-- 拉库后一键配置 Codex / Claude / Kimi / Cursor 等 agent 使用 Todo Desk：`npm run agent:install`
-- 浏览器降级模式：没有 Electron 时用 `localStorage`，方便后续扩展 PWA/移动端
+| 桌面工作台 | 小卡插件 | AI 收件箱 | 贴边便笺 |
+| --- | --- | --- | --- |
+| ![Desktop workbench](docs/images/prototypes/todo-desk-ui-option-b-pro-kanban.png) | ![Mini widget](docs/images/prototypes/todo-desk-ui-option-d-mini-widget.png) | ![AI inbox](docs/images/prototypes/todo-desk-ui-option-c-ai-inbox.png) | ![Edge notes](docs/images/prototypes/todo-desk-ui-option-a-edge-notes.png) |
 
-## 本地运行
+## 能做什么
+
+任务管理：
+
+- 当前工作 / Todo / 已完成三段看板，任务可以在不同状态间移动。
+- 正常模式、小卡模式和左右贴边模式，适合长时间放在桌面旁边。
+- 勾选完成、查看已完成、回收站恢复或永久删除。
+- 支持模糊搜索标题、详情、标签、项目和日期。
+- 支持截止时间、提醒时间、项目/分组、标签、优先级和附加图片。
+
+AI 辅助：
+
+- 添加任务时可以用自然语言一次输入多件事，AI 会拆分并补齐状态、时间、项目、标签和优先级。
+- 支持粘贴截图或选择图片；模型支持视觉时优先走视觉理解，不支持时退回本机 OCR。
+- 多选任务后可用普通合并或 AI 合并。
+- 本机 `127.0.0.1` API 允许 Codex、Claude、Kimi、Cursor 等 agent 把当前工作写入 Todo Desk。
+
+同步和恢复：
+
+- 数据默认保存为本地 JSON，适合备份和迁移。
+- 勾选完成时可自动追加同步到飞书文档。
+- 到点 macOS 桌面提醒；有提醒/截止时间的任务可以生成系统日历事件。
+- 浏览器降级模式使用 `localStorage`，方便后续扩展 PWA/移动端。
+
+## 快速开始
+
+启动桌面开发版：
 
 ```bash
 npm install
@@ -47,6 +55,24 @@ npm run dev
 
 ```bash
 npm run web:dev
+```
+
+配置 AI agent 自动接入：
+
+```bash
+npm run agent:install -- --dry-run
+npm run agent:install
+```
+
+`--dry-run` 只展示将写入哪些全局配置；正式安装前应该由用户确认。完整说明见 [Agent 自动接入](#agent-自动接入)。
+
+## 常用命令
+
+```bash
+npm run dev       # 启动 Electron 桌面开发版
+npm run web:dev   # 只启动 Web UI
+npm run build     # 构建前端产物
+npm run test:ai   # 检查 AI 和图片解析链路
 ```
 
 ## 打包
@@ -232,7 +258,7 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
 
 ## Agent 自动接入
 
-从 GitHub 拉下仓库后，先启动 Todo Desk，再运行：
+从 GitHub 拉下仓库后，agent 可以按下面的顺序准备接入，但是否正式写入全局配置由 agent 的主人决定：
 
 ```bash
 npm install
@@ -240,9 +266,29 @@ npm run agent:install -- --dry-run
 npm run agent:install
 ```
 
+`--dry-run` 只展示会写哪些文件，不会改用户环境。主人确认后再执行正式安装；如果 Todo Desk app 暂时没启动，可以加 `--skip-api-check` 先安装规则和 skill：
+
+```bash
+npm run agent:install -- --skip-api-check
+```
+
 脚本会把仓库内 `skills/todo-desk` 同步到 Codex、Claude、Kimi、Cursor 和通用 `~/.agents` skill 目录，并在各 agent 的全局指令/规则里写入 Todo Desk 工作挂载规则。写入是幂等的，使用 `todo-desk-agent-bootstrap` marker 管理，重复运行只会更新同一段内容。
 
-详细设计见 [docs/agent-bootstrap.md](docs/agent-bootstrap.md)。
+会写入的位置：
+
+- `~/.agents/skills/todo-desk` 和 `~/.agents/AGENTS.md`
+- `~/.codex/skills/todo-desk` 和 `~/.codex/AGENTS.md`
+- `~/.claude/skills/todo-desk` 和 `~/.claude/CLAUDE.md`
+- `~/.kimi/extra-skills/todo-desk`、`~/.kimi-code/config.toml` 和 `~/.kimi-code/AGENTS.md`
+- `~/.cursor/skills-cursor/todo-desk` 和 `~/.cursor/rules/todo-desk.mdc`
+
+如果只想配置部分工具，可以指定 targets：
+
+```bash
+npm run agent:install -- --targets codex,claude
+```
+
+完整步骤、主人确认话术、验证命令和不配置时的处理方式见 [docs/agent-bootstrap.md](docs/agent-bootstrap.md)。
 
 ## AI 元数据识别
 
