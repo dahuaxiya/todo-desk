@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('todoDesk', {
   restoreDock: () => ipcRenderer.invoke('dock:restore'),
   dockToEdge: (edge) => ipcRenderer.invoke('dock:to-edge', edge),
   setDockDetailOpen: (open) => ipcRenderer.invoke('dock:detail-open', open),
+  setDockPassthrough: (enabled) => ipcRenderer.invoke('dock:set-passthrough', enabled),
   applyWindowMode: (mode) => ipcRenderer.invoke('window:apply-mode', mode),
   parseTask: (payload) => ipcRenderer.invoke('ai:parse-task', payload),
   mergeTasks: (payload) => ipcRenderer.invoke('ai:merge-tasks', payload),

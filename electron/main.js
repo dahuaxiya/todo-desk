@@ -21,17 +21,22 @@ let keepOnTopBeforeDock = false
 let currentAppMode = 'normal'
 let suppressMoveHandlingUntil = 0
 let dockDragStartBounds = null
+let dockPassthrough = false
+let dockTransitioning = false
 
 const dockCollapsedWidth = 152
 const dockDetailWidth = 260
 const dockDetailGap = 12
 const dockExpandedWidth = dockCollapsedWidth + dockDetailGap + dockDetailWidth
 const dockDetachThreshold = 96
+const dockTransitionFadeOutMs = 90
+const dockTransitionFadeInMs = 140
+const dockTransitionHiddenOpacity = 0.08
 const normalWindowBackground = '#f7f2e8'
-const dockWindowBackground = '#f8edcf'
+const transparentWindowBackground = '#00000000'
 const aiRequestTimeoutMs = 45_000
 const miniWindowWidth = 300
-const miniWindowHeight = 350
+const miniWindowHeight = 420
 const miniWindowMinWidth = 300
 const miniWindowMinHeight = 350
 const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -861,12 +866,20 @@ function setDockState(docked, edge = '') {
   currentDockEdge = docked ? edge : ''
   if (!docked) {
     dockDragStartBounds = null
+    setDockPassthrough(false)
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setBackgroundColor(docked ? dockWindowBackground : normalWindowBackground)
+    mainWindow.setBackgroundColor(docked ? transparentWindowBackground : normalWindowBackground)
+    mainWindow.setHasShadow?.(!docked)
     updateWindowButtonVisibility(mainWindow)
     mainWindow.webContents.send('dock:changed', { docked, edge })
   }
+}
+
+function setDockPassthrough(enabled) {
+  if (!mainWindow || mainWindow.isDestroyed() || dockPassthrough === enabled) return
+  dockPassthrough = enabled
+  mainWindow.setIgnoreMouseEvents(Boolean(enabled), enabled ? { forward: true } : undefined)
 }
 
 function updateWindowButtonVisibility(window) {
@@ -888,6 +901,37 @@ function setWindowBounds(window, bounds, animate = true) {
   window.setBounds(bounds, animate)
 }
 
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function easeOutCubic(progress) {
+  return 1 - ((1 - progress) ** 3)
+}
+
+function setWindowOpacity(window, opacity) {
+  if (!window || window.isDestroyed()) return
+  window.setOpacity?.(Math.min(1, Math.max(0, opacity)))
+}
+
+async function fadeWindowOpacity(window, from, to, durationMs) {
+  if (!window || window.isDestroyed() || durationMs <= 0) {
+    setWindowOpacity(window, to)
+    return
+  }
+
+  const startedAt = Date.now()
+  while (!window.isDestroyed()) {
+    const progress = Math.min(1, (Date.now() - startedAt) / durationMs)
+    const eased = easeOutCubic(progress)
+    setWindowOpacity(window, from + ((to - from) * eased))
+    if (progress >= 1) return
+    await wait(16)
+  }
+}
+
 function clampBoundsToWorkArea(bounds, area) {
   const width = Math.min(bounds.width, area.width)
   const height = Math.min(bounds.height, area.height)
@@ -900,21 +944,37 @@ function clampBoundsToWorkArea(bounds, area) {
   }
 }
 
-function dockWindowToEdge(window, edge, area) {
-  if (!window || window.isDestroyed() || isDocked) return
+async function dockWindowToEdge(window, edge, area) {
+  if (!window || window.isDestroyed() || isDocked || dockTransitioning) return
+  dockTransitioning = true
   lastNormalBounds = window.getBounds()
   keepOnTopBeforeDock = window.isAlwaysOnTop()
-  const width = dockCollapsedWidth
+  const width = Math.min(dockExpandedWidth, area.width)
   const height = Math.min(520, Math.max(360, area.height - 160))
   const y = area.y + Math.round((area.height - height) / 2)
   const x = edge === 'left' ? area.x : area.x + area.width - width
-  window.setMinimumSize(dockCollapsedWidth, 260)
-  window.setBackgroundColor(dockWindowBackground)
-  window.setAlwaysOnTop(true, 'floating')
   const dockedBounds = { x, y, width, height }
-  dockDragStartBounds = dockedBounds
-  setWindowBounds(window, dockedBounds, true)
-  setDockState(true, edge)
+
+  try {
+    setDockPassthrough(false)
+    window.setAlwaysOnTop(true, 'floating')
+    await fadeWindowOpacity(window, 1, dockTransitionHiddenOpacity, dockTransitionFadeOutMs)
+    if (window.isDestroyed()) return
+
+    window.setMinimumSize(width, 260)
+    window.setBackgroundColor(transparentWindowBackground)
+    window.setHasShadow?.(false)
+    dockDragStartBounds = dockedBounds
+    setDockState(true, edge)
+    // The large normal-to-dock resize looks rough with native animation; swap bounds while faded out, then fade in the dock UI.
+    setWindowBounds(window, dockedBounds, false)
+    await wait(24)
+    await fadeWindowOpacity(window, dockTransitionHiddenOpacity, 1, dockTransitionFadeInMs)
+    void writeLog('info', 'Dock transition completed', { edge, bounds: dockedBounds })
+  } finally {
+    setWindowOpacity(window, 1)
+    dockTransitioning = false
+  }
 }
 
 function setDockDetailOpen(open) {
@@ -922,12 +982,12 @@ function setDockDetailOpen(open) {
   const current = mainWindow.getBounds()
   const display = screen.getDisplayMatching(current)
   const area = display.workArea
-  const width = Math.min(open ? dockExpandedWidth : dockCollapsedWidth, area.width)
+  const width = Math.min(dockExpandedWidth, area.width)
   const height = Math.min(current.height, area.height)
   const x = currentDockEdge === 'left' ? area.x : area.x + area.width - width
   const y = Math.min(Math.max(current.y, area.y), area.y + area.height - height)
   const nextBounds = { x, y, width, height }
-  mainWindow.setMinimumSize(dockCollapsedWidth, 260)
+  mainWindow.setMinimumSize(width, 260)
   dockDragStartBounds = nextBounds
   setWindowBounds(mainWindow, nextBounds, false)
   void writeLog('info', 'Dock detail window state changed', { open, edge: currentDockEdge, bounds: nextBounds })
@@ -1059,11 +1119,11 @@ function snapWindowToEdge(window) {
   }
 
   if (Math.abs(bounds.x - area.x) <= threshold) {
-    dockWindowToEdge(window, 'left', area)
+    void dockWindowToEdge(window, 'left', area)
     return
   }
   if (Math.abs(bounds.x + bounds.width - (area.x + area.width)) <= threshold) {
-    dockWindowToEdge(window, 'right', area)
+    void dockWindowToEdge(window, 'right', area)
     return
   }
   if (Math.abs(bounds.y - area.y) <= threshold) {
@@ -1100,7 +1160,8 @@ async function createMainWindow() {
     minWidth: currentAppMode === 'mini' ? miniWindowMinWidth : 760,
     minHeight: currentAppMode === 'mini' ? miniWindowMinHeight : 640,
     title: 'Todo Desk',
-    backgroundColor: normalWindowBackground,
+    transparent: true,
+    backgroundColor: transparentWindowBackground,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     frame: process.platform !== 'darwin',
     alwaysOnTop: Boolean(data.settings.keepOnTop),
@@ -1269,11 +1330,16 @@ ipcMain.handle('dock:to-edge', async (_event, edge) => {
     restoreDockedWindow()
   }
   const display = screen.getDisplayMatching(mainWindow.getBounds())
-  dockWindowToEdge(mainWindow, edge === 'left' ? 'left' : 'right', display.workArea)
+  await dockWindowToEdge(mainWindow, edge === 'left' ? 'left' : 'right', display.workArea)
   return { ok: true }
 })
 
 ipcMain.handle('dock:detail-open', async (_event, open) => setDockDetailOpen(Boolean(open)))
+
+ipcMain.handle('dock:set-passthrough', async (_event, enabled) => {
+  setDockPassthrough(Boolean(enabled) && isDocked)
+  return { ok: true }
+})
 
 ipcMain.handle('window:apply-mode', async (_event, mode) => {
   applyAppModeWindow(mode === 'mini' ? 'mini' : 'normal')

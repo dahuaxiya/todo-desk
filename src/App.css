@@ -8,6 +8,7 @@
   place-items: center;
   gap: 12px;
   color: var(--ink-muted);
+  background: var(--paper);
 }
 
 .loading-mark,
@@ -185,6 +186,17 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
+.app-icon {
+  width: var(--icon-size, 18px);
+  height: var(--icon-size, 18px);
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
+  transform: translate(var(--icon-x, 0), var(--icon-y, 0));
+  pointer-events: none;
+  user-select: none;
+}
+
 .titlebar button,
 .titlebar select,
 .titlebar input,
@@ -207,6 +219,7 @@ select:focus-visible {
 }
 
 .icon-button {
+  --icon-size: 18px;
   width: 40px;
   height: 40px;
   display: grid;
@@ -222,6 +235,7 @@ select:focus-visible {
 }
 
 .search-box {
+  --icon-size: 17px;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
@@ -459,6 +473,7 @@ select:focus-visible {
 }
 
 .mini-titlebar .title-actions {
+  flex-shrink: 0;
   gap: 2px;
   padding: 2px;
   border-radius: 8px;
@@ -466,6 +481,7 @@ select:focus-visible {
 
 .mini-titlebar .ghost-icon-button,
 .mini-titlebar .icon-button {
+  --icon-size: 15px;
   width: 25px;
   height: 25px;
   margin-left: 0;
@@ -473,13 +489,42 @@ select:focus-visible {
   font-size: 12px;
 }
 
+.mini-titlebar .pin-button,
+.mini-titlebar .collapse-all-button {
+  font-size: 13px;
+}
+
 .ghost-icon-button {
+  --icon-size: 18px;
   width: 38px;
   height: 38px;
   display: grid;
   place-items: center;
   color: var(--ink-muted);
   font-weight: 900;
+}
+
+.title-actions .ghost-icon-button,
+.title-actions .icon-button {
+  overflow: hidden;
+}
+
+.title-actions .app-icon-pin-off {
+  --icon-size: 19px;
+  --icon-y: -0.5px;
+}
+
+.title-actions .app-icon-collapse-off,
+.title-actions .app-icon-collapse-on {
+  --icon-size: 17px;
+  --icon-y: 0.5px;
+}
+
+.title-actions .app-icon-trash,
+.title-actions .app-icon-settings,
+.title-actions .app-icon-dock-left,
+.title-actions .app-icon-dock-right {
+  --icon-y: -0.5px;
 }
 
 .pin-button {
@@ -492,6 +537,26 @@ select:focus-visible {
   border-color: #d5a91f;
   background: var(--accent);
   box-shadow: 0 3px 0 rgba(48, 43, 35, 0.12);
+}
+
+.collapse-all-button {
+  color: #524736;
+  border-color: rgba(48, 43, 35, 0.2);
+  background: rgba(255, 246, 225, 0.86);
+  box-shadow: inset 0 -2px 0 rgba(48, 43, 35, 0.08);
+}
+
+.collapse-all-button:not(:disabled):hover {
+  color: #11100d;
+  border-color: rgba(213, 169, 31, 0.58);
+  background: #fff0c2;
+}
+
+.collapse-all-button:disabled {
+  color: rgba(118, 107, 94, 0.48);
+  border-color: rgba(48, 43, 35, 0.1);
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: none;
 }
 
 .danger-button {
@@ -690,6 +755,7 @@ select:focus-visible {
 }
 
 .mini-expand {
+  --icon-size: 14px;
   width: 24px;
   height: 24px;
   padding: 0;
@@ -1058,8 +1124,7 @@ select:focus-visible {
   -webkit-line-clamp: 2;
 }
 
-.task-card.selected:not(.compact) .task-copy strong,
-.task-card.selected:not(.compact) .task-copy small {
+.task-card.selected:not(.compact) .task-copy strong {
   display: block;
   overflow: visible;
   -webkit-line-clamp: initial;
@@ -1189,14 +1254,109 @@ select:focus-visible {
 
 .task-detail-inline {
   display: grid;
-  gap: 10px;
-  padding: 10px;
+  gap: 9px;
+  min-height: 0;
+  padding: 9px 10px 10px;
   border: 1px solid rgba(48, 43, 35, 0.12);
   border-radius: 7px;
   background: rgba(255, 252, 244, 0.74);
 }
 
-.task-detail-inline p {
+.task-detail-text {
+  display: grid;
+  gap: 7px;
+  min-height: 0;
+}
+
+.task-detail-text.is-long {
+  gap: 6px;
+}
+
+.detail-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 1px;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.detail-block-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 0;
+}
+
+.task-detail-text.is-long .detail-block-list {
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 1px 6px 1px 0;
+  scrollbar-color: rgba(48, 43, 35, 0.34) transparent;
+  scrollbar-width: thin;
+}
+
+.task-detail-text.is-long .detail-block-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.task-detail-text.is-long .detail-block-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.task-detail-text.is-long .detail-block-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(48, 43, 35, 0.28);
+}
+
+.detail-card.is-long .detail-block-list {
+  max-height: min(164px, 23vh);
+}
+
+.detail-mini.is-long .detail-block-list {
+  max-height: 98px;
+}
+
+.detail-dock.is-long .detail-block-list {
+  max-height: 156px;
+}
+
+.detail-block {
+  margin: 0;
+  color: var(--ink-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.task-detail-text.is-long .detail-block {
+  color: #675d50;
+}
+
+.task-detail-text.is-long .detail-block + .detail-block {
+  margin-top: 2px;
+}
+
+.detail-card .detail-block {
+  font-size: 12px;
+  line-height: 1.48;
+}
+
+.detail-mini .detail-block {
+  font-size: 10.5px;
+  line-height: 1.38;
+}
+
+.detail-dock .detail-block {
+  font-size: 11.5px;
+  line-height: 1.44;
+}
+
+.task-detail-inline p:not(.detail-block) {
   margin: 0;
   color: var(--ink-muted);
   font-size: 13px;
@@ -1577,13 +1737,19 @@ select:focus-visible {
   min-height: 100vh;
   height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  padding: 14px 14px 18px;
+  grid-template-columns: minmax(0, 260px) minmax(0, 152px);
+  gap: 12px;
+  padding: 0;
   overflow: hidden;
-  border-radius: 24px;
-  background: #f8edcf;
-  box-shadow: 0 18px 36px rgba(17, 16, 13, 0.18);
-  -webkit-app-region: drag;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  /*
+   * The dock window is wider than the visible card so details can pop toward the
+   * screen center. That transparent reserve must not be a drag region, otherwise
+   * dragging another app behind Todo Desk moves the hidden Electron window.
+   */
+  -webkit-app-region: no-drag;
 }
 
 .dock-shell::before {
@@ -1600,23 +1766,28 @@ select:focus-visible {
 }
 
 .dock-right {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 260px) minmax(0, 152px);
 }
 
 .dock-shell.dock-has-popover {
-  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 260px) minmax(0, 152px);
   grid-template-rows: minmax(0, 1fr);
   align-items: start;
   gap: 12px;
 }
 
+.dock-left {
+  grid-template-columns: minmax(0, 152px) minmax(0, 260px);
+}
+
 .dock-left.dock-has-popover {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 260px);
+  grid-template-columns: minmax(0, 152px) minmax(0, 260px);
 }
 
 .dock-card {
-  -webkit-app-region: no-drag;
-  grid-column: 1;
+  /* Dock 卡片默认允许拖动；真正可交互的列表、输入框和按钮在各自规则里退出拖拽区域。 */
+  -webkit-app-region: drag;
+  grid-column: 2;
   grid-row: 1;
   align-self: stretch;
   display: grid;
@@ -1625,11 +1796,19 @@ select:focus-visible {
   max-height: 100%;
   min-height: 0;
   gap: 8px;
+  padding: 14px 14px 18px;
   overflow: hidden;
+  border-radius: 24px;
+  background: #f8edcf;
+  box-shadow: 0 18px 36px rgba(17, 16, 13, 0.18);
 }
 
 .dock-right.dock-has-popover .dock-card {
   grid-column: 2;
+}
+
+.dock-left .dock-card {
+  grid-column: 1;
 }
 
 .dock-left.dock-has-popover .dock-card {
@@ -1644,6 +1823,7 @@ select:focus-visible {
   grid-template-rows: auto minmax(0, 1fr) auto;
   align-self: start;
   gap: 9px;
+  margin: 14px 0 18px;
   height: calc(100vh - 32px);
   max-height: calc(100vh - 32px);
   padding: 12px;
@@ -1666,6 +1846,7 @@ select:focus-visible {
 }
 
 .dock-popover header button {
+  --icon-size: 13px;
   width: 24px;
   height: 24px;
   padding: 0;
@@ -1740,29 +1921,48 @@ select:focus-visible {
 }
 
 .dock-top-actions {
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
   display: grid;
-  grid-template-columns: 1fr 28px;
-  gap: 6px;
+  grid-template-columns: 1fr 30px 30px;
+  align-items: center;
+  gap: 7px;
 }
 
 .dock-restore,
 .dock-collapse {
+  --icon-size: 15px;
   -webkit-app-region: no-drag;
-  min-height: 26px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
   padding: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--ink-muted);
   background: rgba(255, 255, 255, 0.56);
   font-size: 13px;
   font-weight: 900;
+  line-height: 1;
 }
 
-.dock-collapse {
-  width: 28px;
+.dock-restore {
+  justify-self: end;
+}
+
+.dock-restore .app-icon-normal-mode {
+  --icon-size: 16px;
+  --icon-y: -0.5px;
+}
+
+.dock-collapse .app-icon-collapse-off,
+.dock-collapse .app-icon-collapse-on {
+  --icon-size: 14px;
+  --icon-y: 0.5px;
 }
 
 .dock-card h1 {
+  -webkit-app-region: drag;
   margin: 0;
   padding: 7px 4px;
   border-bottom: 1px solid rgba(48, 43, 35, 0.16);

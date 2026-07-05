@@ -1,5 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import addTaskIcon from './assets/icons/add-task.png'
+import chevronDownIcon from './assets/icons/chevron-down.png'
+import chevronUpIcon from './assets/icons/chevron-up.png'
+import closeIcon from './assets/icons/close.png'
+import collapseOffIcon from './assets/icons/collapse-off.png'
+import collapseOnIcon from './assets/icons/collapse-on.png'
+import dockLeftIcon from './assets/icons/dock-left.png'
+import dockRightIcon from './assets/icons/dock-right.png'
+import normalModeIcon from './assets/icons/normal-mode.png'
+import pinOffIcon from './assets/icons/pin-off.png'
+import searchIcon from './assets/icons/search.png'
+import settingsIcon from './assets/icons/settings.png'
+import trashIcon from './assets/icons/trash.png'
 import type { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { AddMode, AppData, AppMode, AppSettings, Task, TaskImage, TaskOrigin, TaskPriority, TaskSortMode, TaskStatus } from './types'
 
@@ -55,6 +68,42 @@ const sortModeGroups: Array<{ title: string; modes: TaskSortMode[] }> = [
   { title: '完成', modes: ['completed-desc', 'completed-asc'] },
 ]
 
+type AppIconName =
+  | 'addTask'
+  | 'pinOff'
+  | 'collapseOff'
+  | 'collapseOn'
+  | 'normalMode'
+  | 'trash'
+  | 'settings'
+  | 'dockLeft'
+  | 'dockRight'
+  | 'search'
+  | 'close'
+  | 'chevronUp'
+  | 'chevronDown'
+
+function AppIcon({ name }: { name: AppIconName }) {
+  const icons: Record<AppIconName, string> = {
+    addTask: addTaskIcon,
+    pinOff: pinOffIcon,
+    collapseOff: collapseOffIcon,
+    collapseOn: collapseOnIcon,
+    normalMode: normalModeIcon,
+    trash: trashIcon,
+    settings: settingsIcon,
+    dockLeft: dockLeftIcon,
+    dockRight: dockRightIcon,
+    search: searchIcon,
+    close: closeIcon,
+    chevronUp: chevronUpIcon,
+    chevronDown: chevronDownIcon,
+  }
+
+  const iconClass = name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
+  return <img className={`app-icon app-icon-${iconClass}`} src={icons[name]} alt="" aria-hidden="true" draggable={false} />
+}
+
 function getSortGroupsForStatus(status: TaskStatus) {
   if (status === 'done') return sortModeGroups
   return sortModeGroups.filter((group) => !group.modes.some((mode) => mode.startsWith('completed-')))
@@ -63,6 +112,77 @@ function getSortGroupsForStatus(status: TaskStatus) {
 function normalizeSortModeForStatus(status: TaskStatus, mode: TaskSortMode) {
   if (status !== 'done' && mode.startsWith('completed-')) return defaultColumnSorts[status]
   return mode
+}
+
+type TaskDetailVariant = 'card' | 'mini' | 'dock'
+
+function splitLongDetailSegment(segment: string) {
+  const trimmed = segment.trim()
+  if (!trimmed) return []
+  const maxChars = 220
+  if (trimmed.length <= maxChars) return [trimmed]
+
+  const sentences = trimmed.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [trimmed]
+  const chunks: string[] = []
+  let current = ''
+
+  for (const sentence of sentences.map((value) => value.trim()).filter(Boolean)) {
+    const parts = sentence.match(new RegExp(`.{1,${maxChars}}`, 'g')) ?? [sentence]
+    for (const part of parts) {
+      if (!current) {
+        current = part
+        continue
+      }
+      if (current.length + part.length > maxChars) {
+        chunks.push(current)
+        current = part
+        continue
+      }
+      current += part
+    }
+  }
+
+  if (current) chunks.push(current)
+  return chunks
+}
+
+function splitTaskDetail(detail: string) {
+  const normalized = detail
+    .trim()
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+
+  if (!normalized) return []
+
+  const explicitLines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean)
+
+  // 保留 agent/skill 写入时已有的段落边界，再只对过长段落按完整句子切开，避免把“当前 / 验证 / 本地”等词硬拆成碎片。
+  return explicitLines.flatMap(splitLongDetailSegment)
+}
+
+function TaskDetailText({ detail, variant }: { detail: string; variant: TaskDetailVariant }) {
+  const blocks = useMemo(() => splitTaskDetail(detail), [detail])
+  if (blocks.length === 0) return null
+
+  const isLong = detail.length > 360 || blocks.length > 2
+
+  return (
+    <section className={`task-detail-text detail-${variant} ${isLong ? 'is-long' : ''}`} aria-label="任务详情正文">
+      {isLong && (
+        <div className="detail-summary-row">
+          <span>任务详情</span>
+          <span>滚动查看全部</span>
+        </div>
+      )}
+      <div className="detail-block-list">
+        {blocks.map((block, index) => (
+          <p className="detail-block" key={`${index}-${block.slice(0, 16)}`}>
+            {block}
+          </p>
+        ))}
+      </div>
+    </section>
+  )
 }
 
 const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -572,6 +692,7 @@ function App() {
   const [draggingTaskId, setDraggingTaskId] = useState('')
   const [dockState, setDockState] = useState({ docked: false, edge: '' })
   const [dockDetailOpen, setDockDetailOpenState] = useState(false)
+  const dockPassthroughRef = useRef(false)
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null)
   const [multiSelectedTaskIds, setMultiSelectedTaskIds] = useState<string[]>([])
   const [openSortColumn, setOpenSortColumn] = useState<TaskStatus | ''>('')
@@ -661,6 +782,12 @@ function App() {
     await window.todoDesk?.setDockDetailOpen?.(true)
   }, [dockDetailOpen, dockState.docked])
 
+  const setDockPassthrough = useCallback((enabled: boolean) => {
+    if (dockPassthroughRef.current === enabled) return
+    dockPassthroughRef.current = enabled
+    void window.todoDesk?.setDockPassthrough?.(enabled)
+  }, [])
+
   const closeDockDetailWindow = useCallback(() => {
     setDockDetailOpenState(false)
     if (dockState.docked) {
@@ -673,6 +800,12 @@ function App() {
       closeDockDetailWindow()
     }
   }, [closeDockDetailWindow, dockDetailOpen, selectedDockTaskId])
+
+  useEffect(() => {
+    if (!dockState.docked) {
+      setDockPassthrough(false)
+    }
+  }, [dockState.docked, setDockPassthrough])
 
   const persist = useCallback(async (nextData: AppData) => {
     const saved = await saveData(nextData)
@@ -1382,6 +1515,16 @@ function App() {
     await window.todoDesk.dockToEdge(edge)
   }
 
+  function handleDockPointerMove(event: ReactMouseEvent<HTMLElement>) {
+    const target = event.target instanceof Element ? event.target : null
+    const isInteractiveDockArea = Boolean(target?.closest('.dock-card, .dock-popover'))
+    setDockPassthrough(!isInteractiveDockArea)
+  }
+
+  function handleDockInteractiveEnter() {
+    setDockPassthrough(false)
+  }
+
   if (!isLoaded) {
     return (
       <main className="loading-shell">
@@ -1396,14 +1539,17 @@ function App() {
 
   if (dockState.docked) {
     return (
-      <main className={`app-shell dock-shell dock-${dockState.edge || 'right'} ${expandedDockTask ? 'dock-has-popover' : ''}`}>
-        <section className="dock-card">
+      <main
+        className={`app-shell dock-shell dock-${dockState.edge || 'right'} ${expandedDockTask ? 'dock-has-popover' : ''}`}
+        onMouseMove={handleDockPointerMove}
+      >
+        <section className="dock-card" onMouseEnter={handleDockInteractiveEnter}>
           <div className="dock-top-actions">
             <button className="dock-restore" type="button" title="恢复窗口" onClick={() => window.todoDesk?.restoreDock()}>
-              ↔
+              <AppIcon name="normalMode" />
             </button>
             <button className="dock-collapse" type="button" title="收起详情" disabled={!hasExpandedTask} onClick={closeDockDetailWindow}>
-              ⌃
+              <AppIcon name={hasExpandedTask ? 'collapseOn' : 'collapseOff'} />
             </button>
           </div>
           <h1>{statusConfig[data.settings.miniColumn].label}</h1>
@@ -1450,16 +1596,16 @@ function App() {
           </form>
         </section>
         {expandedDockTask && (
-          <aside className="dock-popover" aria-label="任务详情">
+          <aside className="dock-popover" aria-label="任务详情" onMouseEnter={handleDockInteractiveEnter}>
             <header>
               <span className={`priority priority-${expandedDockTask.priority}`}>{priorityConfig[expandedDockTask.priority].label}</span>
               <button type="button" title="收起详情" onClick={closeDockDetailWindow}>
-                ×
+                <AppIcon name="close" />
               </button>
             </header>
             <div className="dock-popover-scroll">
               <strong>{expandedDockTask.title}</strong>
-              {expandedDockTask.detail && <p>{expandedDockTask.detail}</p>}
+              {expandedDockTask.detail && <TaskDetailText detail={expandedDockTask.detail} variant="dock" />}
               <dl>
                 <div>
                   <dt>创建</dt>
@@ -1558,22 +1704,30 @@ function App() {
           </div>
           <div className="title-actions">
             <button
-              className="ghost-icon-button"
+              className={`ghost-icon-button pin-button ${data.settings.keepOnTop ? 'active' : ''}`}
               type="button"
-              title="全部任务收起"
+              title={data.settings.keepOnTop ? '取消置顶' : '窗口置顶'}
+              onClick={() => updateSettings({ keepOnTop: !data.settings.keepOnTop })}
+            >
+              <AppIcon name="pinOff" />
+            </button>
+            <button
+              className="ghost-icon-button collapse-all-button"
+              type="button"
+              title={hasExpandedTask ? '全部任务收起' : '没有展开的任务'}
               disabled={!hasExpandedTask}
               onClick={() => setSelectedTaskId('')}
             >
-              ⌃
+              <AppIcon name={hasExpandedTask ? 'collapseOn' : 'collapseOff'} />
             </button>
             <button className="ghost-icon-button" type="button" title="返回正常模式" onClick={() => updateSettings({ appMode: 'normal' })}>
-              ↗
+              <AppIcon name="normalMode" />
             </button>
             <button className="ghost-icon-button" type="button" title={`回收箱 ${data.trash.length}`} onClick={() => setTrashOpen(true)}>
-              🗑
+              <AppIcon name="trash" />
             </button>
             <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
-              ⚙
+              <AppIcon name="settings" />
             </button>
           </div>
         </header>
@@ -1657,7 +1811,7 @@ function App() {
                   <p>同步、窗口和 AI 接口都在这里配置</p>
                 </div>
                 <button className="icon-button" type="button" title="关闭设置" onClick={() => setSettingsOpen(false)}>
-                  ×
+                  <AppIcon name="close" />
                 </button>
               </header>
               <button type="button" onClick={() => updateSettings({ appMode: 'normal' })}>
@@ -1729,36 +1883,36 @@ function App() {
             title={data.settings.keepOnTop ? '取消置顶' : '窗口置顶'}
             onClick={() => updateSettings({ keepOnTop: !data.settings.keepOnTop })}
           >
-            ⌃
+            <AppIcon name="pinOff" />
           </button>
           <button
-            className="ghost-icon-button"
+            className="ghost-icon-button collapse-all-button"
             type="button"
-            title="全部任务收起"
+            title={hasExpandedTask ? '全部任务收起' : '没有展开的任务'}
             disabled={!hasExpandedTask}
             onClick={() => setSelectedTaskId('')}
           >
-            ▴
+            <AppIcon name={hasExpandedTask ? 'collapseOn' : 'collapseOff'} />
           </button>
           <button className="ghost-icon-button" type="button" title={`回收箱 ${data.trash.length}`} onClick={() => setTrashOpen(true)}>
-            🗑
+            <AppIcon name="trash" />
           </button>
           <button className="ghost-icon-button" type="button" title="贴附到左侧" onClick={() => dockToEdge('left')}>
-            ⇤
+            <AppIcon name="dockLeft" />
           </button>
           <button className="ghost-icon-button" type="button" title="贴附到右侧" onClick={() => dockToEdge('right')}>
-            ⇥
+            <AppIcon name="dockRight" />
           </button>
           <span className={`sync-dot ${data.settings.larkDoc ? 'ready' : ''}`} title={syncState} />
           <button className="icon-button" type="button" title="设置" onClick={() => setSettingsOpen(true)}>
-            ⚙
+            <AppIcon name="settings" />
           </button>
         </div>
       </header>
 
       <section className="control-strip">
         <label className="search-box" htmlFor="search">
-          <span aria-hidden="true">⌕</span>
+          <AppIcon name="search" />
           <input
             id="search"
             value={search}
@@ -1960,7 +2114,7 @@ function App() {
                 <p>同步、窗口和 AI 接口都在这里配置</p>
               </div>
               <button className="icon-button" type="button" title="关闭设置" onClick={() => setSettingsOpen(false)}>
-                ×
+                <AppIcon name="close" />
               </button>
             </header>
 
@@ -2228,21 +2382,21 @@ function MiniTaskRow({ task, selected, multiSelected, onSelect, onToggleExpand, 
           <small>{getTaskTimeLabel(task)}</small>
         </div>
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
-        <button
-          className="mini-expand"
-          type="button"
+          <button
+            className="mini-expand"
+            type="button"
           onClick={(event) => {
             event.stopPropagation()
             onToggleExpand(task.id)
           }}
         >
-          {selected ? '⌃' : '⌄'}
+          <AppIcon name={selected ? 'chevronUp' : 'chevronDown'} />
         </button>
       </div>
       {selected && (
         <div className="mini-task-detail">
           <div className="mini-task-detail-scroll">
-            {task.detail && <p>{task.detail}</p>}
+            {task.detail && <TaskDetailText detail={task.detail} variant="mini" />}
             <div className="tag-list">
               <span>{statusConfig[task.status].label}</span>
               {task.project && <span>{task.project}</span>}
@@ -2361,7 +2515,7 @@ function TrashDialog({ tasks, onClose, onRestore, onPurge, onEmpty }: TrashDialo
             <p>删除过的任务会先放在这里，可以恢复或永久删除。</p>
           </div>
           <button className="icon-button" type="button" title="关闭回收箱" onClick={onClose}>
-            ×
+            <AppIcon name="close" />
           </button>
         </header>
 
@@ -2428,7 +2582,7 @@ function ImagePreviewDialog({ preview, onClose, onMove }: ImagePreviewDialogProp
             </p>
           </div>
           <button className="icon-button" type="button" title="关闭预览" onClick={onClose}>
-            ×
+            <AppIcon name="close" />
           </button>
         </header>
 
@@ -2651,7 +2805,7 @@ function TaskCard({
         </button>
         <div className="task-copy">
           <strong>{task.title}</strong>
-          {!compact && task.detail && <small>{task.detail}</small>}
+          {!compact && !selected && task.detail && <small>{task.detail}</small>}
         </div>
       </div>
       <div className="meta-row">
@@ -2664,7 +2818,7 @@ function TaskCard({
       </div>
       {selected && !compact && (
         <div className="task-detail-inline">
-          {task.detail && <p>{task.detail}</p>}
+          {task.detail && <TaskDetailText detail={task.detail} variant="card" />}
           <dl>
             <div>
               <dt>创建</dt>

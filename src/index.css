@@ -21,7 +21,7 @@
   font-size: 14px;
   line-height: 1.35;
   color: var(--ink);
-  background: var(--paper);
+  background: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -38,6 +38,7 @@ body,
   min-width: 100%;
   min-height: 100%;
   margin: 0;
+  background: transparent;
 }
 
 body {
