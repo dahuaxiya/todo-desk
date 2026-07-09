@@ -95,12 +95,54 @@ python3 ${updateScript} \\
   --repository-path "<repo-path>"
 \`\`\`
 
+实现完成但用户还没有确认时，请求完成审批，不要直接写 \`done\`：
+
+\`\`\`bash
+python3 ${updateScript} \\
+  --task-id "<todo-desk-task-id>" \\
+  --request-completion \\
+  --append-detail "实现已完成，等待用户确认是否标记 done" \\
+  --agent "<agent>" \\
+  --agent-session-id "<session-id>" \\
+  --repository "<repo-name>" \\
+  --repository-path "<repo-path>"
+\`\`\`
+
+当前 session 本轮输出已经完成，但 agent 判断任务尚未完成时，请求未完成提醒，不要把它当作完成审批：
+
+\`\`\`bash
+python3 ${updateScript} \\
+  --task-id "<todo-desk-task-id>" \\
+  --request-session-review \\
+  --session-review-message "本轮 session 输出完成，但任务尚未完成" \\
+  --agent "<agent>" \\
+  --agent-session-id "<session-id>" \\
+  --repository "<repo-name>" \\
+  --repository-path "<repo-path>"
+\`\`\`
+
+用户明确确认完成后，才允许写入 \`done\`：
+
+\`\`\`bash
+python3 ${updateScript} \\
+  --task-id "<todo-desk-task-id>" \\
+  --status done \\
+  --user-confirmed-completion \\
+  --append-detail "<用户已确认完成>" \\
+  --agent "<agent>" \\
+  --agent-session-id "<session-id>" \\
+  --repository "<repo-name>" \\
+  --repository-path "<repo-path>"
+\`\`\`
+
 要求：
 - \`session-id\` 必须来自当前运行时，不要编造；常见来源包括 \`CODEX_THREAD_ID\`、\`CLAUDE_SESSION_ID\`、\`KIMI_SESSION_ID\`、\`CURSOR_SESSION_ID\` 或该工具暴露的等价会话/线程 id。
 - 创建任务时 \`tags\` 至少包含当前 \`agent\` 和 \`session-id\`，并同时传 \`--agent\` 与 \`--agent-session-id\`。
 - \`add_work.py\` 会显式写入 \`origin.kind=agent\` 和 \`origin.channel=todo-desk-skill\`；不要只靠 \`source\`、\`repository\` 等上下文字段表达任务来源。
 - 拿不到 \`session-id\`、Todo Desk 未启动或 API 不可用时，不要假装成功；直接告诉用户当前 Todo Desk 挂载阻塞。
-- 只有用户明确同意完成时，才能把任务状态更新为 \`done\`。
+- 只有用户明确同意完成时，才能把任务状态更新为 \`done\`，并且必须传 \`--user-confirmed-completion\`。
+- 未获确认但实现已经完成时，只能传 \`--request-completion\`；Todo Desk 会显示红色提醒点，等待用户确认完成。
+- 本轮 session 输出完成但任务尚未完成时，传 \`--request-session-review\`；Todo Desk 会显示非红色提醒点，直到用户点击“已查看”或“查看会话”。
 `
 }
 

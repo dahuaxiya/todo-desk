@@ -14,7 +14,14 @@ import urllib.request
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Update a Todo Desk task via its localhost API.")
     parser.add_argument("--task-id", required=True)
-    parser.add_argument("--status", choices=["doing", "todo", "done"], default="")
+    parser.add_argument("--status", choices=["doing", "todo", "pending_acceptance", "done"], default="")
+    parser.add_argument("--request-completion", action="store_true")
+    parser.add_argument("--user-confirmed-completion", action="store_true")
+    parser.add_argument("--request-human-input", action="store_true")
+    parser.add_argument("--human-input-message", default="")
+    parser.add_argument("--request-session-review", action="store_true")
+    parser.add_argument("--session-review-message", default="")
+    parser.add_argument("--session-review-decision", choices=["", "reviewed", "rework", "dismissed"], default="")
     parser.add_argument("--append-detail", default="")
     parser.add_argument("--title", default="")
     parser.add_argument("--detail", default="")
@@ -35,9 +42,26 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    status = args.status
+    append_detail = args.append_detail
+    request_human_input = args.request_human_input
+    request_session_review = args.request_session_review
+    if args.request_completion or (status == "done" and not args.user_confirmed_completion):
+        status = "pending_acceptance"
+        request_human_input = False
+        request_session_review = False
+        completion_message = "实现已完成，等待用户确认是否标记 done"
+        append_detail = "\n\n".join(item for item in (append_detail, completion_message) if item)
+
     payload = {
-        "status": args.status,
-        "appendDetail": args.append_detail,
+        "status": status,
+        "appendDetail": append_detail,
+        "completionDecision": "confirm" if args.user_confirmed_completion else "",
+        "requestHumanInput": request_human_input,
+        "humanInputMessage": args.human_input_message,
+        "requestSessionReview": request_session_review,
+        "sessionReviewMessage": args.session_review_message,
+        "sessionReviewDecision": args.session_review_decision,
         "title": args.title,
         "detail": args.detail,
         "priority": args.priority,

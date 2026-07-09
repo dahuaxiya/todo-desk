@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Add a task to Todo Desk via its localhost API.")
     parser.add_argument("--title", required=True)
     parser.add_argument("--detail", default="")
-    parser.add_argument("--status", choices=["doing", "todo", "done"], default="doing")
+    parser.add_argument("--status", choices=["doing", "todo", "pending_acceptance", "done"], default="doing")
     parser.add_argument("--priority", choices=["low", "medium", "high"], default="medium")
     parser.add_argument("--project", default="AI 工作")
     parser.add_argument("--tags", default="")

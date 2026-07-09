@@ -1,4 +1,5 @@
-export type TaskStatus = 'doing' | 'todo' | 'done'
+export type TaskStatus = 'doing' | 'todo' | 'pending_acceptance' | 'done'
+export type TaskColumnStatus = 'doing' | 'todo' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
 export type AppMode = 'normal' | 'mini'
 export type AddMode = 'quick' | 'detail'
@@ -47,6 +48,22 @@ export interface TaskOrigin {
   }
 }
 
+export interface CompletionAcceptance {
+  requestedAt: string
+  requestedBy: string
+  message: string
+  resolvedAt?: string
+  resolution?: 'accepted' | 'rework' | 'dismissed'
+}
+
+export interface SessionReview {
+  requestedAt: string
+  requestedBy: string
+  message: string
+  resolvedAt?: string
+  resolution?: 'reviewed' | 'rework' | 'dismissed'
+}
+
 export interface Task {
   id: string
   title: string
@@ -61,6 +78,8 @@ export interface Task {
   createdAt: string
   updatedAt: string
   completedAt: string
+  completionAcceptance?: CompletionAcceptance
+  sessionReview?: SessionReview
   origin: TaskOrigin
   remindedAt?: string
   deletedAt?: string
@@ -69,10 +88,14 @@ export interface Task {
   agentSessionId?: string
   repository?: string
   repositoryPath?: string
+  calendarSync?: TaskCalendarSync
 }
 
 export interface AppSettings {
   larkDoc: string
+  larkCalendarId: string
+  calendarSyncEnabled: boolean
+  larkCalendarSync: boolean
   syncOnComplete: boolean
   keepOnTop: boolean
   snapToEdge: boolean
@@ -84,10 +107,26 @@ export interface AppSettings {
   aiModel: string
   aiApiKey: string
   appMode: AppMode
-  miniColumn: TaskStatus
+  miniColumn: TaskColumnStatus
   addMode: AddMode
-  columnSorts: Record<TaskStatus, TaskSortMode>
+  columnSorts: Record<TaskColumnStatus, TaskSortMode>
   edgeDocked: boolean
+}
+
+export interface TaskCalendarSyncTarget {
+  status: 'ok' | 'failed' | 'skipped' | 'deleted'
+  signature: string
+  syncedAt: string
+  message?: string
+  eventId?: string
+  calendarId?: string
+  filePath?: string
+  appLink?: string
+}
+
+export interface TaskCalendarSync {
+  local?: TaskCalendarSyncTarget
+  lark?: TaskCalendarSyncTarget
 }
 
 export interface SyncLogItem {
@@ -115,7 +154,7 @@ export interface TodoDeskBridge {
   savePastedImage: (payload: { name: string; dataUrl: string }) => Promise<TaskImage[]>
   revealStorage: () => Promise<unknown>
   revealLogs: () => Promise<unknown>
-  openTaskInCalendar: (task: Task) => Promise<{ ok: boolean; message?: string; filePath?: string }>
+  openTaskInCalendar: (task: Task) => Promise<{ ok: boolean; message?: string; filePath?: string; eventId?: string }>
   openAgentSession: (task: Task) => Promise<{ ok: boolean; message?: string; url?: string }>
   restoreDock: () => Promise<{ ok: boolean }>
   dockToEdge: (edge: 'left' | 'right') => Promise<{ ok: boolean }>
@@ -128,13 +167,20 @@ export interface TodoDeskBridge {
     message?: string
     task?: Partial<Task>
     tasks?: Partial<Task>[]
-    imageMode?: 'none' | 'vision' | 'ocr'
+    imageMode?: 'none' | 'vision' | 'ocr' | 'local'
+    usedLocalFallback?: boolean
   }>
   mergeTasks: (payload: { tasks: Task[]; settings: AppSettings }) => Promise<{
     ok: boolean
     skipped?: boolean
     message?: string
     task?: Partial<Task>
+  }>
+  testAiConnection: (payload: { settings: AppSettings }) => Promise<{
+    ok: boolean
+    skipped?: boolean
+    message?: string
+    endpoint?: string
   }>
   syncToLark: (payload: { data: AppData; completedTaskId?: string }) => Promise<{
     ok: boolean

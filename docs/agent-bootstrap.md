@@ -113,7 +113,7 @@ npm run agent:install
 - `repository` / `repositoryPath`：当前代码库名和路径。
 - `tags`：至少包含 `agent` 和 `agentSessionId`，再补 `todo-desk`、项目标签等。
 
-推进中使用同一个任务追加进展，用户明确同意完成时才更新成 `done`。如果 Todo Desk 没启动、API 不通、拿不到 session id，agent 需要直接告诉用户阻塞，不能假装已经写入。
+推进中使用同一个任务追加进展。实现完成但用户还没有确认时，agent 只能请求完成审批，任务会进入 `pending_acceptance` 并显示红点；用户点“确认完成”或明确说 done 后，才允许更新成 `done`。如果当前 session 本轮输出已经完成，但 agent 判断任务尚未完成，agent 应请求未完成提醒，Todo Desk 会用非红色点提示，直到用户点击“已查看”或“查看会话”。如果 Todo Desk 没启动、API 不通、拿不到 session id，agent 需要直接告诉用户阻塞，不能假装已经写入。
 
 ## Bootstrap 脚本
 
@@ -222,6 +222,8 @@ Kimi 当前主要通过 `~/.kimi-code/config.toml` 的 `extra_skill_dirs` 加载
 - `session id` 必须来自当前运行时，例如 `CODEX_THREAD_ID`、`CLAUDE_SESSION_ID`、`KIMI_SESSION_ID`、`CURSOR_SESSION_ID` 或等价线程 id。
 - 拿不到 session id 时，不得伪造，也不得创建、更新或完成任务。
 - 工作推进时更新同一条 Todo Desk 任务，不要重复创建。
+- 实现完成但主人还没有确认时，使用 `--request-completion`，让 Todo Desk 显示红点完成确认。
+- 本轮 session 输出完成但任务尚未完成时，使用 `--request-session-review`，让 Todo Desk 显示非红色未完成提醒。
 - 只有主人明确同意完成时，才能把任务状态改为 `done`。
 
 ## 不配置时怎么处理

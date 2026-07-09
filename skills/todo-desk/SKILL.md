@@ -41,7 +41,7 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
 Fields:
 
 - `title` is required.
-- `status`: `doing`, `todo`, or `done`; default `doing`.
+- `status`: `doing`, `todo`, `pending_acceptance`, or `done`; default `doing`.
 - `priority`: `low`, `medium`, or `high`; default `medium`.
 - `tags` accepts comma or space separated values. For current-work logging, `tags` must include the current `agent` name and the current `session id`.
 - `due-at` and `reminder-at` accept ISO 8601 timestamps.
@@ -71,12 +71,47 @@ Mark done only after the user explicitly agrees:
 python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
   --task-id "<task-id>" \
   --status done \
+  --user-confirmed-completion \
   --append-detail "Implementation verified" \
   --agent codex \
   --agent-session-id "current-session-id"
 ```
 
-Before marking a task `done`, ensure the user has explicitly agreed that the task should be completed. Continue to pass the current `agent-session-id` when updating the task.
+When implementation is finished but the user has not confirmed completion, request completion approval instead of marking `done`:
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
+  --task-id "<task-id>" \
+  --request-completion \
+  --append-detail "实现已完成，等待用户确认是否标记 done" \
+  --agent codex \
+  --agent-session-id "current-session-id"
+```
+
+When the current session turn is complete but the agent believes the task itself is not finished, request an unfinished-session reminder. This is separate from completion approval: Todo Desk shows a non-red dot until the user chooses `已查看` or `查看会话`.
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
+  --task-id "<task-id>" \
+  --request-session-review \
+  --session-review-message "本轮 session 输出完成，但任务尚未完成" \
+  --agent codex \
+  --agent-session-id "current-session-id" \
+  --repository "todo-desk" \
+  --repository-path "/path/to/repo"
+```
+
+If the user explicitly handles the unfinished-session reminder through an agent command, clear it with:
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
+  --task-id "<task-id>" \
+  --session-review-decision reviewed \
+  --agent codex \
+  --agent-session-id "current-session-id"
+```
+
+Before marking a task `done`, ensure the user has explicitly agreed that the task should be completed and pass `--user-confirmed-completion`. Continue to pass the current `agent-session-id` when updating the task.
 
 ## When App Is Not Running
 

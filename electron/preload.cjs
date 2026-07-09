@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('todoDesk', {
   applyWindowMode: (mode) => ipcRenderer.invoke('window:apply-mode', mode),
   parseTask: (payload) => ipcRenderer.invoke('ai:parse-task', payload),
   mergeTasks: (payload) => ipcRenderer.invoke('ai:merge-tasks', payload),
+  testAiConnection: (payload) => ipcRenderer.invoke('ai:test-connection', payload),
   syncToLark: (payload) => ipcRenderer.invoke('lark:sync', payload),
   onDataUpdated: (callback) => {
     const listener = (_event, data) => callback(data)

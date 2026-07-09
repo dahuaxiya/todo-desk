@@ -184,6 +184,8 @@ npm run agent:install -- --targets codex,claude
 
 完整说明见 [docs/agent-bootstrap.md](docs/agent-bootstrap.md)。
 
+agent 认为任务已经完成但还没有得到用户确认时，应请求完成审批，Todo Desk 会显示红点并要求用户确认。agent 本轮 session 输出完成、但判断任务尚未完成时，可以请求未完成提醒，界面会显示非红色提醒点。
+
 ## 项目结构
 
 ```text
