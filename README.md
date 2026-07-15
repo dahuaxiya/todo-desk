@@ -50,9 +50,52 @@ npm run build
 打包 macOS `.app` 目录：
 
 ```bash
-npm run build
-npx electron-builder --mac --dir
+npm run dist:mac:unsigned
 ```
+
+该命令只用于本机开发测试，不能把生成的未签名应用作为公开 Release。
+
+## macOS 安装
+
+当前 `v0.2.2` 的附件没有 Developer ID 签名和 Apple 公证，从 GitHub 下载后，macOS 可能提示应用“已损坏”。这不是下载文件损坏；该版本不能作为面向普通用户的正式安装包。
+
+后续正式 Release 会通过 GitHub Actions 生成 Apple Silicon 和 Intel 两套安装包，并且只有 Developer ID 签名、公证、staple 和 Gatekeeper 校验全部通过才会上传。发布账号和 Secrets 的配置方法见 [macOS 签名、公证与发布](docs/macos-distribution.md)。
+
+当前未签名版本需要先把 `Todo Desk.app` 拖入 Applications，再移除下载时附加的 quarantine 属性：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Todo Desk.app"
+open "/Applications/Todo Desk.app"
+```
+
+如果应用被 Finder 重命名为 `Todo Desk 2.app`，命令中的路径也要使用实际名称。只对从本仓库官方 Release 下载的 Todo Desk 执行该命令；`xattr` 不会补充签名或公证。
+
+### 让 Agent 自动安装，不需要源码
+
+用户只需要把这个仓库链接交给 Agent：
+
+```text
+https://github.com/dahuaxiya/todo-desk
+```
+
+Agent 读取本节后，应单独下载并执行安装脚本，不得要求用户克隆仓库、安装 Node.js 或运行 `npm install`：
+
+```bash
+set -euo pipefail
+INSTALLER="$(mktemp -t todo-desk-installer)"
+trap 'rm -f "$INSTALLER"' EXIT
+curl --fail --location --silent --show-error \
+  https://raw.githubusercontent.com/dahuaxiya/todo-desk/main/scripts/install-macos-release.sh \
+  --output "$INSTALLER"
+bash -n "$INSTALLER"
+bash "$INSTALLER"
+rm -f "$INSTALLER"
+trap - EXIT
+```
+
+安装脚本只依赖 macOS 自带命令。它会识别 Mac 架构，从 `dahuaxiya/todo-desk` 最新 GitHub Release 下载对应 DMG，核对 GitHub 提供的 SHA-256，验证 Bundle ID，安装到 Applications，按 Gatekeeper 结果处理 quarantine，最后打开 Todo Desk 并等待本机 API 就绪。任何一步失败时，Agent 必须报告实际错误，不得假装安装成功。完整流程见 [Agent 自动接入 Todo Desk](docs/agent-bootstrap.md#安装桌面-app)。
+
+当前 `v0.2.2` Release 只包含 Apple Silicon `arm64` 安装包；Intel Mac 在 x64 DMG 发布前会明确停止并报告缺少匹配架构，不会尝试安装 arm64 版本。
 
 ## 常用命令
 
@@ -61,6 +104,9 @@ npm run dev             # 启动 Vite 和 Electron
 npm run web:dev         # 只启动 Web UI
 npm run build           # 类型检查并构建前端产物
 npm run dist            # 构建并调用 electron-builder
+npm run dist:mac        # 构建签名、公证的 arm64 和 x64 macOS 安装包
+npm run mac:allow-open  # 校验 Bundle ID 并移除已安装 App 的 quarantine
+npm run verify:mac      # 校验 macOS 签名、公证票据和 Gatekeeper 结果
 npm run lint            # 运行 oxlint
 npm run test:ai         # 检查 AI 解析和图片/OCR 流程
 npm run agent:install   # 安装 Todo Desk agent 接入配置

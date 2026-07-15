@@ -1,11 +1,38 @@
 ---
 name: todo-desk
-description: Add or inspect current AI work in the local Todo Desk app. Use when the user asks an AI agent to record current work, add a todo, log ongoing work, or sync work context into the Todo Desk desktop app through its localhost API.
+description: Add or inspect current AI work in the local Todo Desk app, or prepare the macOS desktop app after installation. Use when the user asks an AI agent to install Todo Desk, record current work, add a todo, log ongoing work, or sync work context through its localhost API.
 ---
 
 # Todo Desk
 
 Use this skill to write AI work items into the user's local Todo Desk app.
+
+## Install The macOS App
+
+When the user explicitly asks the agent to install Todo Desk on macOS, do not require a source checkout, Node.js, npm, or Homebrew. Confirm the repository is:
+
+```text
+https://github.com/dahuaxiya/todo-desk
+```
+
+Download only the standalone installer from that repository, validate its shell syntax, and run it:
+
+```bash
+set -euo pipefail
+INSTALLER="$(mktemp -t todo-desk-installer)"
+trap 'rm -f "$INSTALLER"' EXIT
+curl --fail --location --silent --show-error \
+  https://raw.githubusercontent.com/dahuaxiya/todo-desk/main/scripts/install-macos-release.sh \
+  --output "$INSTALLER"
+bash -n "$INSTALLER"
+bash "$INSTALLER"
+rm -f "$INSTALLER"
+trap - EXIT
+```
+
+The installer selects the matching architecture, resolves the latest official GitHub Release, verifies its SHA-256 digest and `CFBundleIdentifier`, installs the app, handles quarantine only when Gatekeeper rejects the current unsigned build, opens Todo Desk, and waits for the local API. Do not ask the user to run `xattr`, do not use `sudo xattr`, and do not disable Gatekeeper globally. Claim success only after the script prints `Todo Desk is installed, open, and ready.`
+
+The full install and health-check procedure is in `docs/agent-bootstrap.md#安装桌面-app` in the repository.
 
 ## API
 

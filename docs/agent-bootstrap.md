@@ -4,7 +4,46 @@
 
 这份文档也是给 agent 看的操作手册。agent 只有仓库地址时，可以按这里完成检查和配置准备；是否真的写入用户全局配置，由 agent 的主人决定。
 
-## Agent 拿到仓库地址后的流程
+## 安装桌面 App
+
+当用户明确要求 Agent 安装 Todo Desk 桌面 App 时，不要让用户克隆源码、安装 Node.js 或准备 npm。Agent 应先确认仓库地址是：
+
+```text
+https://github.com/dahuaxiya/todo-desk
+```
+
+然后只下载仓库内的独立安装脚本，检查 shell 语法并执行：
+
+```bash
+set -euo pipefail
+INSTALLER="$(mktemp -t todo-desk-installer)"
+trap 'rm -f "$INSTALLER"' EXIT
+curl --fail --location --silent --show-error \
+  https://raw.githubusercontent.com/dahuaxiya/todo-desk/main/scripts/install-macos-release.sh \
+  --output "$INSTALLER"
+bash -n "$INSTALLER"
+bash "$INSTALLER"
+rm -f "$INSTALLER"
+trap - EXIT
+```
+
+`install-macos-release.sh` 只依赖 macOS 内置工具，负责完整流程：
+
+1. 根据 `uname -m` 选择 `arm64` 或 `x64` DMG。
+2. 从 GitHub API 获取最新 Release，不拼接或猜测版本文件名。
+3. 使用 Release 元数据中的 SHA-256 校验下载文件。
+4. 挂载 DMG，要求 `CFBundleIdentifier=com.codex.todo-desk`。
+5. 停止旧进程、备份旧 App，再安装到 `/Applications/Todo Desk.app`；复制失败时恢复。
+6. Gatekeeper 接受签名版本时保留 quarantine；当前未签名版本才执行 `xattr`。
+7. 打开 Todo Desk，等待进程和 `http://127.0.0.1:47731/health` 同时就绪。
+
+Agent 只有看到 `Todo Desk is installed, open, and ready.` 后，才能告诉用户安装完成。如果脚本失败，需要保留并报告实际错误。不要使用 `sudo xattr`、不要全局关闭 Gatekeeper，也不要把移除 quarantine 描述成签名或 Apple 公证。
+
+正式 Release 完成 Developer ID 签名与 Apple 公证后，安装脚本会让 Gatekeeper 正常验收并保留 quarantine，因此 Agent 可以继续使用同一流程。
+
+## 安装 Agent 接入配置（需要源码）
+
+下面的流程不是桌面 App 安装步骤。用户只要求“安装 Todo Desk”时，完成上一节并看到应用界面后就应停止，不得继续克隆源码。只有用户另外要求把 Todo Desk 接入 Codex、Claude、Kimi、Cursor 等 Agent 时，才执行本节。
 
 如果用户只给了 GitHub 地址，agent 先把仓库拉到本地，再读这份文档：
 
