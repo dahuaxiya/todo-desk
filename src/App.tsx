@@ -1882,16 +1882,27 @@ function App() {
   function renderAttachedImages() {
     return (
       <div className="image-row">
-        {attachedImages.map((image) => (
-          <button
-            key={image.path}
-            className="image-chip"
-            type="button"
-            title="移除图片"
-            onClick={() => removeImage(image.path)}
-          >
-            <img src={image.url} alt="" />
-          </button>
+        {attachedImages.map((image, index) => (
+          <div className="image-chip" key={image.path}>
+            <button
+              className="image-chip-preview"
+              type="button"
+              title="预览图片"
+              aria-label={`预览图片：${image.name || `附件 ${index + 1}`}`}
+              onClick={() => openImagePreview(attachedImages, index, draft.title.trim() || '任务附件')}
+            >
+              <img src={image.url} alt={image.name || `附件 ${index + 1}`} />
+            </button>
+            <button
+              className="image-chip-remove"
+              type="button"
+              title="删除图片"
+              aria-label={`删除图片：${image.name || `附件 ${index + 1}`}`}
+              onClick={() => removeImage(image.path)}
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
         ))}
         <button className="ghost-button" type="button" onClick={importImages}>
           附加图片
