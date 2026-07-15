@@ -30,6 +30,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent-session-id", default=os.environ.get("TODO_DESK_AGENT_SESSION_ID", ""))
     parser.add_argument("--repository", default=os.environ.get("TODO_DESK_REPOSITORY", ""))
     parser.add_argument("--repository-path", default=os.environ.get("TODO_DESK_REPOSITORY_PATH", os.getcwd()))
+    parser.add_argument("--parent-task-id", default="")
+    parser.add_argument("--relation-type", choices=["subtask_of", "discovered_from"], default="subtask_of")
+    parser.add_argument("--relation-reason", default="")
+    completion_group = parser.add_mutually_exclusive_group()
+    completion_group.add_argument("--affects-parent-completion", dest="affects_parent_completion", action="store_true")
+    completion_group.add_argument("--follow-up-only", dest="affects_parent_completion", action="store_false")
+    parser.set_defaults(affects_parent_completion=None)
     parser.add_argument("--port", type=int, default=47731)
     parser.add_argument("--timeout", type=int, default=8)
     return parser.parse_args()
@@ -37,6 +44,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    parent_link = compact({
+        "type": args.relation_type,
+        "reason": args.relation_reason,
+        # None means the caller did not choose. Todo Desk then applies its backward-compatible true default.
+        "affectsParentCompletion": args.affects_parent_completion,
+        "createdBy": "agent",
+        "confidence": "explicit",
+    }) if args.parent_task_id else None
     origin = {
         "kind": "agent",
         "channel": "todo-desk-skill",
@@ -70,6 +85,8 @@ def main() -> int:
         "agentSessionId": args.agent_session_id,
         "repository": args.repository,
         "repositoryPath": args.repository_path,
+        "parentTaskId": args.parent_task_id,
+        "parentLink": parent_link,
         "origin": origin,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

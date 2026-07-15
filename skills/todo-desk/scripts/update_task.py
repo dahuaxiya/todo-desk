@@ -35,6 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent-session-id", default=os.environ.get("TODO_DESK_AGENT_SESSION_ID", ""))
     parser.add_argument("--repository", default=os.environ.get("TODO_DESK_REPOSITORY", ""))
     parser.add_argument("--repository-path", default=os.environ.get("TODO_DESK_REPOSITORY_PATH", os.getcwd()))
+    parser.add_argument("--parent-task-id", default="")
+    parser.add_argument("--relation-type", choices=["", "subtask_of", "discovered_from"], default="")
+    parser.add_argument("--relation-reason", default="")
+    completion_group = parser.add_mutually_exclusive_group()
+    completion_group.add_argument("--affects-parent-completion", dest="affects_parent_completion", action="store_true")
+    completion_group.add_argument("--follow-up-only", dest="affects_parent_completion", action="store_false")
+    parser.set_defaults(affects_parent_completion=None)
+    parser.add_argument("--parent-review-decision", choices=["", "accepted", "kept"], default="")
     parser.add_argument("--port", type=int, default=47731)
     parser.add_argument("--timeout", type=int, default=8)
     return parser.parse_args()
@@ -52,6 +60,18 @@ def main() -> int:
         request_session_review = False
         completion_message = "实现已完成，等待用户确认是否标记 done"
         append_detail = "\n\n".join(item for item in (append_detail, completion_message) if item)
+
+    parent_link = {
+        key: value
+        for key, value in {
+            "type": args.relation_type,
+            "reason": args.relation_reason,
+            "affectsParentCompletion": args.affects_parent_completion,
+            "createdBy": "agent",
+            "confidence": "explicit",
+        }.items()
+        if value not in ("", None)
+    }
 
     payload = {
         "status": status,
@@ -74,6 +94,9 @@ def main() -> int:
         "agentSessionId": args.agent_session_id,
         "repository": args.repository,
         "repositoryPath": args.repository_path,
+        "parentTaskId": args.parent_task_id,
+        "parentLink": parent_link,
+        "parentCompletionReviewDecision": args.parent_review_decision,
     }
     payload = {key: value for key, value in payload.items() if value not in ("", None)}
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

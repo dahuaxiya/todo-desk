@@ -61,6 +61,10 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
   --agent-session-id "current-session-id" \
   --repository "todo-desk" \
   --repository-path "/path/to/repo" \
+  --parent-task-id "optional-direct-parent-task-id" \
+  --relation-type discovered_from \
+  --relation-reason "The issue discovered while handling the parent task" \
+  --affects-parent-completion \
   --due-at "2026-07-01T18:00:00+08:00" \
   --reminder-at "2026-07-01T17:30:00+08:00"
 ```
@@ -74,8 +78,55 @@ Fields:
 - `due-at` and `reminder-at` accept ISO 8601 timestamps.
 - `source` defaults to the current agent/tool name when supplied by the caller, otherwise `codex`.
 - `agent`, `agent-session-id`, `repository`, and `repository-path` attach work to the current agent run and codebase.
+- `parent-task-id` records the task that directly led to this work. Pass it only when the parent is explicit; do not infer it from a similar title, project, tag, repository, or session.
+- `relation-type=subtask_of` means planned decomposition. `relation-type=discovered_from` means a new issue found while executing the parent task.
+- For a derived issue, use `relation-reason` to explain how it arose. Use `--affects-parent-completion` when it blocks the parent, or `--follow-up-only` when the parent may finish independently.
 - The script also sends `origin.kind=agent`, `origin.channel=todo-desk-skill`, and `origin.confidence=explicit`. Todo Desk uses `origin.kind` as the authoritative source classification for UI styling and avoids guessing from metadata fields.
 - `agent-session-id` is required for current-work logging. If the current session id is unavailable, do not create, update, or complete the Todo Desk task; tell the user that logging is blocked instead of inventing or leaving the value empty.
+
+## Create a Derived Branch
+
+When the current task exposes a new problem, use the current Todo Desk task id from the earlier `add_work.py` response as the direct parent. Do not create an unrelated task just because another agent or session will handle it.
+
+### Detect derived work automatically
+
+While executing a Todo Desk task, continuously evaluate newly discovered work instead of waiting for the user to ask for a split. Create a `discovered_from` child automatically only when all of these are true:
+
+- it has a concrete outcome that can be tracked independently, such as a separate fix, investigation, migration, or document;
+- it is not merely an expected implementation step, test, refactor, or verification already required to finish the current task;
+- it can reasonably be assigned, postponed, or completed separately, or it changes whether the parent task can be accepted;
+- the current Todo Desk task id is known from the original `add_work.py` response or explicit task context.
+
+Do not create a derived card for a restatement of the same issue, a root-cause note, a transient tool/build error fixed inline, or every small coding step. Before creating one, inspect the current parent's existing active children through `GET /tasks`; if an equivalent child already exists, update that task instead of creating a duplicate.
+
+Create the child as soon as the independent work is recognized:
+
+- use `status=doing` when switching to it now, otherwise use `status=todo`;
+- set `relation-type=discovered_from` and write a specific `relation-reason` describing what in the parent exposed it;
+- use `--affects-parent-completion` only when the parent cannot be accepted without it; otherwise use `--follow-up-only`;
+- keep the returned child task id if work continues on that child, so further discoveries attach to the correct direct parent.
+
+If the current task id is unavailable, do not infer the parent from title, repository, tags, or session id. Report that automatic relationship creation is blocked and continue updating only the task whose id is explicitly known.
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
+  --title "Fix concurrent token refresh overwrite" \
+  --detail "Found while investigating the customer login failure" \
+  --status doing \
+  --priority high \
+  --project "Todo Desk" \
+  --tags codex,current-session-id,todo-desk \
+  --agent codex \
+  --agent-session-id "current-session-id" \
+  --repository "todo-desk" \
+  --repository-path "/path/to/repo" \
+  --parent-task-id "current-todo-task-id" \
+  --relation-type discovered_from \
+  --relation-reason "Token refresh races were found while tracing the login failure" \
+  --affects-parent-completion
+```
+
+`agent-session-id` identifies who is doing the work; it must not be used to infer task hierarchy. A session may handle several tasks, and one task branch may continue across several sessions.
 
 ## Update Work Status
 
@@ -89,7 +140,11 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
   --agent codex \
   --agent-session-id "current-session-id" \
   --repository "todo-desk" \
-  --repository-path "/path/to/repo"
+  --repository-path "/path/to/repo" \
+  --parent-task-id "optional-direct-parent-task-id" \
+  --relation-type discovered_from \
+  --relation-reason "Why this task was derived" \
+  --affects-parent-completion
 ```
 
 Mark done only after the user explicitly agrees:
@@ -137,6 +192,18 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
   --agent codex \
   --agent-session-id "current-session-id"
 ```
+
+If the user explicitly decides a parent task review, use:
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/update_task.py \
+  --task-id "<parent-task-id>" \
+  --parent-review-decision kept \
+  --agent codex \
+  --agent-session-id "current-session-id"
+```
+
+Use `accepted` only when the user confirms the parent task is complete. Todo Desk automatically creates this parent review after all linked agent child tasks are confirmed done.
 
 Before marking a task `done`, ensure the user has explicitly agreed that the task should be completed and pass `--user-confirmed-completion`. Continue to pass the current `agent-session-id` when updating the task.
 

@@ -260,6 +260,12 @@ Kimi 当前主要通过 `~/.kimi-code/config.toml` 的 `extra_skill_dirs` 加载
 - `tags` 至少包含当前 agent 名和当前 session id。
 - `session id` 必须来自当前运行时，例如 `CODEX_THREAD_ID`、`CLAUDE_SESSION_ID`、`KIMI_SESSION_ID`、`CURSOR_SESSION_ID` 或等价线程 id。
 - 拿不到 session id 时，不得伪造，也不得创建、更新或完成任务。
+- 如果新任务是当前 Todo Desk 任务的计划拆分，创建时传 `--parent-task-id <当前任务 id> --relation-type subtask_of`。
+- Agent 在执行过程中要主动识别派生任务，不需要等主人再次要求拆分。只有新问题有独立结果、不是当前任务的常规实现步骤，并且可以单独分配/延期/完成或会改变父任务验收时，才自动创建卡片。
+- 自动创建前先查询当前父任务已有的未完成子卡；相同问题已经存在时更新原卡，不重复创建。改代码、补测试、跑构建、常规重构、根因记录和即时解决的临时错误仍记录在当前任务进展里。
+- 自动派生时传 `--parent-task-id <当前任务 id> --relation-type discovered_from --relation-reason <派生原因>`。立即切换处理用 `status=doing`，暂不处理用 `status=todo`。
+- 父任务不解决派生问题就不能验收时使用 `--affects-parent-completion`；不影响父任务交付、可以独立后续处理时使用 `--follow-up-only`。
+- 任务层级只能由明确的 Todo Desk task id 建立，不要根据标题、项目、标签、仓库或相同 session 推断。`session id` 只用于记录执行来源，一个分支可以跨多个 session。
 - 工作推进时更新同一条 Todo Desk 任务，不要重复创建。
 - 实现完成但主人还没有确认时，使用 `--request-completion`，让 Todo Desk 显示红点完成确认。
 - 本轮 session 输出完成但任务尚未完成时，使用 `--request-session-review`，让 Todo Desk 显示非红色未完成提醒。

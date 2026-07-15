@@ -79,7 +79,11 @@ python3 ${addScript} \\
   --agent "<agent>" \\
   --agent-session-id "<session-id>" \\
   --repository "<repo-name>" \\
-  --repository-path "<repo-path>"
+  --repository-path "<repo-path>" \\
+  --parent-task-id "<可选：明确的直接上级任务 id>" \\
+  --relation-type "<subtask_of 或 discovered_from>" \\
+  --relation-reason "<派生问题的来源说明>" \\
+  --affects-parent-completion
 \`\`\`
 
 推进工作时更新同一个任务：
@@ -94,6 +98,14 @@ python3 ${updateScript} \\
   --repository "<repo-name>" \\
   --repository-path "<repo-path>"
 \`\`\`
+
+执行过程中自动识别派生任务：
+- 发现新的独立问题时立即判断，不必等用户要求拆分。只有该问题有独立交付结果、不是当前任务的常规步骤，并且可以单独分配/延期/完成或会影响父任务验收时，才自动创建派生卡片。
+- 当前任务的 Todo Desk task id 必须保留自首次 \`add_work.py\` 返回值，并作为 \`--parent-task-id\`。拿不到明确 id 时不得根据标题、仓库、标签或 session 猜父子关系。
+- 创建前先通过 \`GET /tasks\` 检查当前父任务已有的未完成子卡；同一问题已经存在时更新原卡，不重复创建。
+- 立即处理的新问题使用 \`--status doing\`，暂不处理使用 \`--status todo\`；固定传 \`--relation-type discovered_from\` 和具体的 \`--relation-reason\`。
+- 父任务不解决该问题就不能验收时传 \`--affects-parent-completion\`；可以独立后续处理时传 \`--follow-up-only\`。
+- 不要为同一问题的改代码、补测试、跑构建、常规重构、根因记录或即时解决的临时错误创建派生卡片。
 
 实现完成但用户还没有确认时，请求完成审批，不要直接写 \`done\`：
 
@@ -139,6 +151,9 @@ python3 ${updateScript} \\
 - \`session-id\` 必须来自当前运行时，不要编造；常见来源包括 \`CODEX_THREAD_ID\`、\`CLAUDE_SESSION_ID\`、\`KIMI_SESSION_ID\`、\`CURSOR_SESSION_ID\` 或该工具暴露的等价会话/线程 id。
 - 创建任务时 \`tags\` 至少包含当前 \`agent\` 和 \`session-id\`，并同时传 \`--agent\` 与 \`--agent-session-id\`。
 - \`add_work.py\` 会显式写入 \`origin.kind=agent\` 和 \`origin.channel=todo-desk-skill\`；不要只靠 \`source\`、\`repository\` 等上下文字段表达任务来源。
+- 计划内拆分使用 \`--parent-task-id <当前任务 id> --relation-type subtask_of\`；处理中自动识别出的独立新问题使用 \`--relation-type discovered_from --relation-reason <派生原因>\`。
+- 是否影响父任务完成必须按验收条件判断：阻塞父任务验收使用 \`--affects-parent-completion\`，可独立后续处理使用 \`--follow-up-only\`。
+- 只有直接上级任务 id 明确可得时才建立关系，不要根据标题、项目、标签、仓库或相同 session 猜测。session id 只记录执行来源，不表达任务层级。
 - 拿不到 \`session-id\`、Todo Desk 未启动或 API 不可用时，不要假装成功；直接告诉用户当前 Todo Desk 挂载阻塞。
 - 只有用户明确同意完成时，才能把任务状态更新为 \`done\`，并且必须传 \`--user-confirmed-completion\`。
 - 未获确认但实现已经完成时，只能传 \`--request-completion\`；Todo Desk 会显示红色提醒点，等待用户确认完成。
