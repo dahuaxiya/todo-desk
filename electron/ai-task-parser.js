@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 
 const taskStatuses = new Set(['doing', 'todo', 'done'])
+const editableTaskStatuses = new Set(['doing', 'todo', 'pending_acceptance', 'done'])
 const priorities = new Set(['high', 'medium', 'low'])
 const defaultImageLimitBytes = 6 * 1024 * 1024
 
@@ -139,6 +140,184 @@ export function buildAiMergeRequestPayload(tasks, settings) {
       { role: 'user', content: buildAiMergePrompt(tasks) },
     ],
     temperature: 0.2,
+  }
+}
+
+function formatTaskForPrompt(task) {
+  const tags = Array.isArray(task?.tags) ? task.tags : normalizeTags(task?.tags)
+  return JSON.stringify(
+    {
+      title: task?.title || '',
+      detail: task?.detail || '',
+      status: task?.status || 'todo',
+      priority: task?.priority || 'medium',
+      project: task?.project || '',
+      tags,
+      dueAt: task?.dueAt || '',
+      reminderAt: task?.reminderAt || '',
+    },
+    null,
+    2,
+  )
+}
+
+export function buildAiTaskEditPrompt({ originalTask, draftTask, instruction }, now = new Date().toISOString()) {
+  return [
+    '你是 Todo 任务编辑助手。只返回 JSON，不要解释。',
+    '根据“修改要求”编辑“当前编辑表单”。“已保存原任务”只用于理解上下文。',
+    '如果提供了图片，请读取图片里的文字、表格、截图、便签或看板内容，并按修改要求补充或修正任务。',
+    '返回一个完整任务对象，格式必须是 {"title":"","detail":"","status":"todo","priority":"medium","project":"","tags":[],"dueAt":"","reminderAt":""}。',
+    '没有要求修改的字段必须保持当前编辑表单的值；不要因为字段未提及就清空。',
+    'title 要短，detail 保留必要上下文和下一步动作。',
+    'status 只能是 doing/todo/pending_acceptance/done。',
+    'priority 只能是 high/medium/low。',
+    'tags 是字符串数组。',
+    'dueAt/reminderAt 必须是 ISO 8601 字符串；用户未指定时区时按 Asia/Shanghai 输出 +08:00，不要用 Z；没有就返回空字符串。',
+    `当前时间：${now}`,
+    `已保存原任务：${formatTaskForPrompt(originalTask)}`,
+    `当前编辑表单：${formatTaskForPrompt(draftTask)}`,
+    `修改要求：${instruction || '根据当前标题、详情和图片整理并补全任务字段'}`,
+  ].join('\n')
+}
+
+export function buildAiTaskEditRequestPayload(payload, settings, now, images = []) {
+  const prompt = buildAiTaskEditPrompt(payload, now)
+  return {
+    model: settings.aiModel,
+    messages: [
+      { role: 'system', content: 'Edit one existing todo item as a strict JSON object.' },
+      { role: 'user', content: buildMessageContent(prompt, images) },
+    ],
+    temperature: 0.15,
+  }
+}
+
+function normalizeEditableStatus(value, fallback) {
+  if (editableTaskStatuses.has(value)) return value
+  if (editableTaskStatuses.has(fallback)) return fallback
+  return 'todo'
+}
+
+function normalizeEditablePriority(value, fallback) {
+  if (priorities.has(value)) return value
+  if (priorities.has(fallback)) return fallback
+  return 'medium'
+}
+
+function normalizeOptionalDate(value, fallback) {
+  if (value === '') return ''
+  if (value) return new Date(String(value)).toISOString()
+  return fallback || ''
+}
+
+export function normalizeEditedTask(value, fallbackTask = {}) {
+  const parsed = typeof value === 'string' ? extractJsonObject(value) : value && typeof value === 'object' ? value : {}
+  const fallbackTags = Array.isArray(fallbackTask.tags) ? fallbackTask.tags : normalizeTags(fallbackTask.tags)
+  // The model is asked to return a full object, but we still preserve fallback fields.
+  // This prevents an incomplete model response from silently erasing user-entered title, dates, or tags.
+  return {
+    title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTask.title || '',
+    detail: typeof parsed.detail === 'string'
+      ? parsed.detail.trim()
+      : typeof parsed.description === 'string'
+        ? parsed.description.trim()
+        : fallbackTask.detail || '',
+    status: normalizeEditableStatus(parsed.status, fallbackTask.status),
+    priority: normalizeEditablePriority(parsed.priority, fallbackTask.priority),
+    project: typeof parsed.project === 'string'
+      ? parsed.project.trim()
+      : typeof parsed.group === 'string'
+        ? parsed.group.trim()
+        : fallbackTask.project || '',
+    tags: Object.prototype.hasOwnProperty.call(parsed, 'tags') ? normalizeTags(parsed.tags) : fallbackTags,
+    dueAt: normalizeOptionalDate(parsed.dueAt, fallbackTask.dueAt || ''),
+    reminderAt: normalizeOptionalDate(parsed.reminderAt, fallbackTask.reminderAt || ''),
+  }
+}
+
+export async function editTaskWithAi(payload, settings, requestEndpoint, options = {}) {
+  if (!settings.aiEnabled) {
+    return { ok: false, skipped: true, message: 'AI 未启用' }
+  }
+  if (!settings.aiBaseUrl || !settings.aiModel) {
+    return { ok: false, skipped: true, message: 'AI Base URL 或 Model 未配置' }
+  }
+
+  const requestPayload = buildAiTaskEditRequestPayload(payload, settings, undefined, options.images || [])
+  const endpoint = buildAiEndpoint(settings.aiBaseUrl)
+  let usedEndpoint = endpoint
+  let usedFallback = false
+
+  const fallbackEndpoint = buildAiFallbackEndpoint(settings.aiBaseUrl)
+  let aiResponse
+  try {
+    aiResponse = await requestEndpoint(endpoint, requestPayload, settings)
+  } catch (error) {
+    if (!fallbackEndpoint) throw error
+    usedEndpoint = fallbackEndpoint
+    usedFallback = true
+    aiResponse = await requestEndpoint(fallbackEndpoint, requestPayload, settings)
+  }
+  let { response, rawBody, contentType } = aiResponse
+
+  if (fallbackEndpoint && !usedFallback && (!response.ok || looksLikeHtml(rawBody, contentType))) {
+    usedEndpoint = fallbackEndpoint
+    usedFallback = true
+    aiResponse = await requestEndpoint(fallbackEndpoint, requestPayload, settings)
+    response = aiResponse.response
+    rawBody = aiResponse.rawBody
+    contentType = aiResponse.contentType
+  }
+
+  if (!response.ok) {
+    throw new Error(`AI 请求失败 ${response.status} ${response.statusText || ''}：${clipText(rawBody, 180)}`)
+  }
+  if (looksLikeHtml(rawBody, contentType)) {
+    throw new Error(`AI 返回的不是 JSON，可能 Base URL 填错或被重定向：${clipText(rawBody, 180)}`)
+  }
+
+  const body = JSON.parse(rawBody)
+  const content = body?.choices?.[0]?.message?.content ?? body?.choices?.[0]?.text ?? body
+  const task = normalizeEditedTask(content, payload.draftTask || payload.originalTask || {})
+
+  return {
+    ok: true,
+    task,
+    endpoint: usedEndpoint,
+    usedFallback,
+    contentType,
+    imageMode: options.images?.length ? 'vision' : 'none',
+    imageCount: options.images?.length ?? 0,
+  }
+}
+
+export async function editTaskWithAiAndImages(payload, settings, requestEndpoint, options = {}) {
+  const images = await loadImageInputs(options.images || [])
+  const extractOcr = options.extractOcr || extractTextFromImagesWithOcr
+
+  try {
+    return await editTaskWithAi(payload, settings, requestEndpoint, { images })
+  } catch (error) {
+    if (!images.length || !shouldUseOcrFallback(error)) throw error
+
+    const ocrResults = await extractOcr(images)
+    const ocrContext = formatOcrContext(ocrResults)
+    if (!ocrContext.trim()) {
+      throw new Error(`模型不支持图片解析，OCR 也没有识别出可用文字：${error instanceof Error ? error.message : error}`)
+    }
+
+    const retryPayload = {
+      ...payload,
+      instruction: [payload.instruction || '', ocrContext].filter(Boolean).join('\n\n'),
+    }
+    const result = await editTaskWithAi(retryPayload, settings, requestEndpoint)
+    return {
+      ...result,
+      imageMode: 'ocr',
+      imageCount: images.length,
+      ocrText: clipText(ocrContext, 1200),
+      ocrErrors: ocrResults.filter((result) => result.error).map((result) => `${result.name}: ${result.error}`),
+    }
   }
 }
 

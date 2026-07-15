@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import './App.css'
 import addTaskIcon from './assets/icons/add-task.png'
 import chevronDownIcon from './assets/icons/chevron-down.png'
@@ -13,8 +14,8 @@ import pinOffIcon from './assets/icons/pin-off.png'
 import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
-import type { ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import type { AddMode, AppData, AppMode, AppSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskSortMode, TaskStatus } from './types'
+import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import type { AddMode, AppData, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskSortMode, TaskStatus } from './types'
 
 const storageKey = 'todo-desk-data'
 const compactQuickTextareaBaseHeight = 124
@@ -37,12 +38,26 @@ const taskStatuses = ['doing', 'todo', 'done'] as const satisfies readonly TaskC
 const allTaskStatuses = Object.keys(statusConfig) as TaskStatus[]
 const completionAcceptanceMessage = '实现已完成，等待用户确认是否标记 done'
 const incompleteSessionMessage = '本轮 session 输出完成，但任务尚未完成'
+const parentCompletionReviewMessage = '关联 AI 子任务已全部完成，请确认父任务是否也完成。'
 type TaskOriginFilter = 'all' | 'ai' | 'human'
 type MainView = 'board' | 'calendar'
 type AiTestStatus = 'idle' | 'checking' | 'ok' | 'failed'
 type CalendarSyncStatus = 'ok' | 'failed' | 'skipped' | 'deleted' | 'pending'
+type CalendarTaskState = 'overdue' | 'open' | 'done'
+type TaskParentLinkType = NonNullable<Task['parentLink']>['type']
+
+const parentLinkTypeConfig: Record<TaskParentLinkType, { label: string; shortLabel: string }> = {
+  subtask_of: { label: '计划子任务', shortLabel: '子任务' },
+  discovered_from: { label: '处理中派生', shortLabel: '派生' },
+}
 
 const calendarWeekdays = ['一', '二', '三', '四', '五', '六', '日']
+
+const calendarTaskStateConfig: Record<CalendarTaskState, { label: string; rank: number }> = {
+  overdue: { label: '已逾期', rank: 0 },
+  open: { label: '未完成', rank: 1 },
+  done: { label: '已完成', rank: 2 },
+}
 
 const originFilterOptions: Array<{ value: TaskOriginFilter; label: string }> = [
   { value: 'all', label: '全部' },
@@ -137,6 +152,10 @@ function hasActiveSessionReview(task: Task) {
   return Boolean(task.sessionReview && !task.sessionReview.resolvedAt)
 }
 
+function hasActiveParentCompletionReview(task: Task) {
+  return Boolean(task.parentCompletionReview && !task.parentCompletionReview.resolvedAt)
+}
+
 type TaskDetailVariant = 'card' | 'mini' | 'dock'
 
 function splitLongDetailSegment(segment: string) {
@@ -214,6 +233,8 @@ const originChannels = new Set<TaskOrigin['channel']>(['ui', 'local-api', 'todo-
 const originConfidences = new Set<TaskOrigin['confidence']>(['explicit', 'legacy-inferred'])
 const legacyAgentSources = new Set(['codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
 const uiDerivedSources = new Set(['merge', 'ai-merge'])
+const parentCompletionReviewReasons = new Set(['all_agent_children_done', 'agent_child_done'])
+const parentCompletionReviewResolutions = new Set(['accepted', 'kept'])
 
 function canOpenAgentSession(task: Task) {
   const agent = `${task.origin?.agent?.name || ''} ${task.origin?.agent?.tool || ''} ${task.agent || ''} ${task.source || ''}`.toLowerCase()
@@ -223,6 +244,42 @@ function canOpenAgentSession(task: Task) {
 
 function isAgentCreatedTask(task: Task) {
   return task.origin?.kind === 'agent'
+}
+
+function getTaskParentLinkLabel(task: Task) {
+  if (!task.parentTaskId) return ''
+  return parentLinkTypeConfig[task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'].shortLabel
+}
+
+function buildTaskPath(task: Task, taskLookup: Map<string, Task>) {
+  const reversedPath: Task[] = [task]
+  const visited = new Set([task.id])
+  let parentTaskId = task.parentTaskId
+
+  while (parentTaskId && !visited.has(parentTaskId)) {
+    const parentTask = taskLookup.get(parentTaskId)
+    if (!parentTask) break
+    reversedPath.push(parentTask)
+    visited.add(parentTask.id)
+    parentTaskId = parentTask.parentTaskId
+  }
+
+  return reversedPath.reverse()
+}
+
+function wouldCreateTaskCycle(taskId: string, parentTaskId: string, tasks: Task[]) {
+  if (!parentTaskId) return false
+  const taskLookup = new Map(tasks.map((task) => [task.id, task]))
+  const visited = new Set<string>()
+  let currentTaskId = parentTaskId
+
+  while (currentTaskId && !visited.has(currentTaskId)) {
+    if (currentTaskId === taskId) return true
+    visited.add(currentTaskId)
+    currentTaskId = taskLookup.get(currentTaskId)?.parentTaskId || ''
+  }
+
+  return false
 }
 
 function matchesOriginFilter(task: Task, filter: TaskOriginFilter) {
@@ -251,13 +308,58 @@ function hasValidOrigin(task: Task) {
   )
 }
 
+function normalizeParentCompletionReview(task: Task): Task['parentCompletionReview'] {
+  const review = task.parentCompletionReview
+  if (!review) return undefined
+  const reason = parentCompletionReviewReasons.has(review.reason) ? review.reason : 'all_agent_children_done'
+  const resolution = review.resolution && parentCompletionReviewResolutions.has(review.resolution)
+    ? review.resolution
+    : undefined
+  const childTaskIds = Array.isArray(review.childTaskIds)
+    ? Array.from(new Set(review.childTaskIds.map((id) => String(id || '').trim()).filter(Boolean)))
+    : []
+  return {
+    requestedAt: String(review.requestedAt || ''),
+    requestedBy: String(review.requestedBy || 'agent'),
+    message: String(review.message || parentCompletionReviewMessage),
+    reason,
+    childTaskIds,
+    resolvedAt: review.resolvedAt ? String(review.resolvedAt) : undefined,
+    resolution,
+  }
+}
+
+function normalizeParentFields(task: Task): Pick<Task, 'parentTaskId' | 'parentLink' | 'parentCompletionReview'> {
+  const parentTaskId = String(task.parentTaskId || '').trim()
+  const createdBy: 'human' | 'agent' = task.parentLink?.createdBy === 'human' ? 'human' : 'agent'
+  const relationType: TaskParentLinkType = task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'
+  const parentLink: Task['parentLink'] = parentTaskId
+    ? {
+        type: relationType,
+        reason: String(task.parentLink?.reason || '').trim() || undefined,
+        // 旧任务默认参与父任务完成复核，保持升级前语义。
+        affectsParentCompletion: task.parentLink?.affectsParentCompletion !== false,
+        createdBy,
+        createdAt: task.parentLink?.createdAt || task.createdAt || new Date().toISOString(),
+        confidence: task.parentLink?.confidence === 'inferred' ? 'inferred' as const : 'explicit' as const,
+      }
+    : undefined
+  return {
+    parentTaskId: parentTaskId || undefined,
+    parentLink,
+    parentCompletionReview: normalizeParentCompletionReview(task),
+  }
+}
+
 function normalizeTaskOrigin(task: Task): Task {
-  if (hasValidOrigin(task)) return task
+  const parentFields = normalizeParentFields(task)
+  if (hasValidOrigin(task)) return { ...task, ...parentFields }
 
   const source = (task.source || '').trim().toLowerCase()
   if (task.agent?.trim() || task.agentSessionId?.trim() || legacyAgentSources.has(source)) {
     return {
       ...task,
+      ...parentFields,
       origin: {
         kind: 'agent',
         channel: 'local-api',
@@ -279,6 +381,7 @@ function normalizeTaskOrigin(task: Task): Task {
   if (uiDerivedSources.has(source)) {
     return {
       ...task,
+      ...parentFields,
       origin: {
         kind: 'human',
         channel: 'ui',
@@ -291,6 +394,7 @@ function normalizeTaskOrigin(task: Task): Task {
   if (source) {
     return {
       ...task,
+      ...parentFields,
       origin: {
         kind: source === 'api' ? 'integration' : 'legacy',
         channel: 'local-api',
@@ -302,6 +406,7 @@ function normalizeTaskOrigin(task: Task): Task {
 
   return {
     ...task,
+    ...parentFields,
     origin: {
       kind: 'human',
       channel: 'ui',
@@ -319,6 +424,22 @@ const appModeOptions: Array<{ value: AppMode; label: string }> = [
 const addModeOptions: Array<{ value: AddMode; label: string }> = [
   { value: 'quick', label: 'AI' },
   { value: 'detail', label: '普通' },
+]
+
+const defaultGlobalShortcuts: ShortcutSettings = {
+  toggleDock: 'CommandOrControl+Shift+T',
+  dockLeft: 'CommandOrControl+Shift+Left',
+  dockRight: 'CommandOrControl+Shift+Right',
+  toggleMini: 'CommandOrControl+Shift+M',
+  toggleKeepOnTop: 'CommandOrControl+Shift+P',
+}
+
+const shortcutActionOptions: Array<{ action: ShortcutAction; label: string; hint: string }> = [
+  { action: 'toggleDock', label: '切换贴附 / 恢复', hint: '贴附状态和普通窗口互切' },
+  { action: 'dockLeft', label: '贴附到左侧', hint: '直接吸附到屏幕左边缘' },
+  { action: 'dockRight', label: '贴附到右侧', hint: '直接吸附到屏幕右边缘' },
+  { action: 'toggleMini', label: '小卡模式', hint: '小卡和正常窗口互切' },
+  { action: 'toggleKeepOnTop', label: '置顶', hint: '打开或关闭窗口置顶' },
 ]
 
 const emptyTaskDraft = {
@@ -373,6 +494,88 @@ function OriginFilterControl({ value, counts, onChange, compact = false }: Origi
   )
 }
 
+function normalizeGlobalShortcuts(value?: Partial<ShortcutSettings>): ShortcutSettings {
+  return {
+    ...defaultGlobalShortcuts,
+    ...(value || {}),
+  }
+}
+
+function formatShortcutForDisplay(accelerator: string) {
+  if (!accelerator) return '未设置'
+  const displayMap: Record<string, string> = {
+    CommandOrControl: '⌘',
+    Command: '⌘',
+    Cmd: '⌘',
+    Control: '⌃',
+    Ctrl: '⌃',
+    Alt: '⌥',
+    Option: '⌥',
+    Shift: '⇧',
+    Left: '←',
+    Right: '→',
+    Up: '↑',
+    Down: '↓',
+    Space: 'Space',
+    Enter: '↩',
+  }
+  return accelerator.split('+').map((part) => displayMap[part] || part).join('')
+}
+
+function electronKeyFromEventKey(key: string) {
+  const keyMap: Record<string, string> = {
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    ' ': 'Space',
+    Enter: 'Enter',
+    Return: 'Enter',
+    Tab: 'Tab',
+    Backspace: 'Backspace',
+    Delete: 'Delete',
+    Home: 'Home',
+    End: 'End',
+    PageUp: 'PageUp',
+    PageDown: 'PageDown',
+  }
+  if (keyMap[key]) return keyMap[key]
+  if (/^F\d{1,2}$/i.test(key)) return key.toUpperCase()
+  if (/^[a-z]$/i.test(key)) return key.toUpperCase()
+  if (/^\d$/.test(key)) return key
+  return ''
+}
+
+function shortcutEventToAccelerator(event: KeyboardEvent<HTMLElement>) {
+  if (['Meta', 'Control', 'Alt', 'Shift'].includes(event.key)) return ''
+  const mainKey = electronKeyFromEventKey(event.key)
+  if (!mainKey) return ''
+
+  const modifiers: string[] = []
+  if (event.metaKey) modifiers.push('CommandOrControl')
+  if (event.ctrlKey && !event.metaKey) modifiers.push('Control')
+  if (event.altKey) modifiers.push('Alt')
+  if (event.shiftKey) modifiers.push('Shift')
+  if (!modifiers.length) return ''
+
+  return [...modifiers, mainKey].join('+')
+}
+
+function findShortcutDuplicate(shortcuts: ShortcutSettings, action: ShortcutAction, accelerator: string) {
+  const target = accelerator.toLowerCase()
+  return shortcutActionOptions.find((option) => (
+    option.action !== action && shortcuts[option.action].toLowerCase() === target
+  ))
+}
+
+function isInteractiveTaskEventTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+
+  // 任务卡片本身可点击、可拖拽；内嵌控件必须从卡片级切换/拖拽里排除，
+  // 否则父任务选择器会在正常模式中刚打开就被卡片收起。
+  return Boolean(target.closest('button, input, textarea, select, a, [role="button"], .task-parent-binder, .parent-picker-popover'))
+}
+
 function createDefaultData(): AppData {
   const now = new Date().toISOString()
   return {
@@ -396,6 +599,7 @@ function createDefaultData(): AppData {
       miniColumn: 'doing',
       addMode: 'quick',
       columnSorts: defaultColumnSorts,
+      globalShortcuts: defaultGlobalShortcuts,
       edgeDocked: false,
     },
     tasks: [
@@ -449,6 +653,7 @@ function mergeWithDefaults(value: AppData): AppData {
         ...defaultColumnSorts,
         ...value.settings?.columnSorts,
       },
+      globalShortcuts: normalizeGlobalShortcuts(value.settings?.globalShortcuts),
       edgeDocked: false,
     },
     tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTaskOrigin) : [],
@@ -511,6 +716,26 @@ function getTaskCalendarAt(task: Task) {
   return task.reminderAt || task.dueAt || ''
 }
 
+function getCalendarTaskState(task: Task, now = Date.now()): CalendarTaskState {
+  if (task.status === 'done') return 'done'
+  if (task.dueAt) {
+    const dueTime = new Date(task.dueAt).getTime()
+    if (!Number.isNaN(dueTime) && dueTime < now) return 'overdue'
+  }
+  return 'open'
+}
+
+function compareCalendarTasks(left: Task, right: Task, now: number) {
+  const leftState = getCalendarTaskState(left, now)
+  const rightState = getCalendarTaskState(right, now)
+  const stateDifference = calendarTaskStateConfig[leftState].rank - calendarTaskStateConfig[rightState].rank
+  if (stateDifference !== 0) return stateDifference
+
+  const timeDifference = String(getTaskCalendarAt(left)).localeCompare(String(getTaskCalendarAt(right)))
+  if (timeDifference !== 0) return timeDifference
+  return left.title.localeCompare(right.title, 'zh-CN')
+}
+
 function addCalendarMonths(value: Date, offset: number) {
   return new Date(value.getFullYear(), value.getMonth() + offset, 1)
 }
@@ -562,8 +787,10 @@ function groupTasksByCalendarDate(tasks: Task[]) {
     grouped.set(key, next)
   }
 
+  const now = Date.now()
   for (const items of grouped.values()) {
-    items.sort((left, right) => String(getTaskCalendarAt(left)).localeCompare(String(getTaskCalendarAt(right))))
+    // 日期格最多显示三条，必须先按状态排序，避免已完成任务挤掉待处理任务。
+    items.sort((left, right) => compareCalendarTasks(left, right, now))
   }
   return grouped
 }
@@ -585,6 +812,25 @@ function getCalendarSyncLabel(status: CalendarSyncStatus) {
     default:
       return '待同步'
   }
+}
+
+function getCalendarTaskSyncSummary(localStatus: CalendarSyncStatus, larkStatus: CalendarSyncStatus) {
+  const externalStatuses = [localStatus, larkStatus]
+  const syncedCount = 1 + externalStatuses.filter((status) => status === 'ok').length
+  const detail = `Todo Desk 已保存 · 系统 ${getCalendarSyncLabel(localStatus)} · 飞书 ${getCalendarSyncLabel(larkStatus)}`
+
+  // Todo Desk 自身写入成功后已经完成第一份持久化，因此摘要从 1/3 开始计数；
+  // 外部日历只在异常时抢占视觉注意力，正常状态保持为一条低调摘要。
+  if (externalStatuses.some((status) => status === 'failed')) {
+    return { label: `同步异常 · ${syncedCount}/3`, tone: 'failed', detail }
+  }
+  if (externalStatuses.some((status) => status === 'pending')) {
+    return { label: `等待同步 · ${syncedCount}/3`, tone: 'pending', detail }
+  }
+  if (syncedCount === 3) {
+    return { label: '已同步 3/3', tone: 'ok', detail }
+  }
+  return { label: `已保存 ${syncedCount}/3`, tone: 'muted', detail }
 }
 
 function getTaskTimeLabel(task: Task) {
@@ -703,6 +949,7 @@ function getTaskSearchFields(task: Task) {
     task.project,
     task.repository || '',
     task.repositoryPath || '',
+    task.parentTaskId || '',
     task.agent || '',
     task.agentSessionId || '',
     task.priority,
@@ -760,6 +1007,71 @@ function pickMergedPriority(tasks: Task[]): TaskPriority {
 
 function pickEarliestDate(values: string[]) {
   return values.filter(Boolean).sort((left, right) => new Date(left).getTime() - new Date(right).getTime())[0] || ''
+}
+
+function normalizeChildTaskIds(tasks: Task[]) {
+  return Array.from(new Set(tasks.map((task) => task.id).filter(Boolean)))
+}
+
+function sameStringSet(left: string[], right: string[]) {
+  const leftSet = new Set(left)
+  const rightSet = new Set(right)
+  if (leftSet.size !== rightSet.size) return false
+  for (const item of leftSet) {
+    if (!rightSet.has(item)) return false
+  }
+  return true
+}
+
+function shouldSkipResolvedParentReview(task: Task, childTaskIds: string[]) {
+  const review = task.parentCompletionReview
+  return Boolean(
+    review?.resolvedAt
+    && review.resolution === 'kept'
+    && sameStringSet(review.childTaskIds || [], childTaskIds),
+  )
+}
+
+function buildParentCompletionReview(parentTask: Task, childTasks: Task[], completedChild: Task, now: string): Task['parentCompletionReview'] {
+  const childTaskIds = normalizeChildTaskIds(childTasks)
+  const activeReview = hasActiveParentCompletionReview(parentTask) ? parentTask.parentCompletionReview : undefined
+  return {
+    requestedAt: activeReview?.requestedAt || now,
+    requestedBy: activeReview?.requestedBy || completedChild.origin?.agent?.name || completedChild.agent || 'agent',
+    message: activeReview?.message || parentCompletionReviewMessage,
+    reason: 'all_agent_children_done',
+    childTaskIds: Array.from(new Set([...(activeReview?.childTaskIds || []), ...childTaskIds])),
+  }
+}
+
+function applyParentReviewForCompletedChild(tasks: Task[], childTaskId: string, now: string) {
+  const completedChild = tasks.find((task) => task.id === childTaskId)
+  if (!completedChild || completedChild.status !== 'done' || !completedChild.parentTaskId) return tasks
+
+  const parentTask = tasks.find((task) => task.id === completedChild.parentTaskId)
+  if (!parentTask || parentTask.status === 'done' || isAgentCreatedTask(parentTask)) return tasks
+
+  const linkedAgentChildren = tasks.filter((task) =>
+    task.parentTaskId === parentTask.id
+    && task.parentLink?.affectsParentCompletion !== false
+    && isAgentCreatedTask(task),
+  )
+  if (linkedAgentChildren.length === 0 || linkedAgentChildren.some((task) => task.status !== 'done')) return tasks
+
+  const childTaskIds = normalizeChildTaskIds(linkedAgentChildren)
+  if (shouldSkipResolvedParentReview(parentTask, childTaskIds)) return tasks
+
+  const parentCompletionReview = buildParentCompletionReview(parentTask, linkedAgentChildren, completedChild, now)
+  // 子任务完成不代表父任务一定结束，这里只给父任务挂审批提醒，由人类最终确认。
+  return tasks.map((task) =>
+    task.id === parentTask.id
+      ? {
+          ...task,
+          parentCompletionReview,
+          updatedAt: now,
+        }
+      : task,
+  )
 }
 
 async function copyTextToClipboard(text: string) {
@@ -829,6 +1141,41 @@ function applyParsedTaskToDraft(parsed: Partial<Task>, fallbackText: string, sta
   }
 }
 
+function buildAiEditableTaskFromDraft(draftValue: TaskDraft): Partial<Task> {
+  return {
+    title: draftValue.title.trim(),
+    detail: draftValue.detail.trim(),
+    status: draftValue.status,
+    priority: draftValue.priority,
+    project: draftValue.project.trim(),
+    tags: parseTags(draftValue.tags),
+    dueAt: fromLocalInputValue(draftValue.dueAt),
+    reminderAt: fromLocalInputValue(draftValue.reminderAt),
+  }
+}
+
+function hasOwnField(value: object, field: string) {
+  return Object.prototype.hasOwnProperty.call(value, field)
+}
+
+function applyEditedTaskToDraft(current: TaskDraft, edited: Partial<Task>): TaskDraft {
+  const status = allTaskStatuses.includes(edited.status as TaskStatus) ? (edited.status as TaskStatus) : current.status
+  const priority = ['high', 'medium', 'low'].includes(edited.priority as TaskPriority)
+    ? (edited.priority as TaskPriority)
+    : current.priority
+
+  return {
+    title: typeof edited.title === 'string' ? edited.title : current.title,
+    detail: typeof edited.detail === 'string' ? edited.detail : current.detail,
+    status,
+    priority,
+    project: typeof edited.project === 'string' ? edited.project : current.project,
+    tags: Array.isArray(edited.tags) ? edited.tags.join(' ') : current.tags,
+    dueAt: hasOwnField(edited, 'dueAt') ? toLocalInputValue(edited.dueAt || '') : current.dueAt,
+    reminderAt: hasOwnField(edited, 'reminderAt') ? toLocalInputValue(edited.reminderAt || '') : current.reminderAt,
+  }
+}
+
 function createTaskFromDraft(
   draftValue: ReturnType<typeof applyParsedTaskToDraft>,
   fallbackTitle: string,
@@ -864,10 +1211,19 @@ function App() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>('')
   const [editingTaskId, setEditingTaskId] = useState<string>('')
   const [draft, setDraft] = useState(emptyTaskDraft)
+  const [draftParentTaskId, setDraftParentTaskId] = useState('')
+  const [draftParentLinkType, setDraftParentLinkType] = useState<TaskParentLinkType>('subtask_of')
+  const [draftParentLinkReason, setDraftParentLinkReason] = useState('')
+  const [draftAffectsParentCompletion, setDraftAffectsParentCompletion] = useState(true)
+  const [composerCollapsed, setComposerCollapsed] = useState(false)
+  const [aiEditInstruction, setAiEditInstruction] = useState('')
+  const [aiEditing, setAiEditing] = useState(false)
   const [attachedImages, setAttachedImages] = useState<TaskImage[]>([])
   const [syncState, setSyncState] = useState('尚未同步')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [recordingShortcutAction, setRecordingShortcutAction] = useState<ShortcutAction | ''>('')
   const [trashOpen, setTrashOpen] = useState(false)
+  const [topologyTaskId, setTopologyTaskId] = useState('')
   const [quickText, setQuickText] = useState('')
   const [aiState, setAiState] = useState('')
   const [aiTestResult, setAiTestResult] = useState<{ status: AiTestStatus; message: string }>({
@@ -893,6 +1249,12 @@ function App() {
   useEffect(() => {
     dataRef.current = data
   }, [data])
+
+  useEffect(() => {
+    if (!settingsOpen && recordingShortcutAction) {
+      void stopShortcutRecording()
+    }
+  }, [recordingShortcutAction, settingsOpen])
 
   useEffect(() => {
     loadData()
@@ -939,6 +1301,32 @@ function App() {
   const filteredTasks = useMemo(
     () => searchedTasks.filter((task) => matchesOriginFilter(task, originFilter)),
     [originFilter, searchedTasks],
+  )
+
+  const taskLookup = useMemo(
+    () => new Map(data.tasks.map((task) => [task.id, task])),
+    [data.tasks],
+  )
+  const draftParentTask = draftParentTaskId ? taskLookup.get(draftParentTaskId) : undefined
+  useEffect(() => {
+    if (draftParentTaskId && !taskLookup.has(draftParentTaskId)) {
+      setDraftParentTaskId('')
+    }
+  }, [draftParentTaskId, taskLookup])
+  const childTasksByParentId = useMemo(() => {
+    const grouped = new Map<string, Task[]>()
+    for (const task of data.tasks) {
+      if (!task.parentTaskId) continue
+      const children = grouped.get(task.parentTaskId) ?? []
+      children.push(task)
+      grouped.set(task.parentTaskId, children)
+    }
+    return grouped
+  }, [data.tasks])
+  const parentTaskCandidates = useMemo(
+    () => [...data.tasks]
+      .sort((left, right) => String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt))),
+    [data.tasks],
   )
 
   const groupedTasks = useMemo(
@@ -1001,6 +1389,10 @@ function App() {
     date.setHours(9, 0, 0, 0)
     setMainView('board')
     setEditingTaskId('')
+    setDraftParentTaskId('')
+    setDraftParentLinkType('subtask_of')
+    setDraftParentLinkReason('')
+    setDraftAffectsParentCompletion(true)
     setDraft({
       ...emptyTaskDraft,
       status: 'todo',
@@ -1008,6 +1400,7 @@ function App() {
     })
     setAttachedImages([])
     setSelectedTaskId('')
+    setComposerCollapsed(false)
     if (data.settings.addMode !== 'detail') {
       void updateSettings({ addMode: 'detail' })
     }
@@ -1176,6 +1569,10 @@ function App() {
     const now = new Date().toISOString()
     const sourceIdSet = new Set(sourceTasks.map((task) => task.id))
     const firstSourceIndex = data.tasks.findIndex((task) => task.id === sourceTasks[0].id)
+    const mergedParentTaskIds = mergeUniqueStrings(sourceTasks.map((task) => task.parentTaskId || ''))
+    const mergedParentTaskId = mergedParentTaskIds.length === 1 && !sourceIdSet.has(mergedParentTaskIds[0])
+      ? mergedParentTaskIds[0]
+      : ''
     const mergedTask: Task = {
       id: crypto.randomUUID(),
       title: mergedContent.title,
@@ -1190,6 +1587,16 @@ function App() {
       createdAt: now,
       updatedAt: now,
       completedAt: sourceTasks.every((task) => task.status === 'done') ? now : '',
+      parentTaskId: mergedParentTaskId || undefined,
+      parentLink: mergedParentTaskId
+        ? {
+            type: 'subtask_of',
+            affectsParentCompletion: true,
+            createdBy: 'human',
+            createdAt: now,
+            confidence: 'explicit',
+          }
+        : undefined,
       origin: createHumanTaskOrigin(mode === 'ai' ? 'ui-ai-merge' : 'ui-merge'),
       remindedAt: '',
       source: mode === 'ai' ? 'ai-merge' : 'merge',
@@ -1199,8 +1606,11 @@ function App() {
       repositoryPath: mergeUniqueStrings(sourceTasks.map((task) => task.repositoryPath || '')).join(' / '),
     }
     const deletedAt = now
-    const nextTasks = data.tasks.filter((task) => !sourceIdSet.has(task.id))
+    let nextTasks = data.tasks.filter((task) => !sourceIdSet.has(task.id))
     nextTasks.splice(Math.max(0, firstSourceIndex), 0, mergedTask)
+    if (mergedTask.status === 'done' && mergedTask.parentTaskId) {
+      nextTasks = applyParentReviewForCompletedChild(nextTasks, mergedTask.id, now)
+    }
     const trashedTasks = sourceTasks.map((task) => ({
       ...task,
       deletedAt,
@@ -1237,6 +1647,8 @@ function App() {
     const priority = ['high', 'medium', 'low'].includes(draft.priority) ? draft.priority : 'medium'
     const wasDone = existing?.status === 'done'
     const willBeDone = status === 'done'
+    // 只有从父任务显式创建分支时才写关系；编辑已有任务必须保留原关系，避免表单状态误改层级。
+    const newParentTaskId = !existing && draftParentTask ? draftParentTask.id : ''
     return {
       id: existing?.id ?? crypto.randomUUID(),
       title: toDraftString(draft.title).trim(),
@@ -1253,6 +1665,18 @@ function App() {
       completedAt: willBeDone ? existing?.completedAt || now : wasDone ? '' : existing?.completedAt || '',
       completionAcceptance: existing?.completionAcceptance,
       sessionReview: existing?.sessionReview,
+      parentTaskId: existing?.parentTaskId ?? (newParentTaskId || undefined),
+      parentLink: existing?.parentLink ?? (newParentTaskId
+        ? {
+            type: draftParentLinkType,
+            reason: draftParentLinkReason.trim() || undefined,
+            affectsParentCompletion: draftAffectsParentCompletion,
+            createdBy: 'human',
+            createdAt: now,
+            confidence: 'explicit',
+          }
+        : undefined),
+      parentCompletionReview: existing?.parentCompletionReview,
       origin: existing?.origin ?? createHumanTaskOrigin('ui-form'),
     remindedAt: existing?.remindedAt ?? '',
     calendarSync: existing?.calendarSync,
@@ -1266,16 +1690,52 @@ function App() {
 
   function startCreate(status: TaskStatus) {
     setEditingTaskId('')
+    setDraftParentTaskId('')
+    setDraftParentLinkType('subtask_of')
+    setDraftParentLinkReason('')
+    setDraftAffectsParentCompletion(true)
     setDraft({ ...emptyTaskDraft, status })
+    setAiEditInstruction('')
     setAttachedImages([])
     setSelectedTaskId('')
+    setComposerCollapsed(false)
+  }
+
+  function startCreateBranchTask(parentTask: Task, relationType: TaskParentLinkType) {
+    setMainView('board')
+    setEditingTaskId('')
+    setDraftParentTaskId(parentTask.id)
+    setDraftParentLinkType(relationType)
+    setDraftParentLinkReason('')
+    setDraftAffectsParentCompletion(true)
+    setDraft({
+      ...emptyTaskDraft,
+      status: 'todo',
+      project: parentTask.project || '',
+    })
+    setAiEditInstruction('')
+    setAttachedImages([])
+    setSelectedTaskId(parentTask.id)
+    setMultiSelectedTaskIds([])
+    setComposerCollapsed(false)
+    setAiState(`正在为「${parentTask.title}」创建${parentLinkTypeConfig[relationType].label}`)
+    setSubmitState('')
+    if (data.settings.addMode !== 'detail') {
+      void updateSettings({ addMode: 'detail' })
+    }
   }
 
   function startEdit(task: Task) {
     setEditingTaskId(task.id)
+    setDraftParentTaskId('')
+    setDraftParentLinkType('subtask_of')
+    setDraftParentLinkReason('')
+    setDraftAffectsParentCompletion(true)
     setDraft(buildDraftFromTask(task))
+    setAiEditInstruction('')
     setAttachedImages(task.imagePaths ?? [])
     setSelectedTaskId(task.id)
+    setComposerCollapsed(false)
   }
 
   async function saveDraftTask() {
@@ -1306,6 +1766,10 @@ function App() {
       const message = existing ? '已保存修改' : '已添加任务'
       setSelectedTaskId(savedTask.id)
       setEditingTaskId(savedTask.id)
+      setDraftParentTaskId('')
+      setDraftParentLinkType('subtask_of')
+      setDraftParentLinkReason('')
+      setDraftAffectsParentCompletion(true)
       setDraft(buildDraftFromTask(savedTask))
       setAttachedImages(savedTask.imagePaths ?? [])
       setAiState(message)
@@ -1440,6 +1904,10 @@ function App() {
     const [titleLine = '', ...detailLines] = trimmed.split(/\r?\n/)
     // 普通添加保留为人工填写流程：把紧凑输入迁移到完整表单，避免点击按钮后直接创建不完整任务。
     setEditingTaskId('')
+    setDraftParentTaskId('')
+    setDraftParentLinkType('subtask_of')
+    setDraftParentLinkReason('')
+    setDraftAffectsParentCompletion(true)
     setDraft({
       ...emptyTaskDraft,
       title: titleLine.trim(),
@@ -1450,6 +1918,7 @@ function App() {
     setSubmitState('')
     setAiState('')
     setQuickText('')
+    setComposerCollapsed(false)
     if (quickTextareaRef.current) {
       quickTextareaRef.current.style.height = `${compactQuickTextareaBaseHeight}px`
     }
@@ -1464,6 +1933,66 @@ function App() {
     }
     const parsedDraft = await parseTextToDraft(source, draft.status, attachedImages, { forceAi: true })
     setDraft(parsedDraft)
+  }
+
+  async function editDraftWithAi() {
+    if (!editingTaskId) {
+      await fillDraftWithAi()
+      return
+    }
+    if (aiEditing) return
+
+    const currentData = dataRef.current
+    const originalTask = currentData.tasks.find((task) => task.id === editingTaskId)
+    if (!originalTask) {
+      const message = 'AI 修改失败：原任务已不存在'
+      setAiState(message)
+      setSyncState(message)
+      return
+    }
+    const instruction = aiEditInstruction.trim()
+    const draftTask = buildAiEditableTaskFromDraft(draft)
+    const hasDraftContent = Boolean(draftTask.title || draftTask.detail || draftTask.project || draftTask.tags?.length)
+    if (!instruction && !hasDraftContent && attachedImages.length === 0) {
+      setAiState('先输入修改要求、任务内容或附加图片')
+      return
+    }
+    if (!window.todoDesk?.editTask) {
+      setAiState('AI 修改需要桌面 App 运行')
+      setSyncState('AI 修改需要桌面 App 运行')
+      return
+    }
+
+    setAiEditing(true)
+    setAiState(attachedImages.length ? '正在用 AI 根据要求和图片修改任务...' : '正在用 AI 修改任务...')
+    try {
+      const result = await window.todoDesk.editTask({
+        originalTask,
+        draftTask,
+        instruction,
+        settings: { ...data.settings, aiEnabled: true },
+        images: attachedImages,
+      })
+      if (!result.ok || !result.task) {
+        const message = result.message || 'AI 修改失败'
+        setAiState(message)
+        setSyncState(message)
+        return
+      }
+
+      setDraft((current) => applyEditedTaskToDraft(current, result.task || {}))
+      setAiEditInstruction('')
+      const imageSource = result.imageMode === 'ocr' ? '，已使用 OCR' : result.imageMode === 'vision' ? '，已读取图片' : ''
+      const message = `AI 已修改草稿${imageSource}，确认后点保存`
+      setAiState(message)
+      setSyncState(message)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI 修改失败'
+      setAiState(message)
+      setSyncState(message)
+    } finally {
+      setAiEditing(false)
+    }
   }
 
   const updateTask = useCallback(
@@ -1485,6 +2014,85 @@ function App() {
     },
     [data, persist],
   )
+
+  async function linkParentTask(taskId: string, parentTaskId: string) {
+    const currentData = dataRef.current
+    const taskToLink = currentData.tasks.find((task) => task.id === taskId)
+    const parentTask = parentTaskId ? currentData.tasks.find((task) => task.id === parentTaskId) : undefined
+    if (!taskToLink || (parentTaskId && !parentTask)) {
+      setSyncState('父任务绑定失败：任务不存在')
+      return
+    }
+    if (wouldCreateTaskCycle(taskId, parentTaskId, currentData.tasks)) {
+      setSyncState('父任务绑定失败：不能形成循环关系')
+      return
+    }
+
+    const now = new Date().toISOString()
+    const previousParentTaskId = taskToLink.parentTaskId || ''
+    const keepExistingRelation = previousParentTaskId === parentTaskId
+    const nextTask: Task = {
+      ...taskToLink,
+      parentTaskId: parentTaskId || undefined,
+      parentLink: parentTaskId
+        ? {
+            type: keepExistingRelation && taskToLink.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of',
+            reason: keepExistingRelation ? taskToLink.parentLink?.reason : undefined,
+            affectsParentCompletion: keepExistingRelation
+              ? taskToLink.parentLink?.affectsParentCompletion !== false
+              : true,
+            createdBy: 'human',
+            createdAt: keepExistingRelation ? taskToLink.parentLink?.createdAt || now : now,
+            confidence: 'explicit',
+          }
+        : undefined,
+      updatedAt: now,
+    }
+    let nextTasks = currentData.tasks.map((task) => (task.id === taskId ? nextTask : task))
+
+    if (previousParentTaskId && previousParentTaskId !== parentTaskId) {
+      // 解除或更换父任务时，旧父任务上的提醒已经不再可信，必须清掉让后续子任务完成重新触发。
+      nextTasks = nextTasks.map((task) =>
+        task.id === previousParentTaskId && hasActiveParentCompletionReview(task)
+          ? {
+              ...task,
+              parentCompletionReview: undefined,
+              updatedAt: now,
+            }
+          : task,
+      )
+    }
+    if (nextTask.status === 'done' && parentTaskId) {
+      nextTasks = applyParentReviewForCompletedChild(nextTasks, taskId, now)
+    }
+
+    const saved = await persist({ ...currentData, tasks: nextTasks })
+    const savedTask = saved.tasks.find((task) => task.id === taskId)
+    setSelectedTaskId(taskId)
+    setSyncState(parentTaskId ? `已绑定父任务：${parentTask?.title || savedTask?.parentTaskId}` : '已解除父任务绑定')
+  }
+
+  async function openRelatedTask(taskId: string) {
+    const targetTask = dataRef.current.tasks.find((task) => task.id === taskId)
+    if (!targetTask) return
+
+    const targetColumn = getTaskColumnStatus(targetTask.status)
+    // 关联任务跳转必须跨过当前搜索和来源筛选，否则从父卡片点 AI 子任务时，
+    // 目标卡片可能仍被“人工任务”筛选或旧搜索词隐藏，用户会误以为没有打开。
+    setSearch('')
+    setOriginFilter('all')
+    setMultiSelectedTaskIds([])
+    setMainView('board')
+
+    if ((dataRef.current.settings.appMode === 'mini' || dockState.docked) && dataRef.current.settings.miniColumn !== targetColumn) {
+      await updateSettings({ miniColumn: targetColumn })
+    }
+    if (dockState.docked) {
+      await openDockDetailWindow()
+      setDockDetailOpenState(true)
+    }
+    setSelectedTaskId(taskId)
+  }
 
   const syncToLark = useCallback(
     async (nextData = data, completedTaskId?: string) => {
@@ -1523,20 +2131,35 @@ function App() {
             resolvedAt: completedAt,
           }
         : currentTask.completionAcceptance
+      const parentCompletionReview = hasActiveParentCompletionReview(currentTask)
+        ? {
+            ...currentTask.parentCompletionReview,
+            requestedAt: currentTask.parentCompletionReview?.requestedAt || completedAt,
+            requestedBy: currentTask.parentCompletionReview?.requestedBy || 'agent',
+            message: currentTask.parentCompletionReview?.message || parentCompletionReviewMessage,
+            reason: currentTask.parentCompletionReview?.reason || 'all_agent_children_done',
+            childTaskIds: currentTask.parentCompletionReview?.childTaskIds || [],
+            resolution: 'accepted' as const,
+            resolvedAt: completedAt,
+          }
+        : currentTask.parentCompletionReview
+      let nextTasks = data.tasks.map((task) =>
+        task.id === taskId
+          ? {
+              ...task,
+              status: 'done' as TaskStatus,
+              completedAt,
+              completionAcceptance,
+              sessionReview: undefined,
+              parentCompletionReview,
+              updatedAt: completedAt,
+            }
+          : task,
+      )
+      nextTasks = applyParentReviewForCompletedChild(nextTasks, taskId, completedAt)
       const nextData = {
         ...data,
-        tasks: data.tasks.map((task) =>
-          task.id === taskId
-            ? {
-                ...task,
-                status: 'done' as TaskStatus,
-                completedAt,
-                completionAcceptance,
-                sessionReview: undefined,
-                updatedAt: completedAt,
-              }
-            : task,
-        ),
+        tasks: nextTasks,
       }
       const saved = await persist(nextData)
       setSelectedTaskId(taskId)
@@ -1576,6 +2199,25 @@ function App() {
         requestedBy: currentTask.completionAcceptance?.requestedBy || 'agent',
         message: currentTask.completionAcceptance?.message || completionAcceptanceMessage,
         resolution: 'dismissed',
+        resolvedAt,
+      },
+    })
+    setSelectedTaskId(taskId)
+  }
+
+  async function keepParentTaskOpen(taskId: string) {
+    const currentTask = data.tasks.find((task) => task.id === taskId)
+    if (!currentTask?.parentCompletionReview) return
+    const resolvedAt = new Date().toISOString()
+    await updateTask(taskId, {
+      parentCompletionReview: {
+        ...currentTask.parentCompletionReview,
+        requestedAt: currentTask.parentCompletionReview.requestedAt || resolvedAt,
+        requestedBy: currentTask.parentCompletionReview.requestedBy || 'agent',
+        message: currentTask.parentCompletionReview.message || parentCompletionReviewMessage,
+        reason: currentTask.parentCompletionReview.reason || 'all_agent_children_done',
+        childTaskIds: currentTask.parentCompletionReview.childTaskIds || [],
+        resolution: 'kept',
         resolvedAt,
       },
     })
@@ -1771,6 +2413,10 @@ function App() {
     if (patch.appMode && patch.appMode !== data.settings.appMode) {
       await window.todoDesk?.applyWindowMode?.(patch.appMode)
       setEditingTaskId('')
+      setDraftParentTaskId('')
+      setDraftParentLinkType('subtask_of')
+      setDraftParentLinkReason('')
+      setDraftAffectsParentCompletion(true)
       setAttachedImages([])
     }
     if (patch.aiBaseUrl !== undefined || patch.aiModel !== undefined || patch.aiApiKey !== undefined) {
@@ -1784,6 +2430,59 @@ function App() {
       },
     }
     await persist(nextData)
+  }
+
+  async function updateShortcut(action: ShortcutAction, accelerator: string) {
+    const nextShortcuts = {
+      ...normalizeGlobalShortcuts(data.settings.globalShortcuts),
+      [action]: accelerator,
+    }
+    const duplicate = findShortcutDuplicate(nextShortcuts, action, accelerator)
+    if (duplicate) {
+      setSyncState(`快捷键已被「${duplicate.label}」使用`)
+      return
+    }
+    await updateSettings({ globalShortcuts: nextShortcuts })
+    setSyncState('快捷键已更新')
+  }
+
+  async function beginShortcutRecording(action: ShortcutAction) {
+    setRecordingShortcutAction(action)
+    await window.todoDesk?.setShortcutRecording?.(true)
+  }
+
+  async function stopShortcutRecording() {
+    setRecordingShortcutAction('')
+    await window.todoDesk?.setShortcutRecording?.(false)
+  }
+
+  async function handleShortcutKeyDown(event: KeyboardEvent<HTMLButtonElement>, action: ShortcutAction) {
+    if (recordingShortcutAction !== action) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.key === 'Escape') {
+      await stopShortcutRecording()
+      return
+    }
+
+    const accelerator = shortcutEventToAccelerator(event)
+    if (!accelerator) {
+      setSyncState('请按带有 ⌘ / Ctrl / ⌥ / ⇧ 的组合键')
+      return
+    }
+    await updateShortcut(action, accelerator)
+    await stopShortcutRecording()
+  }
+
+  async function resetShortcut(action: ShortcutAction) {
+    await updateShortcut(action, defaultGlobalShortcuts[action])
+    await stopShortcutRecording()
+  }
+
+  async function resetAllShortcuts() {
+    await updateSettings({ globalShortcuts: defaultGlobalShortcuts })
+    await stopShortcutRecording()
+    setSyncState('快捷键已恢复默认')
   }
 
   async function testAiConnection() {
@@ -1882,16 +2581,27 @@ function App() {
   function renderAttachedImages() {
     return (
       <div className="image-row">
-        {attachedImages.map((image) => (
-          <button
-            key={image.path}
-            className="image-chip"
-            type="button"
-            title="移除图片"
-            onClick={() => removeImage(image.path)}
-          >
-            <img src={image.url} alt="" />
-          </button>
+        {attachedImages.map((image, index) => (
+          <div className="image-chip" key={image.path}>
+            <button
+              className="image-chip-preview"
+              type="button"
+              title="预览图片"
+              aria-label={`预览图片：${image.name || `附件 ${index + 1}`}`}
+              onClick={() => openImagePreview(attachedImages, index, draft.title.trim() || '任务附件')}
+            >
+              <img src={image.url} alt={image.name || `附件 ${index + 1}`} />
+            </button>
+            <button
+              className="image-chip-remove"
+              type="button"
+              title="删除图片"
+              aria-label={`删除图片：${image.name || `附件 ${index + 1}`}`}
+              onClick={() => removeImage(image.path)}
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
         ))}
         <button className="ghost-button" type="button" onClick={importImages}>
           附加图片
@@ -2057,7 +2767,7 @@ function App() {
               {miniTasks.map((task) => (
                 <article
                   key={task.id}
-                  className={`dock-task-item ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${task.id === selectedTaskId ? 'selected' : ''} ${multiSelectedTaskIds.includes(task.id) ? 'multi-selected' : ''} ${hasActiveCompletionGate(task) || hasActiveSessionReview(task) ? 'has-task-notice' : ''} ${hasActiveCompletionGate(task) ? 'has-completion-notice' : ''} ${hasActiveSessionReview(task) ? 'has-session-review-notice' : ''}`}
+                  className={`dock-task-item ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${task.id === selectedTaskId ? 'selected' : ''} ${multiSelectedTaskIds.includes(task.id) ? 'multi-selected' : ''} ${hasActiveCompletionGate(task) || hasActiveSessionReview(task) || hasActiveParentCompletionReview(task) ? 'has-task-notice' : ''} ${hasActiveCompletionGate(task) ? 'has-completion-notice' : ''} ${hasActiveSessionReview(task) ? 'has-session-review-notice' : ''} ${hasActiveParentCompletionReview(task) ? 'has-parent-review-notice' : ''}`}
                 >
                   <button
                     className="dock-task-head"
@@ -2068,7 +2778,7 @@ function App() {
                       <TaskNoticeDots task={task} />
                       {task.title}
                     </strong>
-                    <small>{getTaskTimeLabel(task)}</small>
+                    <small>{task.parentTaskId ? `${getTaskParentLinkLabel(task)} · ` : ''}{getTaskTimeLabel(task)}</small>
                   </button>
                 </article>
               ))}
@@ -2103,7 +2813,35 @@ function App() {
                 onDismiss={dismissCompletionRequest}
               />
               <SessionReviewNotice task={expandedDockTask} onResolve={resolveSessionReview} onOpenSession={openAgentSession} />
+              <ParentCompletionReviewNotice
+                task={expandedDockTask}
+                childTasks={childTasksByParentId.get(expandedDockTask.id) ?? []}
+                onConfirm={completeTask}
+                onKeep={keepParentTaskOpen}
+              />
               {expandedDockTask.detail && <TaskDetailText detail={expandedDockTask.detail} variant="dock" />}
+              <TaskRelationshipSummary
+                task={expandedDockTask}
+                taskPath={buildTaskPath(expandedDockTask, taskLookup)}
+                childTasks={childTasksByParentId.get(expandedDockTask.id) ?? []}
+                onOpenTask={(taskId) => {
+                  void openRelatedTask(taskId)
+                }}
+                onOpenTopology={setTopologyTaskId}
+              />
+              <TaskChildList
+                task={expandedDockTask}
+                childTasks={childTasksByParentId.get(expandedDockTask.id) ?? []}
+                onOpenTask={(taskId) => {
+                  void openRelatedTask(taskId)
+                }}
+              />
+              <TaskParentBinder
+                task={expandedDockTask}
+                parentTask={expandedDockTask.parentTaskId ? taskLookup.get(expandedDockTask.parentTaskId) : undefined}
+                parentCandidates={parentTaskCandidates}
+                onChangeParentTask={linkParentTask}
+              />
               <dl>
                 <div>
                   <dt>创建</dt>
@@ -2268,11 +3006,21 @@ function App() {
                 task={task}
                 selected={task.id === selectedTaskId}
                 multiSelected={multiSelectedTaskIds.includes(task.id)}
+                taskPath={buildTaskPath(task, taskLookup)}
+                parentTask={task.parentTaskId ? taskLookup.get(task.parentTaskId) : undefined}
+                childTasks={childTasksByParentId.get(task.id) ?? []}
+                parentTaskCandidates={parentTaskCandidates}
                 onSelect={selectTask}
                 onToggleExpand={(taskId) => setSelectedTaskId((current) => (current === taskId ? '' : taskId))}
                 onEdit={startEdit}
                 onToggleDone={toggleDone}
                 onMove={moveTask}
+                onKeepParentTaskOpen={keepParentTaskOpen}
+                onChangeParentTask={linkParentTask}
+                onOpenRelatedTask={(taskId) => {
+                  void openRelatedTask(taskId)
+                }}
+                onOpenTopology={setTopologyTaskId}
                 onContinueCompletionRequest={continueCompletionRequest}
                 onDismissCompletionRequest={dismissCompletionRequest}
                 onResolveSessionReview={resolveSessionReview}
@@ -2347,6 +3095,17 @@ function App() {
                 return { ...current, index: nextIndex }
               })
             }
+          />
+        )}
+        {topologyTaskId && taskLookup.has(topologyTaskId) && (
+          <TaskTopologyDialog
+            tasks={data.tasks}
+            currentTaskId={topologyTaskId}
+            onClose={() => setTopologyTaskId('')}
+            onOpenTask={(taskId) => {
+              setTopologyTaskId('')
+              void openRelatedTask(taskId)
+            }}
           />
         )}
       </main>
@@ -2506,17 +3265,31 @@ function App() {
               key={status}
               status={status}
               tasks={groupedTasks[status]}
+              taskLookup={taskLookup}
+              childTasksByParentId={childTasksByParentId}
+              parentTaskCandidates={parentTaskCandidates}
               sortMode={data.settings.columnSorts[status]}
               sortOpen={openSortColumn === status}
               selectedTaskId={selectedTaskId}
               multiSelectedTaskIds={multiSelectedTaskIds}
+              detailPopoverEnabled={!editingTaskId && !draftParentTaskId}
               onAdd={() => startCreate(status === 'done' ? 'todo' : status)}
               onToggleSort={() => setOpenSortColumn((current) => (current === status ? '' : status))}
               onSortChange={(sortMode) => updateColumnSort(status, sortMode)}
-              onSelect={selectTask}
+              onSelect={(taskId, event) => {
+                setOpenSortColumn('')
+                selectTask(taskId, event)
+              }}
               onEdit={startEdit}
               onComplete={completeTask}
               onToggleDone={toggleDone}
+              onKeepParentTaskOpen={keepParentTaskOpen}
+              onChangeParentTask={linkParentTask}
+              onCreateChildTask={startCreateBranchTask}
+              onOpenRelatedTask={(taskId) => {
+                void openRelatedTask(taskId)
+              }}
+              onOpenTopology={setTopologyTaskId}
               onContinueCompletionRequest={continueCompletionRequest}
               onDismissCompletionRequest={dismissCompletionRequest}
               onResolveSessionReview={resolveSessionReview}
@@ -2535,8 +3308,21 @@ function App() {
       )}
 
       <section
-        className={`composer ${composerExpanded ? 'composer-expanded' : 'composer-compact'}`}
+        className={`composer ${composerExpanded ? 'composer-expanded' : 'composer-compact'} ${composerCollapsed ? 'composer-collapsed' : ''}`}
       >
+        <button
+          className="composer-collapse-toggle"
+          type="button"
+          title={composerCollapsed ? '展开添加任务栏' : '收起添加任务栏'}
+          aria-label={composerCollapsed ? '展开添加任务栏' : '收起添加任务栏'}
+          aria-expanded={!composerCollapsed}
+          aria-controls="task-composer-content"
+          onClick={() => setComposerCollapsed((current) => !current)}
+        >
+          <AppIcon name={composerCollapsed ? 'chevronUp' : 'chevronDown'} />
+        </button>
+        {!composerCollapsed && (
+        <div id="task-composer-content" className="composer-content">
         <header className="section-head">
           <div>
             <h2>{editingTaskId ? '编辑任务' : '添加任务'}</h2>
@@ -2598,6 +3384,55 @@ function App() {
           </form>
         ) : (
           <form onSubmit={handleSubmit} onPaste={handlePasteImages} noValidate>
+          {draftParentTask && !editingTaskId && (
+            <div className="draft-parent-banner">
+              <div className="draft-parent-copy">
+                <span>上级任务</span>
+                <strong title={draftParentTask.title}>{draftParentTask.title}</strong>
+              </div>
+              <div className="draft-parent-relation" role="group" aria-label="任务关系类型">
+                {(Object.entries(parentLinkTypeConfig) as Array<[TaskParentLinkType, { label: string; shortLabel: string }]>).map(([value, config]) => (
+                  <button
+                    className={draftParentLinkType === value ? 'active' : ''}
+                    type="button"
+                    key={value}
+                    title={config.label}
+                    onClick={() => setDraftParentLinkType(value)}
+                  >
+                    {config.shortLabel}
+                  </button>
+                ))}
+              </div>
+              <button
+                className="draft-parent-cancel"
+                type="button"
+                onClick={() => {
+                  setDraftParentTaskId('')
+                  setDraftParentLinkReason('')
+                }}
+              >
+                取消
+              </button>
+              <div className="draft-parent-options">
+                {draftParentLinkType === 'discovered_from' && (
+                  <input
+                    value={draftParentLinkReason}
+                    onChange={(event) => setDraftParentLinkReason(event.target.value)}
+                    placeholder="简要说明这个问题是怎么引出的"
+                    maxLength={240}
+                  />
+                )}
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={draftAffectsParentCompletion}
+                    onChange={(event) => setDraftAffectsParentCompletion(event.target.checked)}
+                  />
+                  <span>影响上级任务完成</span>
+                </label>
+              </div>
+            </div>
+          )}
           <div className="form-grid">
             <input
               className="title-input"
@@ -2665,24 +3500,66 @@ function App() {
             placeholder="补充细节、下一步动作或上下文"
           />
           {renderAttachedImages()}
-          <div className="form-actions">
-            <span>{aiState}</span>
-            <button type="button" onClick={fillDraftWithAi}>
-              AI 填充
-            </button>
-            <button type="button" onClick={() => startCreate('todo')}>
-              清空
-            </button>
-            <button
-              className="primary-button"
-              type="button"
-              disabled={submitState === '正在保存...'}
-              onClick={saveDraftTask}
-            >
-              {submitState === '正在保存...' ? '保存中...' : editingTaskId ? '保存' : '添加任务'}
-            </button>
-          </div>
+          {editingTaskId ? (
+            <div className="detail-form-footer">
+              <div className="ai-edit-panel">
+                <div className="ai-edit-head">
+                  <strong>AI 修改</strong>
+                  <span>{aiState || '输入修改要求后生成草稿，确认后再保存'}</span>
+                </div>
+                <div className="ai-edit-row">
+                  <input
+                    value={aiEditInstruction}
+                    onChange={(event) => setAiEditInstruction(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        editDraftWithAi()
+                      }
+                    }}
+                    placeholder="例如：改成高优先级，明天 10 点提醒，详情整理成步骤"
+                  />
+                  <button type="button" disabled={aiEditing} onClick={editDraftWithAi}>
+                    {aiEditing ? '修改中...' : '生成修改'}
+                  </button>
+                </div>
+              </div>
+              <div className="form-actions detail-task-actions">
+                <button type="button" onClick={() => startCreate('todo')}>
+                  清空
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={submitState === '正在保存...'}
+                  onClick={saveDraftTask}
+                >
+                  {submitState === '正在保存...' ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="form-actions">
+              <span>{aiState}</span>
+              <button type="button" onClick={fillDraftWithAi}>
+                AI 填充
+              </button>
+              <button type="button" onClick={() => startCreate('todo')}>
+                清空
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={submitState === '正在保存...'}
+                onClick={saveDraftTask}
+              >
+                {submitState === '正在保存...' ? '保存中...' : '添加任务'}
+              </button>
+            </div>
+          )}
         </form>
+        )}
+        </div>
         )}
       </section>
 
@@ -2771,6 +3648,51 @@ function App() {
                 />
                 开启本机 AI 写入接口
               </label>
+            </div>
+
+            <div className="settings-section shortcut-settings-section">
+              <div className="shortcut-section-head">
+                <div>
+                  <h3>全局快捷键</h3>
+                  <p>点击右侧按键框后，按下新的组合键；按 Esc 取消录入。</p>
+                </div>
+                <button type="button" className="shortcut-reset-all" onClick={resetAllShortcuts}>
+                  全部默认
+                </button>
+              </div>
+              <div className="shortcut-list">
+                {shortcutActionOptions.map((option) => {
+                  const currentShortcut = normalizeGlobalShortcuts(data.settings.globalShortcuts)[option.action]
+                  const recording = recordingShortcutAction === option.action
+                  return (
+                    <div className={`shortcut-row ${recording ? 'recording' : ''}`} key={option.action}>
+                      <div className="shortcut-copy">
+                        <strong>{option.label}</strong>
+                        <span>{option.hint}</span>
+                      </div>
+                      <button
+                        className="shortcut-recorder"
+                        type="button"
+                        aria-label={`设置${option.label}快捷键`}
+                        onClick={() => void beginShortcutRecording(option.action)}
+                        onBlur={() => {
+                          if (recordingShortcutAction === option.action) void stopShortcutRecording()
+                        }}
+                        onKeyDown={(event) => void handleShortcutKeyDown(event, option.action)}
+                      >
+                        {recording ? '按下组合键' : formatShortcutForDisplay(currentShortcut)}
+                      </button>
+                      <button
+                        className="shortcut-reset"
+                        type="button"
+                        onClick={() => void resetShortcut(option.action)}
+                      >
+                        默认
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
 
             <label className="settings-field">
@@ -2910,6 +3832,17 @@ function App() {
           }
         />
       )}
+      {topologyTaskId && taskLookup.has(topologyTaskId) && (
+        <TaskTopologyDialog
+          tasks={data.tasks}
+          currentTaskId={topologyTaskId}
+          onClose={() => setTopologyTaskId('')}
+          onOpenTask={(taskId) => {
+            setTopologyTaskId('')
+            void openRelatedTask(taskId)
+          }}
+        />
+      )}
     </main>
   )
 }
@@ -2917,10 +3850,14 @@ function App() {
 interface TaskColumnProps {
   status: TaskColumnStatus
   tasks: Task[]
+  taskLookup: Map<string, Task>
+  childTasksByParentId: Map<string, Task[]>
+  parentTaskCandidates: Task[]
   sortMode: TaskSortMode
   sortOpen: boolean
   selectedTaskId: string
   multiSelectedTaskIds: string[]
+  detailPopoverEnabled: boolean
   onAdd: () => void
   onToggleSort: () => void
   onSortChange: (sortMode: TaskSortMode) => void
@@ -2928,6 +3865,11 @@ interface TaskColumnProps {
   onEdit: (task: Task) => void
   onComplete: (taskId: string) => void
   onToggleDone: (taskId: string) => void
+  onKeepParentTaskOpen: (taskId: string) => void
+  onChangeParentTask: (taskId: string, parentTaskId: string) => void
+  onCreateChildTask: (task: Task, relationType: TaskParentLinkType) => void
+  onOpenRelatedTask: (taskId: string) => void
+  onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
   onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
@@ -2992,7 +3934,7 @@ function TodoCalendarView({
       <header className="calendar-panel-head">
         <div>
           <h2>{formatCalendarMonth(month)}</h2>
-          <p>Todo Desk {syncSummary.todoDesk} · 系统 {syncSummary.localOk} · 飞书 {syncSummary.larkOk}</p>
+          <p>{syncSummary.todoDesk} 个带时间任务</p>
         </div>
         <div className="calendar-nav" aria-label="日历月份">
           <button type="button" onClick={onPreviousMonth}>‹</button>
@@ -3001,11 +3943,12 @@ function TodoCalendarView({
         </div>
       </header>
 
-      <div className="calendar-sync-strip">
-        <span className="sync-chip ok">TD {syncSummary.todoDesk}</span>
-        <span className="sync-chip ok">系统 {syncSummary.localOk}</span>
-        <span className="sync-chip ok">飞书 {syncSummary.larkOk}</span>
-        {syncSummary.failed > 0 && <span className="sync-chip failed">失败 {syncSummary.failed}</span>}
+      <div className={`calendar-sync-overview ${syncSummary.failed > 0 ? 'failed' : 'ok'}`}>
+        <span className="calendar-sync-overview-dot" aria-hidden="true" />
+        <span>{syncSummary.failed > 0 ? `${syncSummary.failed} 项同步异常` : '三端同步正常'}</span>
+        <span className="calendar-sync-overview-detail">
+          Todo Desk {syncSummary.todoDesk} · 系统 {syncSummary.localOk} · 飞书 {syncSummary.larkOk}
+        </span>
       </div>
 
       <div className="calendar-layout">
@@ -3026,21 +3969,26 @@ function TodoCalendarView({
                   {day.day}
                 </button>
                 <div className="calendar-day-events">
-                  {dayTasks.slice(0, 3).map((task) => (
-                    <button
-                      key={task.id}
-                      className={`calendar-event-chip priority-${task.priority}`}
-                      type="button"
-                      title={task.title}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onSelectDate(day.key)
-                        onSelectTask(task.id)
-                      }}
-                    >
-                      {task.title}
-                    </button>
-                  ))}
+                  {dayTasks.slice(0, 3).map((task) => {
+                    const calendarState = getCalendarTaskState(task)
+                    const stateLabel = calendarTaskStateConfig[calendarState].label
+                    return (
+                      <button
+                        key={task.id}
+                        className={`calendar-event-chip calendar-state-${calendarState}`}
+                        type="button"
+                        title={`${stateLabel} · ${task.title}`}
+                        aria-label={`${stateLabel}：${task.title}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onSelectDate(day.key)
+                          onSelectTask(task.id)
+                        }}
+                      >
+                        {task.title}
+                      </button>
+                    )
+                  })}
                   {dayTasks.length > 3 && <span className="calendar-more">+{dayTasks.length - 3}</span>}
                 </div>
               </div>
@@ -3060,22 +4008,32 @@ function TodoCalendarView({
             {selectedTasks.map((task) => {
               const localStatus = getCalendarSyncStatus(task, 'local')
               const larkStatus = getCalendarSyncStatus(task, 'lark')
+              const calendarState = getCalendarTaskState(task)
+              const stateLabel = calendarTaskStateConfig[calendarState].label
+              const taskSyncSummary = getCalendarTaskSyncSummary(localStatus, larkStatus)
               return (
-                <article className={`calendar-agenda-card ${isAgentCreatedTask(task) ? 'agent-task' : ''}`} key={task.id}>
+                <article className={`calendar-agenda-card calendar-state-${calendarState} ${isAgentCreatedTask(task) ? 'agent-task' : ''}`} key={task.id}>
                   <button className="calendar-agenda-main" type="button" onClick={() => onSelectTask(task.id)}>
-                    <strong>{task.title}</strong>
-                    <span>{getTaskTimeLabel(task)}</span>
+                    <span className="calendar-agenda-headline">
+                      <strong>{task.title}</strong>
+                      <span className={`calendar-task-state-badge calendar-state-${calendarState}`}>{stateLabel}</span>
+                    </span>
+                    <span className="calendar-agenda-time">{getTaskTimeLabel(task)}</span>
                   </button>
-                  <div className="calendar-sync-state">
-                    <span className="sync-chip ok">TD</span>
-                    <span className={`sync-chip ${localStatus}`}>系统 {getCalendarSyncLabel(localStatus)}</span>
-                    <span className={`sync-chip ${larkStatus}`}>飞书 {getCalendarSyncLabel(larkStatus)}</span>
-                  </div>
-                  <div className="calendar-agenda-actions">
-                    <button type="button" onClick={() => onSyncTask(task)}>同步</button>
-                    <button type="button" onClick={() => onOpenCalendar(task)}>系统</button>
-                    <button type="button" onClick={() => onEditTask(task)}>编辑</button>
-                  </div>
+                  <footer className="calendar-agenda-footer">
+                    <span
+                      className={`calendar-sync-summary ${taskSyncSummary.tone}`}
+                      title={taskSyncSummary.detail}
+                    >
+                      <span className="calendar-sync-summary-dot" aria-hidden="true" />
+                      {taskSyncSummary.label}
+                    </span>
+                    <div className="calendar-agenda-actions">
+                      <button type="button" onClick={() => onSyncTask(task)}>同步</button>
+                      <button type="button" onClick={() => onOpenCalendar(task)}>系统</button>
+                      <button type="button" onClick={() => onEditTask(task)}>编辑</button>
+                    </div>
+                  </footer>
                 </article>
               )
             })}
@@ -3090,11 +4048,19 @@ interface MiniTaskRowProps {
   task: Task
   selected: boolean
   multiSelected: boolean
+  taskPath: Task[]
+  parentTask?: Task
+  childTasks: Task[]
+  parentTaskCandidates: Task[]
   onSelect: (taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) => void
   onToggleExpand: (taskId: string) => void
   onEdit: (task: Task) => void
   onToggleDone: (taskId: string) => void
   onMove: (taskId: string, status: TaskColumnStatus) => void
+  onKeepParentTaskOpen: (taskId: string) => void
+  onChangeParentTask: (taskId: string, parentTaskId: string) => void
+  onOpenRelatedTask: (taskId: string) => void
+  onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
   onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
@@ -3175,15 +4141,265 @@ interface SessionReviewNoticeProps {
   onOpenSession?: (task: Task) => Promise<boolean> | boolean
 }
 
+interface ParentCompletionReviewNoticeProps {
+  task: Task
+  childTasks: Task[]
+  onConfirm: (taskId: string) => void
+  onKeep: (taskId: string) => void
+}
+
+interface TaskParentBinderProps {
+  task: Task
+  parentTask?: Task
+  parentCandidates: Task[]
+  onChangeParentTask: (taskId: string, parentTaskId: string) => void
+}
+
+type ParentPickerStyle = CSSProperties & {
+  '--parent-picker-list-max-height'?: string
+}
+
+function TaskParentBinder({ task, parentTask, parentCandidates, onChangeParentTask }: TaskParentBinderProps) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [popoverStyle, setPopoverStyle] = useState<ParentPickerStyle>({})
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const normalizedQuery = query.trim()
+  const candidateLookup = useMemo(
+    () => new Map(parentCandidates.map((candidate) => [candidate.id, candidate])),
+    [parentCandidates],
+  )
+  // 父任务不能选自己或自己的后代，否则保存后会形成无法遍历的循环关系。
+  const validParentCandidates = useMemo(
+    () => parentCandidates.filter((candidate) => {
+      if (candidate.id === task.id) return false
+      return !buildTaskPath(candidate, candidateLookup).some((ancestor) => ancestor.id === task.id)
+    }),
+    [candidateLookup, parentCandidates, task.id],
+  )
+  const filteredCandidates = useMemo(() => {
+    if (!normalizedQuery) return validParentCandidates
+    return validParentCandidates.filter((candidate) => taskMatchesSearch(candidate, normalizedQuery))
+  }, [normalizedQuery, validParentCandidates])
+  const visibleCandidateLimit = normalizedQuery ? 10 : 7
+  const visibleCandidates = filteredCandidates.slice(0, visibleCandidateLimit)
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    function updatePopoverMetrics() {
+      const target = containerRef.current
+      if (!target) return
+
+      const viewportPadding = 10
+      const rect = target.getBoundingClientRect()
+      const preferredWidth = Math.min(360, Math.max(rect.width + 82, 300))
+      const maxWidth = Math.max(180, window.innerWidth - viewportPadding * 2)
+      const width = Math.min(preferredWidth, maxWidth)
+      const left = Math.min(Math.max(viewportPadding, rect.left), window.innerWidth - width - viewportPadding)
+      const below = window.innerHeight - rect.bottom
+      const above = rect.top
+      const openAbove = below < 238 && above > below
+      const available = Math.max(openAbove ? above : below, 188)
+      const listHeight = Math.min(232, Math.max(128, available - 88))
+
+      // 使用 fixed 浮层是为了避开小卡/贴附详情里的滚动容器裁切，同时不改变卡片本身高度。
+      setPopoverStyle({
+        left,
+        top: openAbove
+          ? Math.max(viewportPadding, rect.top - listHeight - 84)
+          : Math.min(rect.bottom + 6, window.innerHeight - viewportPadding),
+        width,
+        '--parent-picker-list-max-height': `${listHeight}px`,
+      })
+    }
+
+    updatePopoverMetrics()
+    window.addEventListener('resize', updatePopoverMetrics)
+    window.addEventListener('scroll', updatePopoverMetrics, true)
+    return () => {
+      window.removeEventListener('resize', updatePopoverMetrics)
+      window.removeEventListener('scroll', updatePopoverMetrics, true)
+    }
+  }, [filteredCandidates.length, open])
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    function handlePointerDown(event: globalThis.MouseEvent) {
+      const target = event.target
+      if (target instanceof Node && containerRef.current?.contains(target)) return
+      if (target instanceof Node && popoverRef.current?.contains(target)) return
+      setOpen(false)
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setOpen(false)
+      }
+    }
+
+    window.addEventListener('mousedown', handlePointerDown)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  if (!isAgentCreatedTask(task)) return null
+
+  function selectParent(parentTaskId: string) {
+    onChangeParentTask(task.id, parentTaskId)
+    setOpen(false)
+    setQuery('')
+  }
+
+  return (
+    <div
+      className={`task-parent-binder ${open ? 'open' : ''} ${parentTask ? 'has-parent' : 'is-empty'}`}
+      ref={containerRef}
+      draggable={false}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onDragStart={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+    >
+      <span>父任务</span>
+      <button
+        className="parent-picker-trigger"
+        type="button"
+        draggable={false}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={parentTask?.title || '未绑定父任务'}
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation()
+          setOpen((current) => !current)
+        }}
+      >
+        <span className="parent-picker-copy">
+          <strong>{parentTask?.title || '未绑定'}</strong>
+          <small>{parentTask ? statusConfig[parentTask.status].label : '选择'}</small>
+        </span>
+        <AppIcon name="chevronDown" />
+      </button>
+      {open && createPortal(
+        <div
+          className="parent-picker-popover"
+          ref={popoverRef}
+          role="dialog"
+          aria-label="选择父任务"
+          style={popoverStyle}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onDragStart={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+        >
+          <label className="parent-picker-search">
+            <AppIcon name="search" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索父任务标题、项目、标签"
+            />
+          </label>
+          <div className="parent-picker-list" role="listbox" aria-label="父任务候选">
+            <button
+              className={!task.parentTaskId ? 'selected' : ''}
+              type="button"
+              role="option"
+              aria-selected={!task.parentTaskId}
+              onClick={() => selectParent('')}
+            >
+              <span className="parent-option-title">
+                <span>不绑定父任务</span>
+                {!task.parentTaskId && <small>当前</small>}
+              </span>
+              <span className="parent-option-meta">任务保持独立</span>
+            </button>
+            {visibleCandidates.map((candidate) => (
+              <button
+                key={candidate.id}
+                className={task.parentTaskId === candidate.id ? 'selected' : ''}
+                type="button"
+                role="option"
+                aria-selected={task.parentTaskId === candidate.id}
+                onClick={() => selectParent(candidate.id)}
+              >
+                <span className="parent-option-title">
+                  <span>{candidate.title}</span>
+                  <small>{statusConfig[candidate.status].shortLabel}</small>
+                </span>
+                <span className="parent-option-meta">
+                  {statusConfig[candidate.status].label}
+                  {candidate.project ? ` · ${candidate.project}` : ''}
+                  {candidate.updatedAt ? ` · ${formatDateTime(candidate.updatedAt)}` : ''}
+                </span>
+              </button>
+            ))}
+            {filteredCandidates.length === 0 && <p>没有匹配的任务</p>}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
+function ParentCompletionReviewNotice({ task, childTasks, onConfirm, onKeep }: ParentCompletionReviewNoticeProps) {
+  const review = task.parentCompletionReview
+  if (!review) return null
+
+  const active = hasActiveParentCompletionReview(task)
+  const childCount = review.childTaskIds.length || childTasks.length
+  const doneCount = childTasks.filter((child) => child.status === 'done').length || childCount
+
+  return (
+    <section className={`parent-review ${active ? 'active' : 'handled'}`} onClick={(event) => event.stopPropagation()}>
+      <div className="parent-review-copy">
+        <span className="parent-review-dot" aria-hidden="true" />
+        <div>
+          <strong>{active ? '确认父任务' : '父任务提醒已处理'}</strong>
+          <p>{active ? `${review.message} AI 子任务 ${doneCount}/${childCount}` : '父任务保持当前状态。'}</p>
+        </div>
+      </div>
+      {active && (
+        <div className="parent-review-actions">
+          <button className="primary-button" type="button" onClick={() => onConfirm(task.id)}>
+            完成父任务
+          </button>
+          <button type="button" onClick={() => onKeep(task.id)}>
+            继续保留
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function TaskNoticeDots({ task }: { task: Task }) {
   const completion = hasActiveCompletionGate(task)
   const sessionReview = hasActiveSessionReview(task)
-  if (!completion && !sessionReview) return null
+  const parentReview = hasActiveParentCompletionReview(task)
+  if (!completion && !sessionReview && !parentReview) return null
 
   return (
     <span className="task-notice-dots" aria-label="任务提醒">
       {completion && <span className="completion-notice-dot" title="等待确认完成" />}
       {sessionReview && <span className="session-review-dot" title="本轮未完成" />}
+      {parentReview && <span className="parent-review-dot" title="确认父任务是否完成" />}
     </span>
   )
 }
@@ -3230,15 +4446,143 @@ function SessionReviewNotice({ task, onResolve, onOpenSession }: SessionReviewNo
   )
 }
 
-function MiniTaskRow({ task, selected, multiSelected, onSelect, onToggleExpand, onEdit, onToggleDone, onMove, onContinueCompletionRequest, onDismissCompletionRequest, onResolveSessionReview, onDelete, onPreviewImages, onCopy, onOpenCalendar, onOpenAgentSession }: MiniTaskRowProps) {
+function TaskRelationshipSummary({
+  task,
+  taskPath,
+  childTasks,
+  onOpenTask,
+  onOpenTopology,
+}: {
+  task: Task
+  taskPath: Task[]
+  childTasks: Task[]
+  onOpenTask: (taskId: string) => void
+  onOpenTopology: (taskId: string) => void
+}) {
+  const ancestors = taskPath.slice(0, -1)
+  if (ancestors.length === 0 && childTasks.length === 0) return null
+
+  const doneChildren = childTasks.filter((child) => child.status === 'done').length
+  const relationType = task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'
+
+  return (
+    <div className="task-relationship-summary">
+      {ancestors.length > 0 && (
+        <div className="task-branch-path">
+          <span className={`task-link-type task-link-type-${relationType}`}>
+            {parentLinkTypeConfig[relationType].shortLabel}
+          </span>
+          <div className="task-branch-trail" aria-label="任务所属主线">
+            {ancestors.map((ancestor, index) => (
+              <span key={ancestor.id}>
+                {index > 0 && <i aria-hidden="true">›</i>}
+                <button type="button" title={ancestor.title} onClick={() => onOpenTask(ancestor.id)}>
+                  {ancestor.title}
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {task.parentLink?.reason && (
+        <p className="task-branch-reason" title={task.parentLink.reason}>
+          {task.parentLink.reason}
+        </p>
+      )}
+      {task.parentTaskId && task.parentLink?.affectsParentCompletion === false && (
+        <span className="task-follow-up-pill">仅后续跟进</span>
+      )}
+      {childTasks.length > 0 && (
+        <span className="task-child-progress">
+          分支 {doneChildren}/{childTasks.length}
+        </span>
+      )}
+      <button className="task-topology-button" type="button" onClick={() => onOpenTopology(task.id)}>
+        查看拓扑
+      </button>
+    </div>
+  )
+}
+
+function TaskChildList({
+  task,
+  childTasks,
+  onOpenTask,
+  onCreateChildTask,
+}: {
+  task: Task
+  childTasks: Task[]
+  onOpenTask: (taskId: string) => void
+  onCreateChildTask?: (task: Task, relationType: TaskParentLinkType) => void
+}) {
+  const canCreatePlannedChild = Boolean(onCreateChildTask && !isAgentCreatedTask(task))
+  const canCreateDerivedChild = Boolean(onCreateChildTask)
+  if (childTasks.length === 0 && !canCreatePlannedChild && !canCreateDerivedChild) return null
+
+  const sortedChildren = [...childTasks].sort((left, right) =>
+    String(right.updatedAt || right.createdAt).localeCompare(String(left.updatedAt || left.createdAt)),
+  )
+
+  return (
+    <section className="task-child-list" onClick={(event) => event.stopPropagation()}>
+      <header>
+        <strong>任务分支</strong>
+        <div>
+          <span>{childTasks.filter((child) => child.status === 'done').length}/{childTasks.length}</span>
+          {canCreatePlannedChild && (
+            <button type="button" title="按计划拆分工作" onClick={() => onCreateChildTask?.(task, 'subtask_of')}>
+              拆分
+            </button>
+          )}
+          {canCreateDerivedChild && (
+            <button type="button" title="记录处理过程中发现的新问题" onClick={() => onCreateChildTask?.(task, 'discovered_from')}>
+              派生
+            </button>
+          )}
+        </div>
+      </header>
+      {sortedChildren.length > 0 ? (
+        <div className="task-child-items">
+          {sortedChildren.map((child) => (
+            <article className={`task-child-item ${isAgentCreatedTask(child) ? 'agent-task' : ''}`} key={child.id}>
+              <button type="button" className="task-child-main" title={child.title} onClick={() => onOpenTask(child.id)}>
+                <span className="task-child-title">
+                  <span className={`task-link-type task-link-type-${child.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'}`}>
+                    {getTaskParentLinkLabel(child)}
+                  </span>
+                  <strong>
+                    <TaskNoticeDots task={child} />
+                    {child.title}
+                  </strong>
+                </span>
+                <small>
+                  {child.parentLink?.reason ? `${child.parentLink.reason} · ` : ''}
+                  {statusConfig[child.status].label}
+                  {child.project ? ` · ${child.project}` : ''}
+                  {child.updatedAt ? ` · ${formatDateTime(child.updatedAt)}` : ''}
+                </small>
+              </button>
+              <span className={`priority priority-${child.priority}`}>{priorityConfig[child.priority].label}</span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="task-child-empty">暂无子任务</p>
+      )}
+    </section>
+  )
+}
+
+function MiniTaskRow({ task, selected, multiSelected, taskPath, parentTask, childTasks, parentTaskCandidates, onSelect, onToggleExpand, onEdit, onToggleDone, onMove, onKeepParentTaskOpen, onChangeParentTask, onOpenRelatedTask, onOpenTopology, onContinueCompletionRequest, onDismissCompletionRequest, onResolveSessionReview, onDelete, onPreviewImages, onCopy, onOpenCalendar, onOpenAgentSession }: MiniTaskRowProps) {
   const isDone = task.status === 'done'
   const hasCompletionNotice = hasActiveCompletionGate(task)
   const hasSessionReviewNotice = hasActiveSessionReview(task)
-  const hasNotice = hasCompletionNotice || hasSessionReviewNotice
+  const hasParentReviewNotice = hasActiveParentCompletionReview(task)
+  const hasNotice = hasCompletionNotice || hasSessionReviewNotice || hasParentReviewNotice
 
   return (
     <article
-      className={`mini-task-row ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${selected ? 'expanded' : ''} ${multiSelected ? 'multi-selected' : ''} ${hasNotice ? 'has-task-notice' : ''} ${hasCompletionNotice ? 'has-completion-notice' : ''} ${hasSessionReviewNotice ? 'has-session-review-notice' : ''}`}
+      className={`mini-task-row ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${selected ? 'expanded' : ''} ${multiSelected ? 'multi-selected' : ''} ${hasNotice ? 'has-task-notice' : ''} ${hasCompletionNotice ? 'has-completion-notice' : ''} ${hasSessionReviewNotice ? 'has-session-review-notice' : ''} ${hasParentReviewNotice ? 'has-parent-review-notice' : ''}`}
       onClick={(event) => onSelect(task.id, event)}
       onDoubleClick={() => onEdit(task)}
     >
@@ -3259,7 +4603,7 @@ function MiniTaskRow({ task, selected, multiSelected, onSelect, onToggleExpand, 
             <TaskNoticeDots task={task} />
             {task.title}
           </strong>
-          <small>{getTaskTimeLabel(task)}</small>
+          <small>{task.parentTaskId ? `${getTaskParentLinkLabel(task)} · ` : ''}{getTaskTimeLabel(task)}</small>
         </div>
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
           <button
@@ -3283,6 +4627,10 @@ function MiniTaskRow({ task, selected, multiSelected, onSelect, onToggleExpand, 
               onDismiss={onDismissCompletionRequest}
             />
             <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
+            <ParentCompletionReviewNotice task={task} childTasks={childTasks} onConfirm={onToggleDone} onKeep={onKeepParentTaskOpen} />
+            <TaskRelationshipSummary task={task} taskPath={taskPath} childTasks={childTasks} onOpenTask={onOpenRelatedTask} onOpenTopology={onOpenTopology} />
+            <TaskChildList task={task} childTasks={childTasks} onOpenTask={onOpenRelatedTask} />
+            <TaskParentBinder task={task} parentTask={parentTask} parentCandidates={parentTaskCandidates} onChangeParentTask={onChangeParentTask} />
             {task.detail && <TaskDetailText detail={task.detail} variant="mini" />}
             <div className="tag-list">
               <span>{statusConfig[task.status].label}</span>
@@ -3382,6 +4730,182 @@ interface TrashDialogProps {
   onRestore: (taskId: string) => void
   onPurge: (taskId: string) => void
   onEmpty: () => void
+}
+
+interface TaskTopologyDialogProps {
+  tasks: Task[]
+  currentTaskId: string
+  onClose: () => void
+  onOpenTask: (taskId: string) => void
+}
+
+function collectTaskTopologyStats(rootTaskId: string, childTasksByParentId: Map<string, Task[]>) {
+  let taskCount = 0
+  let maxDepth = 0
+  const visited = new Set<string>()
+  const stack = [{ taskId: rootTaskId, depth: 0 }]
+
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current || visited.has(current.taskId)) continue
+    visited.add(current.taskId)
+    taskCount += 1
+    maxDepth = Math.max(maxDepth, current.depth)
+    for (const child of childTasksByParentId.get(current.taskId) ?? []) {
+      stack.push({ taskId: child.id, depth: current.depth + 1 })
+    }
+  }
+
+  return { taskCount, maxDepth }
+}
+
+function TaskTopologyNode({
+  task,
+  currentTaskId,
+  childTasksByParentId,
+  onOpenTask,
+  visited,
+  hasParent = false,
+}: {
+  task: Task
+  currentTaskId: string
+  childTasksByParentId: Map<string, Task[]>
+  onOpenTask: (taskId: string) => void
+  visited: Set<string>
+  hasParent?: boolean
+}) {
+  if (visited.has(task.id)) return null
+  const nextVisited = new Set(visited)
+  nextVisited.add(task.id)
+  const childTasks = [...(childTasksByParentId.get(task.id) ?? [])]
+    .filter((child) => !nextVisited.has(child.id))
+    .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)))
+  const relationType = task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'
+  const taskOriginClass = isAgentCreatedTask(task) ? 'agent-task' : 'human-task'
+
+  return (
+    <div className={`task-topology-branch ${hasParent ? 'has-parent' : ''}`} role="treeitem" aria-expanded={childTasks.length > 0 || undefined}>
+      <button
+        className={`task-topology-node ${task.id === currentTaskId ? 'current' : ''} ${taskOriginClass}`}
+        type="button"
+        title={task.title}
+        aria-current={task.id === currentTaskId ? 'true' : undefined}
+        onClick={() => onOpenTask(task.id)}
+      >
+        <span className="task-topology-node-title">
+          <i className={`task-topology-status status-${getTaskColumnStatus(task.status)}`} aria-hidden="true" />
+          <strong>
+            <TaskNoticeDots task={task} />
+            {task.title}
+          </strong>
+        </span>
+        <span className="task-topology-node-meta">
+          {task.parentTaskId && (
+            <span className={`task-link-type task-link-type-${relationType}`}>
+              {parentLinkTypeConfig[relationType].shortLabel}
+            </span>
+          )}
+          <span>{statusConfig[task.status].label}</span>
+          <span>{priorityConfig[task.priority].label}优先级</span>
+          {isAgentCreatedTask(task) && <span>AI</span>}
+          {task.parentLink?.affectsParentCompletion === false && <span>后续</span>}
+        </span>
+        {task.parentLink?.reason && <small>{task.parentLink.reason}</small>}
+      </button>
+      {childTasks.length > 0 && (
+        <div className="task-topology-children" role="group">
+          {childTasks.map((child) => (
+            <TaskTopologyNode
+              key={child.id}
+              task={child}
+              currentTaskId={currentTaskId}
+              childTasksByParentId={childTasksByParentId}
+              onOpenTask={onOpenTask}
+              visited={nextVisited}
+              hasParent
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskTopologyDialogProps) {
+  const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
+  const childTasksByParentId = useMemo(() => {
+    const grouped = new Map<string, Task[]>()
+    for (const task of tasks) {
+      if (!task.parentTaskId) continue
+      const children = grouped.get(task.parentTaskId) ?? []
+      children.push(task)
+      grouped.set(task.parentTaskId, children)
+    }
+    return grouped
+  }, [tasks])
+  const currentTask = taskLookup.get(currentTaskId)
+  const rootTask = currentTask ? buildTaskPath(currentTask, taskLookup)[0] : undefined
+  const stats = useMemo(
+    () => rootTask ? collectTaskTopologyStats(rootTask.id, childTasksByParentId) : { taskCount: 0, maxDepth: 0 },
+    [childTasksByParentId, rootTask],
+  )
+
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  if (!currentTask || !rootTask) return null
+
+  return (
+    <div className="task-topology-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="task-topology-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-topology-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="task-topology-head">
+          <div>
+            <h2 id="task-topology-title">任务拓扑</h2>
+            <p title={rootTask.title}>
+              {rootTask.title} · {stats.taskCount} 个任务 · {stats.maxDepth + 1} 层
+            </p>
+          </div>
+          <button className="icon-button" type="button" title="关闭任务拓扑" onClick={onClose}>
+            <AppIcon name="close" />
+          </button>
+        </header>
+        <div className="task-topology-legend" aria-label="拓扑图例">
+          <span className="task-topology-origin human-task"><i />人工任务</span>
+          <span className="task-topology-origin agent-task"><i />AI 任务</span>
+          <span><i className="status-doing" />正在做</span>
+          <span><i className="status-todo" />Todo</span>
+          <span><i className="status-done" />已完成</span>
+          <span className="task-link-type task-link-type-subtask_of">子任务</span>
+          <span className="task-link-type task-link-type-discovered_from">派生</span>
+        </div>
+        <div className="task-topology-stage">
+          <div className="task-topology-tree" role="tree" aria-label={`${rootTask.title} 的任务拓扑`}>
+            <TaskTopologyNode
+              task={rootTask}
+              currentTaskId={currentTaskId}
+              childTasksByParentId={childTasksByParentId}
+              onOpenTask={onOpenTask}
+              visited={new Set()}
+            />
+          </div>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 function TrashDialog({ tasks, onClose, onRestore, onPurge, onEmpty }: TrashDialogProps) {
@@ -3494,10 +5018,14 @@ function ImagePreviewDialog({ preview, onClose, onMove }: ImagePreviewDialogProp
 function TaskColumn({
   status,
   tasks,
+  taskLookup,
+  childTasksByParentId,
+  parentTaskCandidates,
   sortMode,
   sortOpen,
   selectedTaskId,
   multiSelectedTaskIds,
+  detailPopoverEnabled,
   onAdd,
   onToggleSort,
   onSortChange,
@@ -3505,6 +5033,11 @@ function TaskColumn({
   onEdit,
   onComplete,
   onToggleDone,
+  onKeepParentTaskOpen,
+  onChangeParentTask,
+  onCreateChildTask,
+  onOpenRelatedTask,
+  onOpenTopology,
   onContinueCompletionRequest,
   onDismissCompletionRequest,
   onResolveSessionReview,
@@ -3601,13 +5134,23 @@ function TaskColumn({
             key={task.id}
             task={task}
             selected={task.id === selectedTaskId}
+            detailOpen={detailPopoverEnabled && task.id === selectedTaskId && multiSelectedTaskIds.length === 0}
             multiSelected={multiSelectedTaskIds.includes(task.id)}
-            compact={task.id !== selectedTaskId}
+            taskPath={buildTaskPath(task, taskLookup)}
+            parentTask={task.parentTaskId ? taskLookup.get(task.parentTaskId) : undefined}
+            childTasks={childTasksByParentId.get(task.id) ?? []}
+            parentTaskCandidates={parentTaskCandidates}
+            compact
             onSelect={onSelect}
             onSelectWithEvent={onSelect}
             onEdit={onEdit}
             onComplete={onComplete}
             onToggleDone={onToggleDone}
+            onKeepParentTaskOpen={onKeepParentTaskOpen}
+            onChangeParentTask={onChangeParentTask}
+            onCreateChildTask={onCreateChildTask}
+            onOpenRelatedTask={onOpenRelatedTask}
+            onOpenTopology={onOpenTopology}
             onContinueCompletionRequest={onContinueCompletionRequest}
             onDismissCompletionRequest={onDismissCompletionRequest}
             onResolveSessionReview={onResolveSessionReview}
@@ -3628,13 +5171,23 @@ function TaskColumn({
 interface TaskCardProps {
   task: Task
   selected: boolean
+  detailOpen: boolean
   multiSelected: boolean
+  taskPath: Task[]
+  parentTask?: Task
+  childTasks: Task[]
+  parentTaskCandidates: Task[]
   compact?: boolean
   onSelect: (taskId: string) => void
   onSelectWithEvent: (taskId: string, event?: { metaKey?: boolean; ctrlKey?: boolean }) => void
   onEdit: (task: Task) => void
   onComplete: (taskId: string) => void
   onToggleDone: (taskId: string) => void
+  onKeepParentTaskOpen: (taskId: string) => void
+  onChangeParentTask: (taskId: string, parentTaskId: string) => void
+  onCreateChildTask: (task: Task, relationType: TaskParentLinkType) => void
+  onOpenRelatedTask: (taskId: string) => void
+  onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
   onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
@@ -3647,16 +5200,253 @@ interface TaskCardProps {
   onOpenAgentSession: (task: Task) => Promise<boolean> | boolean
 }
 
+type NormalTaskDetailStyle = CSSProperties & {
+  '--normal-detail-anchor-y'?: string
+}
+
+interface NormalTaskDetailPopoverProps {
+  task: Task
+  anchorRef: RefObject<HTMLElement | null>
+  taskPath: Task[]
+  parentTask?: Task
+  childTasks: Task[]
+  parentTaskCandidates: Task[]
+  onClose: () => void
+  onEdit: (task: Task) => void
+  onComplete: (taskId: string) => void
+  onKeepParentTaskOpen: (taskId: string) => void
+  onChangeParentTask: (taskId: string, parentTaskId: string) => void
+  onCreateChildTask: (task: Task, relationType: TaskParentLinkType) => void
+  onOpenRelatedTask: (taskId: string) => void
+  onOpenTopology: (taskId: string) => void
+  onContinueCompletionRequest: (taskId: string) => void
+  onDismissCompletionRequest: (taskId: string) => void
+  onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
+  onMove: (taskId: string, status: TaskColumnStatus) => void
+  onDelete: (taskId: string) => void
+  onPreviewImages: (images: TaskImage[], index: number, title: string) => void
+  onCopy: (task: Task) => void
+  onOpenCalendar: (task: Task) => void
+  onOpenAgentSession: (task: Task) => Promise<boolean> | boolean
+}
+
+function NormalTaskDetailPopover({
+  task,
+  anchorRef,
+  taskPath,
+  parentTask,
+  childTasks,
+  parentTaskCandidates,
+  onClose,
+  onEdit,
+  onComplete,
+  onKeepParentTaskOpen,
+  onChangeParentTask,
+  onCreateChildTask,
+  onOpenRelatedTask,
+  onOpenTopology,
+  onContinueCompletionRequest,
+  onDismissCompletionRequest,
+  onResolveSessionReview,
+  onMove,
+  onDelete,
+  onPreviewImages,
+  onCopy,
+  onOpenCalendar,
+  onOpenAgentSession,
+}: NormalTaskDetailPopoverProps) {
+  const [placement, setPlacement] = useState<{ side: 'left' | 'right' | 'center'; style: NormalTaskDetailStyle }>({
+    side: 'center',
+    style: { left: -9999, top: 12, width: 420, height: 560 },
+  })
+  const isDone = task.status === 'done'
+
+  useEffect(() => {
+    function updatePlacement() {
+      const anchor = anchorRef.current
+      if (!anchor) return
+
+      const viewportPadding = 12
+      const gap = 10
+      const rect = anchor.getBoundingClientRect()
+      const availableWidth = Math.max(1, window.innerWidth - viewportPadding * 2)
+      const availableHeight = Math.max(1, window.innerHeight - viewportPadding * 2)
+      const panelWidth = Math.min(460, availableWidth)
+      const panelHeight = Math.min(640, availableHeight)
+      const anchorCenter = rect.left + rect.width / 2
+      const openRight = anchorCenter <= window.innerWidth / 2
+      const preferredLeft = openRight ? rect.right + gap : rect.left - panelWidth - gap
+      const left = Math.min(
+        Math.max(viewportPadding, preferredLeft),
+        window.innerWidth - panelWidth - viewportPadding,
+      )
+      const top = Math.min(
+        Math.max(viewportPadding, rect.top - 10),
+        window.innerHeight - panelHeight - viewportPadding,
+      )
+      const panelOverlapsAnchor = left < rect.right && left + panelWidth > rect.left
+      const side = panelOverlapsAnchor ? 'center' : openRight ? 'right' : 'left'
+      const anchorY = Math.min(Math.max(rect.top + Math.min(rect.height / 2, 44) - top, 24), panelHeight - 24)
+
+      // 使用 fixed portal 避开列滚动容器的 overflow 裁切；滚动和缩放时重新锚定，卡片本身不参与详情布局。
+      setPlacement({
+        side,
+        style: {
+          left,
+          top,
+          width: panelWidth,
+          height: panelHeight,
+          '--normal-detail-anchor-y': `${anchorY}px`,
+        },
+      })
+    }
+
+    updatePlacement()
+    const resizeObserver = new ResizeObserver(updatePlacement)
+    if (anchorRef.current) resizeObserver.observe(anchorRef.current)
+    window.addEventListener('resize', updatePlacement)
+    window.addEventListener('scroll', updatePlacement, true)
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', updatePlacement)
+      window.removeEventListener('scroll', updatePlacement, true)
+    }
+  }, [anchorRef, task.id, task.updatedAt])
+
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="normal-task-detail-layer"
+      role="presentation"
+      onMouseDown={(event) => {
+        // 只把红框外的遮罩视为关闭区域；详情内部所有点击都留给正文和操作控件处理。
+        if (event.target === event.currentTarget) onClose()
+      }}
+      // Portal 的 React 事件仍会冒泡回任务卡；必须在这里截断，避免内部点击触发卡片收起。
+      onClick={(event) => event.stopPropagation()}
+    >
+      <aside
+        className={`normal-task-detail-popover side-${placement.side} ${isAgentCreatedTask(task) ? 'agent-task' : 'human-task'}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${task.title} 的任务详情`}
+        style={placement.style}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="normal-task-detail-head">
+          <div>
+            <span className="normal-task-origin">{isAgentCreatedTask(task) ? 'AI 任务' : '人工任务'}</span>
+            <h3><TaskNoticeDots task={task} />{task.title}</h3>
+          </div>
+          <button className="icon-button" type="button" title="收起任务详情" onClick={onClose}>
+            <AppIcon name="close" />
+          </button>
+        </header>
+        <div className="normal-task-detail-summary">
+          <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
+          <span className="status-pill">{statusConfig[task.status].label}</span>
+          {task.parentTaskId && (
+            <span className={`branch-pill branch-pill-${task.parentLink?.type === 'discovered_from' ? 'discovered' : 'planned'}`}>
+              {getTaskParentLinkLabel(task)}
+            </span>
+          )}
+          <span>{getTaskTimeLabel(task)}</span>
+          {task.project && <span>{task.project}</span>}
+        </div>
+        <div className="normal-task-detail-scroll">
+          <CompletionGateNotice
+            task={task}
+            onConfirm={onComplete}
+            onContinue={onContinueCompletionRequest}
+            onDismiss={onDismissCompletionRequest}
+          />
+          <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
+          <ParentCompletionReviewNotice task={task} childTasks={childTasks} onConfirm={onComplete} onKeep={onKeepParentTaskOpen} />
+          {task.detail && <TaskDetailText detail={task.detail} variant="card" />}
+          <TaskRelationshipSummary task={task} taskPath={taskPath} childTasks={childTasks} onOpenTask={onOpenRelatedTask} onOpenTopology={onOpenTopology} />
+          <TaskChildList
+            task={task}
+            childTasks={childTasks}
+            onOpenTask={onOpenRelatedTask}
+            onCreateChildTask={onCreateChildTask}
+          />
+          <TaskParentBinder task={task} parentTask={parentTask} parentCandidates={parentTaskCandidates} onChangeParentTask={onChangeParentTask} />
+          <dl>
+            <div><dt>创建</dt><dd>{formatDateTime(task.createdAt)}</dd></div>
+            {task.project && <div><dt>项目</dt><dd>{task.project}</dd></div>}
+            {task.dueAt && <div><dt>截止</dt><dd>{formatDateTime(task.dueAt)}</dd></div>}
+            {task.reminderAt && <div><dt>提醒</dt><dd>{formatDateTime(task.reminderAt)}</dd></div>}
+            {task.completedAt && <div><dt>完成</dt><dd>{formatDateTime(task.completedAt)}</dd></div>}
+          </dl>
+          {task.tags.length > 0 && (
+            <div className="tag-list">
+              {task.tags.map((tag) => <span key={tag}>#{tag}</span>)}
+            </div>
+          )}
+          {task.imagePaths.length > 0 && (
+            <div className="preview-grid inline-preview-grid">
+              {task.imagePaths.map((image, index) => (
+                <button
+                  key={image.path}
+                  className="preview-thumb"
+                  type="button"
+                  title="查看大图"
+                  onClick={() => onPreviewImages(task.imagePaths, index, task.title)}
+                >
+                  <img src={image.url} alt={image.name} />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <footer className="normal-task-detail-actions">
+          {!isDone && task.status !== 'pending_acceptance' && <button className="primary-button" type="button" onClick={() => onComplete(task.id)}>完成</button>}
+          {isDone && <button type="button" onClick={() => onMove(task.id, 'todo')}>转待办</button>}
+          {isDone && <button type="button" onClick={() => onMove(task.id, 'doing')}>继续做</button>}
+          {!isDone && task.status !== 'doing' && <button type="button" onClick={() => onMove(task.id, 'doing')}>开始</button>}
+          {!isDone && task.status !== 'todo' && <button type="button" onClick={() => onMove(task.id, 'todo')}>待办</button>}
+          <button type="button" onClick={() => onCopy(task)}>复制</button>
+          {canOpenAgentSession(task) && <button type="button" onClick={() => onOpenAgentSession(task)}>会话</button>}
+          {(task.reminderAt || task.dueAt) && <button type="button" onClick={() => onOpenCalendar(task)}>日历</button>}
+          <button type="button" onClick={() => onEdit(task)}>编辑</button>
+          <button className="danger-button" type="button" onClick={() => onDelete(task.id)}>删除</button>
+        </footer>
+      </aside>
+    </div>,
+    document.body,
+  )
+}
+
 function TaskCard({
   task,
   selected,
+  detailOpen,
   multiSelected,
+  taskPath,
+  parentTask,
+  childTasks,
+  parentTaskCandidates,
   compact = false,
   onSelect,
   onSelectWithEvent,
   onEdit,
   onComplete,
   onToggleDone,
+  onKeepParentTaskOpen,
+  onChangeParentTask,
+  onCreateChildTask,
+  onOpenRelatedTask,
+  onOpenTopology,
   onContinueCompletionRequest,
   onDismissCompletionRequest,
   onResolveSessionReview,
@@ -3668,23 +5458,32 @@ function TaskCard({
   onOpenCalendar,
   onOpenAgentSession,
 }: TaskCardProps) {
+  const cardRef = useRef<HTMLElement | null>(null)
   const isDone = task.status === 'done'
   const isOverdue = !isDone && task.dueAt && new Date(task.dueAt).getTime() < Date.now()
   const hasCompletionNotice = hasActiveCompletionGate(task)
   const hasSessionReviewNotice = hasActiveSessionReview(task)
-  const hasNotice = hasCompletionNotice || hasSessionReviewNotice
+  const hasParentReviewNotice = hasActiveParentCompletionReview(task)
+  const hasNotice = hasCompletionNotice || hasSessionReviewNotice || hasParentReviewNotice
 
   return (
     <article
-      className={`task-card ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${selected ? 'selected' : ''} ${multiSelected ? 'multi-selected' : ''} ${compact ? 'compact' : ''} ${hasNotice ? 'has-task-notice' : ''} ${hasCompletionNotice ? 'has-completion-notice' : ''} ${hasSessionReviewNotice ? 'has-session-review-notice' : ''}`}
+      ref={cardRef}
+      className={`task-card ${isAgentCreatedTask(task) ? 'agent-task' : ''} ${selected ? 'selected' : ''} ${multiSelected ? 'multi-selected' : ''} ${compact ? 'compact' : ''} ${hasNotice ? 'has-task-notice' : ''} ${hasCompletionNotice ? 'has-completion-notice' : ''} ${hasSessionReviewNotice ? 'has-session-review-notice' : ''} ${hasParentReviewNotice ? 'has-parent-review-notice' : ''}`}
       draggable
       onDragStart={(event) => {
+        if (isInteractiveTaskEventTarget(event.target)) {
+          event.preventDefault()
+          onDragStart('')
+          return
+        }
         event.dataTransfer.effectAllowed = 'move'
         event.dataTransfer.setData('text/plain', task.id)
         onDragStart(task.id)
       }}
       onDragEnd={() => onDragStart('')}
       onClick={(event: ReactMouseEvent<HTMLElement>) => {
+        if (isInteractiveTaskEventTarget(event.target)) return
         if (event.metaKey || event.ctrlKey) {
           onSelectWithEvent(task.id, event)
           return
@@ -3716,154 +5515,42 @@ function TaskCard({
       <div className="meta-row">
         <span className={`priority priority-${task.priority}`}>{priorityConfig[task.priority].label}</span>
         <span className="status-pill">{statusConfig[task.status].label}</span>
+        {task.parentTaskId && (
+          <span className={`branch-pill branch-pill-${task.parentLink?.type === 'discovered_from' ? 'discovered' : 'planned'}`}>
+            {getTaskParentLinkLabel(task)}
+          </span>
+        )}
         <span>{getTaskTimeLabel(task)}</span>
         {task.project && <span>{task.project}</span>}
         {task.dueAt && isOverdue && <span className="danger">已逾期</span>}
         {task.imagePaths.length > 0 && <span>{task.imagePaths.length}图</span>}
       </div>
-      {selected && !compact && (
-        <div className="task-detail-inline">
-          <CompletionGateNotice
-            task={task}
-            onConfirm={onComplete}
-            onContinue={onContinueCompletionRequest}
-            onDismiss={onDismissCompletionRequest}
-          />
-          <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
-          {task.detail && <TaskDetailText detail={task.detail} variant="card" />}
-          <dl>
-            <div>
-              <dt>创建</dt>
-              <dd>{formatDateTime(task.createdAt)}</dd>
-            </div>
-            {task.project && (
-              <div>
-                <dt>项目</dt>
-                <dd>{task.project}</dd>
-              </div>
-            )}
-            {task.dueAt && (
-              <div>
-                <dt>截止</dt>
-                <dd>{formatDateTime(task.dueAt)}</dd>
-              </div>
-            )}
-            {task.reminderAt && (
-              <div>
-                <dt>提醒</dt>
-                <dd>{formatDateTime(task.reminderAt)}</dd>
-              </div>
-            )}
-            {task.completedAt && (
-              <div>
-                <dt>完成</dt>
-                <dd>{formatDateTime(task.completedAt)}</dd>
-              </div>
-            )}
-          </dl>
-          {task.imagePaths.length > 0 && (
-            <div className="preview-grid inline-preview-grid">
-              {task.imagePaths.map((image, index) => (
-                <button
-                  key={image.path}
-                  className="preview-thumb"
-                  type="button"
-                  title="查看大图"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onPreviewImages(task.imagePaths, index, task.title)
-                  }}
-                >
-                  <img src={image.url} alt={image.name} />
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      {task.tags.length > 0 && !compact && (
-        <div className="tag-list">
-          {task.tags.map((tag) => (
-            <span key={tag}>#{tag}</span>
-          ))}
-        </div>
-      )}
-      {!compact && (
-        <div className="card-actions">
-          {!isDone && task.status !== 'pending_acceptance' ? (
-            <button type="button" onClick={(event) => {
-              event.stopPropagation()
-              onComplete(task.id)
-            }}>
-              完成
-            </button>
-          ) : isDone ? (
-            <>
-              <button type="button" onClick={(event) => {
-                event.stopPropagation()
-                onMove(task.id, 'todo')
-              }}>
-                转待办
-              </button>
-              <button type="button" onClick={(event) => {
-                event.stopPropagation()
-                onMove(task.id, 'doing')
-              }}>
-                继续做
-              </button>
-            </>
-          ) : null}
-          {!isDone && task.status !== 'doing' && (
-            <button type="button" onClick={(event) => {
-              event.stopPropagation()
-              onMove(task.id, 'doing')
-            }}>
-              开始
-            </button>
-          )}
-          {!isDone && task.status !== 'todo' && (
-            <button type="button" onClick={(event) => {
-              event.stopPropagation()
-              onMove(task.id, 'todo')
-            }}>
-              待办
-            </button>
-          )}
-          <button type="button" onClick={(event) => {
-            event.stopPropagation()
-            onCopy(task)
-          }}>
-            复制
-          </button>
-          {canOpenAgentSession(task) && (
-            <button type="button" onClick={(event) => {
-              event.stopPropagation()
-              onOpenAgentSession(task)
-            }}>
-              会话
-            </button>
-          )}
-          {(task.reminderAt || task.dueAt) && (
-            <button type="button" onClick={(event) => {
-              event.stopPropagation()
-              onOpenCalendar(task)
-            }}>
-              日历
-            </button>
-          )}
-          <button type="button" onClick={(event) => {
-            event.stopPropagation()
-            onEdit(task)
-          }}>
-            编辑
-          </button>
-          <button type="button" onClick={(event) => {
-            event.stopPropagation()
-            onDelete(task.id)
-          }}>
-            删除
-          </button>
-        </div>
+      {detailOpen && (
+        <NormalTaskDetailPopover
+          task={task}
+          anchorRef={cardRef}
+          taskPath={taskPath}
+          parentTask={parentTask}
+          childTasks={childTasks}
+          parentTaskCandidates={parentTaskCandidates}
+          onClose={() => onSelect(task.id)}
+          onEdit={onEdit}
+          onComplete={onComplete}
+          onKeepParentTaskOpen={onKeepParentTaskOpen}
+          onChangeParentTask={onChangeParentTask}
+          onCreateChildTask={onCreateChildTask}
+          onOpenRelatedTask={onOpenRelatedTask}
+          onOpenTopology={onOpenTopology}
+          onContinueCompletionRequest={onContinueCompletionRequest}
+          onDismissCompletionRequest={onDismissCompletionRequest}
+          onResolveSessionReview={onResolveSessionReview}
+          onMove={onMove}
+          onDelete={onDelete}
+          onPreviewImages={onPreviewImages}
+          onCopy={onCopy}
+          onOpenCalendar={onOpenCalendar}
+          onOpenAgentSession={onOpenAgentSession}
+        />
       )}
     </article>
   )

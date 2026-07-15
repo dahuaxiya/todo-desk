@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, screen, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -6,7 +6,7 @@ import { appendFile, copyFile, mkdir, readFile, unlink, writeFile } from 'node:f
 import http from 'node:http'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
+import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, editTaskWithAiAndImages, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -24,6 +24,9 @@ let suppressMoveHandlingUntil = 0
 let dockDragStartBounds = null
 let dockPassthrough = false
 let dockTransitioning = false
+let registeredShortcutAccelerators = new Set()
+let registeredShortcutSignature = ''
+let globalShortcutsSuspended = false
 
 const dockCollapsedWidth = 152
 const dockDetailWidth = 260
@@ -42,13 +45,25 @@ const miniWindowWidth = 300
 const miniWindowHeight = 420
 const miniWindowMinWidth = 300
 const miniWindowMinHeight = 350
+const shortcutBindings = [
+  { action: 'toggleDock', defaultAccelerator: 'CommandOrControl+Shift+T', label: '切换贴附 / 恢复' },
+  { action: 'dockLeft', defaultAccelerator: 'CommandOrControl+Shift+Left', label: '贴附到左侧' },
+  { action: 'dockRight', defaultAccelerator: 'CommandOrControl+Shift+Right', label: '贴附到右侧' },
+  { action: 'toggleMini', defaultAccelerator: 'CommandOrControl+Shift+M', label: '小卡模式' },
+  { action: 'toggleKeepOnTop', defaultAccelerator: 'CommandOrControl+Shift+P', label: '置顶' },
+]
 const codexThreadIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const taskStatuses = new Set(['doing', 'todo', 'pending_acceptance', 'done'])
 const completionAcceptanceMessage = '实现已完成，等待用户确认是否标记 done'
 const incompleteSessionMessage = '本轮 session 输出完成，但任务尚未完成'
+const parentCompletionReviewMessage = '关联 AI 子任务已全部完成，请确认父任务是否也完成。'
 const originKinds = new Set(['human', 'agent', 'integration', 'system', 'legacy'])
 const originChannels = new Set(['ui', 'local-api', 'todo-desk-skill', 'import', 'automation'])
 const originConfidences = new Set(['explicit', 'legacy-inferred'])
+const parentLinkTypes = new Set(['subtask_of', 'discovered_from'])
+const parentLinkConfidences = new Set(['explicit', 'inferred'])
+const parentCompletionReviewReasons = new Set(['all_agent_children_done', 'agent_child_done'])
+const parentCompletionReviewResolutions = new Set(['accepted', 'kept'])
 const legacyAgentSources = new Set(['codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
 const uiDerivedSources = new Set(['merge', 'ai-merge'])
 
@@ -58,6 +73,18 @@ function compactObject(value) {
 
 function normalizeString(value) {
   return String(value || '').trim()
+}
+
+function getDefaultGlobalShortcuts() {
+  return Object.fromEntries(shortcutBindings.map((binding) => [binding.action, binding.defaultAccelerator]))
+}
+
+function normalizeGlobalShortcuts(value) {
+  const shortcuts = value && typeof value === 'object' ? value : {}
+  return Object.fromEntries(shortcutBindings.map((binding) => {
+    const accelerator = normalizeString(shortcuts[binding.action]) || binding.defaultAccelerator
+    return [binding.action, accelerator]
+  }))
 }
 
 function humanOrigin(createdVia, confidence = 'explicit') {
@@ -160,8 +187,11 @@ function normalizeTaskOrigin(task, confidence = 'legacy-inferred') {
   const explicit = normalizeExplicitOrigin(task.origin)
   const completionAcceptance = normalizeCompletionAcceptance(task.completionAcceptance)
   const sessionReview = normalizeSessionReview(task.sessionReview)
-  if (explicit) return compactObject({ ...task, completionAcceptance, sessionReview, origin: explicit })
-  return compactObject({ ...task, completionAcceptance, sessionReview, origin: inferOriginFromTask(task, confidence) })
+  const parentTaskId = normalizeParentTaskId(task.parentTaskId || task.parentId)
+  const parentLink = normalizeParentLink(task.parentLink, task, parentTaskId)
+  const parentCompletionReview = normalizeParentCompletionReview(task.parentCompletionReview)
+  if (explicit) return compactObject({ ...task, completionAcceptance, sessionReview, parentTaskId, parentLink, parentCompletionReview, origin: explicit })
+  return compactObject({ ...task, completionAcceptance, sessionReview, parentTaskId, parentLink, parentCompletionReview, origin: inferOriginFromTask(task, confidence) })
 }
 
 function isAgentLikeTask(task) {
@@ -196,6 +226,48 @@ function normalizeSessionReview(value) {
     resolution: ['reviewed', 'rework', 'dismissed'].includes(resolution) ? resolution : undefined,
   })
   return normalized.requestedAt || normalized.message ? normalized : undefined
+}
+
+function normalizeParentTaskId(value) {
+  return normalizeString(value)
+}
+
+function normalizeParentLink(value, task, parentTaskId, now = new Date().toISOString()) {
+  if (!parentTaskId) return undefined
+  const source = value && typeof value === 'object' ? value : {}
+  const type = normalizeString(source.type)
+  const createdBy = normalizeString(source.createdBy)
+  const confidence = normalizeString(source.confidence)
+  const fallbackCreator = isAgentLikeTask(task) ? 'agent' : 'human'
+  const reason = normalizeString(source.reason || source.note).slice(0, 240)
+  return compactObject({
+    type: parentLinkTypes.has(type) ? type : 'subtask_of',
+    reason,
+    // 旧数据没有该字段。默认 true 可以保持原有“子任务完成后复核父任务”的行为。
+    affectsParentCompletion: source.affectsParentCompletion !== false && source.blocksParent !== false,
+    createdBy: ['human', 'agent'].includes(createdBy) ? createdBy : fallbackCreator,
+    createdAt: normalizeString(source.createdAt) || now,
+    confidence: parentLinkConfidences.has(confidence) ? confidence : 'explicit',
+  })
+}
+
+function normalizeParentCompletionReview(value) {
+  if (!value || typeof value !== 'object') return undefined
+  const reason = normalizeString(value.reason)
+  const resolution = normalizeString(value.resolution)
+  const childTaskIds = Array.isArray(value.childTaskIds)
+    ? value.childTaskIds.map((item) => normalizeString(item)).filter(Boolean)
+    : []
+  const normalized = compactObject({
+    requestedAt: normalizeString(value.requestedAt),
+    requestedBy: normalizeString(value.requestedBy),
+    message: normalizeString(value.message),
+    reason: parentCompletionReviewReasons.has(reason) ? reason : 'all_agent_children_done',
+    childTaskIds,
+    resolvedAt: normalizeString(value.resolvedAt),
+    resolution: parentCompletionReviewResolutions.has(resolution) ? resolution : undefined,
+  })
+  return normalized.requestedAt || normalized.message || normalized.childTaskIds?.length ? normalized : undefined
 }
 
 function ensureCompletionAcceptance(task, now) {
@@ -306,6 +378,38 @@ function applySessionReview(task, input, now) {
   return patch
 }
 
+function parentCompletionReviewDecision(input) {
+  const decision = normalizeString(input.parentCompletionReviewDecision || input.parentReviewDecision).toLowerCase()
+  if (['accepted', 'accept', 'confirm', 'done', 'complete'].includes(decision)) return 'accepted'
+  if (['kept', 'keep', 'continue', 'later', 'dismiss', 'dismissed'].includes(decision)) return 'kept'
+  return ''
+}
+
+function applyParentCompletionReviewDecision(task, input, now) {
+  const decision = parentCompletionReviewDecision(input)
+  if (!decision) return null
+
+  const current = normalizeParentCompletionReview(task.parentCompletionReview) || {
+    requestedAt: now,
+    requestedBy: completionRequestedBy(task),
+    message: parentCompletionReviewMessage,
+    reason: 'all_agent_children_done',
+    childTaskIds: [],
+  }
+  const patch = {
+    parentCompletionReview: {
+      ...current,
+      resolution: decision,
+      resolvedAt: now,
+    },
+  }
+  if (decision === 'accepted') {
+    patch.status = 'done'
+    patch.completedAt = task.completedAt || now
+  }
+  return patch
+}
+
 function gateAgentCompletion(task, input, now) {
   if (input.status !== 'done' || !isAgentLikeTask(task) || completionDecision(input) === 'confirm') return null
   return {
@@ -315,6 +419,98 @@ function gateAgentCompletion(task, input, now) {
     completionAcceptance: ensureCompletionAcceptance(task, now),
     sessionReview: undefined,
   }
+}
+
+function normalizeChildTaskIds(tasks) {
+  return Array.from(new Set(tasks.map((task) => normalizeString(task.id)).filter(Boolean)))
+}
+
+function haveSameIds(left, right) {
+  const leftIds = new Set(left)
+  const rightIds = new Set(right)
+  if (leftIds.size !== rightIds.size) return false
+  for (const id of leftIds) {
+    if (!rightIds.has(id)) return false
+  }
+  return true
+}
+
+function shouldSkipResolvedParentReview(review, childTaskIds) {
+  if (!review?.resolvedAt || review.resolution !== 'kept') return false
+  return haveSameIds(review.childTaskIds || [], childTaskIds)
+}
+
+function buildParentCompletionReview(parentTask, childTasks, completedChild, now) {
+  const childTaskIds = normalizeChildTaskIds(childTasks)
+  const current = normalizeParentCompletionReview(parentTask.parentCompletionReview)
+  const active = current && !current.resolvedAt ? current : null
+  const mergedChildTaskIds = Array.from(new Set([...(active?.childTaskIds || []), ...childTaskIds]))
+  return {
+    requestedAt: active?.requestedAt || now,
+    requestedBy: active?.requestedBy || completionRequestedBy(completedChild),
+    message: active?.message || parentCompletionReviewMessage,
+    reason: 'all_agent_children_done',
+    childTaskIds: mergedChildTaskIds,
+  }
+}
+
+function validateParentLinks(tasks) {
+  const parentByTaskId = new Map()
+  for (const task of tasks) {
+    const taskId = normalizeString(task.id)
+    const parentTaskId = normalizeParentTaskId(task.parentTaskId)
+    if (!taskId || !parentTaskId) continue
+    if (taskId === parentTaskId) throw new Error('parentTaskId cannot point to the task itself')
+    parentByTaskId.set(taskId, parentTaskId)
+  }
+
+  for (const taskId of parentByTaskId.keys()) {
+    const seen = new Set([taskId])
+    let nextParentId = parentByTaskId.get(taskId)
+    while (nextParentId) {
+      if (seen.has(nextParentId)) throw new Error('parent task relationship cannot contain a cycle')
+      seen.add(nextParentId)
+      nextParentId = parentByTaskId.get(nextParentId)
+    }
+  }
+}
+
+function assertParentTasksExist(tasks, taskIdsToCheck) {
+  const taskIds = new Set(tasks.map((task) => normalizeString(task.id)).filter(Boolean))
+  for (const taskId of taskIdsToCheck) {
+    const task = tasks.find((item) => item.id === taskId)
+    if (task?.parentTaskId && !taskIds.has(task.parentTaskId)) throw new Error('parent task not found')
+  }
+}
+
+function applyParentReviewForCompletedChild(tasks, childTaskId, now) {
+  const completedChild = tasks.find((task) => task.id === childTaskId)
+  if (!completedChild || completedChild.status !== 'done' || !completedChild.parentTaskId) return tasks
+
+  const parentTask = tasks.find((task) => task.id === completedChild.parentTaskId)
+  if (!parentTask || parentTask.status === 'done' || isAgentLikeTask(parentTask)) return tasks
+
+  const linkedAgentChildren = tasks.filter((task) =>
+    task.parentTaskId === parentTask.id
+    && task.parentLink?.affectsParentCompletion !== false
+    && isAgentLikeTask(task),
+  )
+  if (linkedAgentChildren.length === 0 || linkedAgentChildren.some((task) => task.status !== 'done')) return tasks
+
+  const childTaskIds = normalizeChildTaskIds(linkedAgentChildren)
+  if (shouldSkipResolvedParentReview(parentTask.parentCompletionReview, childTaskIds)) return tasks
+
+  const nextReview = buildParentCompletionReview(parentTask, linkedAgentChildren, completedChild, now)
+  // 这里不自动完成父任务，只放一个独立提醒。父任务是否真的结束仍然由人类确认。
+  return tasks.map((task) =>
+    task.id === parentTask.id
+      ? {
+          ...task,
+          parentCompletionReview: nextReview,
+          updatedAt: now,
+        }
+      : task,
+  )
 }
 
 function getPaths() {
@@ -381,6 +577,7 @@ function getDefaultData() {
         todo: 'manual',
         done: 'completed-desc',
       },
+      globalShortcuts: getDefaultGlobalShortcuts(),
       edgeDocked: false,
     },
     tasks: [
@@ -1085,6 +1282,7 @@ async function readData() {
         ...getDefaultData().settings.columnSorts,
         ...data.settings?.columnSorts,
       },
+      globalShortcuts: normalizeGlobalShortcuts(data.settings?.globalShortcuts),
     },
     tasks: Array.isArray(data.tasks) ? data.tasks.map((task) => normalizeTaskOrigin(task)) : [],
     trash: Array.isArray(data.trash) ? data.trash.map((task) => normalizeTaskOrigin(task)) : [],
@@ -1103,6 +1301,7 @@ async function saveData(nextData) {
         ...getDefaultData().settings.columnSorts,
         ...nextData.settings?.columnSorts,
       },
+      globalShortcuts: normalizeGlobalShortcuts(nextData.settings?.globalShortcuts),
     },
     tasks: Array.isArray(nextData.tasks) ? nextData.tasks.map((task) => normalizeTaskOrigin(task)) : [],
     trash: Array.isArray(nextData.trash) ? nextData.trash.map((task) => normalizeTaskOrigin(task)) : [],
@@ -1176,6 +1375,7 @@ function normalizeExternalTask(input) {
   const agentSessionId = normalizeString(input.agentSessionId || input.sessionId || input.session || explicitOrigin?.agent?.sessionId)
   const repository = normalizeString(input.repository || input.repo || explicitOrigin?.repository?.name)
   const repositoryPath = normalizeString(input.repositoryPath || input.repoPath || explicitOrigin?.repository?.path)
+  const parentTaskId = normalizeParentTaskId(input.parentTaskId || input.parentId || input.parentTask?.id)
   const tags = Array.isArray(input.tags)
     ? input.tags.map((tag) => String(tag).trim()).filter(Boolean)
     : typeof input.tags === 'string'
@@ -1219,6 +1419,9 @@ function normalizeExternalTask(input) {
     completedAt: status === 'done' ? now : '',
     completionAcceptance: normalizeCompletionAcceptance(input.completionAcceptance),
     sessionReview: normalizeSessionReview(input.sessionReview),
+    parentTaskId,
+    parentLink: normalizeParentLink(input.parentLink, { ...input, agent, agentSessionId, source }, parentTaskId, now),
+    parentCompletionReview: normalizeParentCompletionReview(input.parentCompletionReview),
     source,
     agent,
     agentSessionId,
@@ -1254,6 +1457,19 @@ function normalizeTaskPatch(input, currentTask) {
   if (input.sessionReview && typeof input.sessionReview === 'object') {
     patch.sessionReview = normalizeSessionReview(input.sessionReview)
   }
+  if (input.parentCompletionReview && typeof input.parentCompletionReview === 'object') {
+    patch.parentCompletionReview = normalizeParentCompletionReview(input.parentCompletionReview)
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'parentTaskId') || Object.prototype.hasOwnProperty.call(input, 'parentId')) {
+    const parentTaskId = normalizeParentTaskId(input.parentTaskId || input.parentId)
+    patch.parentTaskId = parentTaskId || undefined
+    patch.parentLink = parentTaskId
+      ? normalizeParentLink({ ...currentTask.parentLink, ...input.parentLink }, { ...currentTask, ...patch }, parentTaskId, now)
+      : undefined
+  } else if (input.parentLink && typeof input.parentLink === 'object') {
+    // PATCH 允许只改派生原因或完成影响，未传的关系字段必须保留。
+    patch.parentLink = normalizeParentLink({ ...currentTask.parentLink, ...input.parentLink }, { ...currentTask, ...patch }, currentTask.parentTaskId, now)
+  }
   if (Array.isArray(input.tags)) patch.tags = input.tags.map((tag) => String(tag).trim()).filter(Boolean)
   if (typeof input.tags === 'string') patch.tags = input.tags.split(/[,\s，、]+/).map((tag) => tag.trim()).filter(Boolean)
   if (Object.prototype.hasOwnProperty.call(input, 'dueAt')) patch.dueAt = input.dueAt ? new Date(input.dueAt).toISOString() : ''
@@ -1265,6 +1481,18 @@ function normalizeTaskPatch(input, currentTask) {
   }
   if (typeof input.repository === 'string' || typeof input.repo === 'string') patch.repository = String(input.repository || input.repo).trim()
   if (typeof input.repositoryPath === 'string' || typeof input.repoPath === 'string') patch.repositoryPath = String(input.repositoryPath || input.repoPath).trim()
+  if (currentTask.origin?.kind === 'agent' && (patch.agent || patch.agentSessionId)) {
+    // Agent identity exists in compatibility fields and structured origin metadata. Update both atomically so
+    // moving an old task to another session cannot leave the session button pointing at the previous run.
+    patch.origin = {
+      ...currentTask.origin,
+      agent: {
+        ...currentTask.origin.agent,
+        name: patch.agent || currentTask.origin.agent?.name || currentTask.agent || '',
+        sessionId: patch.agentSessionId || currentTask.origin.agent?.sessionId || currentTask.agentSessionId || '',
+      },
+    }
+  }
   if (typeof input.appendDetail === 'string' && input.appendDetail.trim()) {
     patch.detail = [currentTask.detail, input.appendDetail.trim()].filter(Boolean).join('\n\n')
   }
@@ -1277,7 +1505,8 @@ function normalizeTaskPatch(input, currentTask) {
   const sessionReviewPatch = applySessionReview(candidate, input, now)
   const withSessionReview = sessionReviewPatch ? normalizeTaskOrigin({ ...candidate, ...sessionReviewPatch }, 'explicit') : candidate
   const decisionPatch = applyCompletionDecision(withSessionReview, input, now)
-  if (decisionPatch) return { ...patch, ...sessionReviewPatch, ...decisionPatch }
+  const parentDecisionPatch = applyParentCompletionReviewDecision(withSessionReview, input, now)
+  if (decisionPatch || parentDecisionPatch) return { ...patch, ...sessionReviewPatch, ...decisionPatch, ...parentDecisionPatch }
   const gatePatch = gateAgentCompletion(withSessionReview, input, now)
   return gatePatch ? { ...patch, ...sessionReviewPatch, ...gatePatch } : { ...patch, ...sessionReviewPatch }
 }
@@ -1290,14 +1519,22 @@ async function addTasksFromApi(input) {
   }
 
   const data = await readData()
+  const now = new Date().toISOString()
+  let nextTasks = [...tasks, ...data.tasks]
+  validateParentLinks(nextTasks)
+  assertParentTasksExist(nextTasks, tasks.map((task) => task.id))
+  const taskIdsThatNeedParentReview = tasks
+    .filter((task) => task.status === 'done' && task.parentTaskId)
+    .map((task) => task.id)
+  for (const taskId of taskIdsThatNeedParentReview) {
+    nextTasks = applyParentReviewForCompletedChild(nextTasks, taskId, now)
+  }
   const nextData = await saveData({
     ...data,
-    tasks: [...tasks, ...data.tasks],
+    tasks: nextTasks,
   })
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('data:updated', nextData)
-  }
+  notifyRendererDataUpdated(nextData)
 
   return { task: tasks[0], tasks, data: nextData }
 }
@@ -1309,16 +1546,22 @@ async function updateTaskFromApi(taskId, input) {
 
   const patch = normalizeTaskPatch(input, task)
   const nextTask = { ...task, ...patch }
+  let nextTasks = data.tasks.map((item) => (item.id === taskId ? nextTask : item))
+  validateParentLinks(nextTasks)
+  if (Object.prototype.hasOwnProperty.call(patch, 'parentTaskId') && patch.parentTaskId) {
+    assertParentTasksExist(nextTasks, [taskId])
+  }
+  if (task.status !== 'done' && nextTask.status === 'done') {
+    nextTasks = applyParentReviewForCompletedChild(nextTasks, taskId, new Date().toISOString())
+  }
   const nextData = await saveData({
     ...data,
-    tasks: data.tasks.map((item) => (item.id === taskId ? nextTask : item)),
+    tasks: nextTasks,
   })
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('data:updated', nextData)
-  }
+  notifyRendererDataUpdated(nextData)
 
-  return { task: nextTask, data: nextData }
+  return { task: nextData.tasks.find((item) => item.id === taskId) || nextTask, data: nextData }
 }
 
 function isLoopbackRequest(request) {
@@ -1454,7 +1697,8 @@ async function openTaskInCalendar(task) {
 
 function buildAgentSessionUrl(task) {
   const agent = String(task?.origin?.agent?.name || task?.origin?.agent?.tool || task?.agent || task?.source || '').trim().toLowerCase()
-  const sessionId = String(task?.origin?.agent?.sessionId || task?.agentSessionId || '').trim()
+  // The top-level field is the mutable API contract; origin metadata remains a fallback for older imported tasks.
+  const sessionId = String(task?.agentSessionId || task?.origin?.agent?.sessionId || '').trim()
   if (!sessionId) {
     throw new Error('这个任务没有关联 agent session')
   }
@@ -1537,6 +1781,37 @@ async function callAiTaskParser(text, settings, images = []) {
     safeAiMeta(settings, {
       taskCount: result.tasks?.length ?? 0,
       title: result.task?.title ?? '',
+      imageMode: result.imageMode,
+      imageCount: result.imageCount,
+      ocrErrors: result.ocrErrors,
+    }),
+  )
+  return result
+}
+
+async function callAiTaskEditor(payload, settings, images = []) {
+  const instruction = String(payload?.instruction || '')
+  await writeLog(
+    'info',
+    'AI edit request started',
+    safeAiMeta(settings, {
+      instructionLength: instruction.length,
+      imageCount: images.length,
+      taskTitle: payload?.draftTask?.title || payload?.originalTask?.title || '',
+    }),
+  )
+
+  const requestEndpoint = (url, requestPayload) => requestAiEndpoint(url, requestPayload, settings, 'AI edit request')
+  const result = await editTaskWithAiAndImages(payload, settings, requestEndpoint, { images })
+
+  if (result.usedFallback) {
+    await writeLog('warn', 'AI edit response used /v1 fallback endpoint', safeAiMeta(settings, { endpoint: result.endpoint }))
+  }
+  await writeLog(
+    'info',
+    'AI edit request succeeded',
+    safeAiMeta(settings, {
+      title: result.task?.title || '',
       imageMode: result.imageMode,
       imageCount: result.imageCount,
       ocrErrors: result.ocrErrors,
@@ -1971,6 +2246,153 @@ function snapWindowToEdge(window) {
   }
 }
 
+function notifyRendererDataUpdated(data) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('data:updated', data)
+}
+
+async function saveSettingsFromMain(patch) {
+  const data = await readData()
+  const saved = await saveData({
+    ...data,
+    settings: {
+      ...data.settings,
+      ...patch,
+    },
+  })
+  registerGlobalShortcuts(saved.settings)
+  notifyRendererDataUpdated(saved)
+  return saved
+}
+
+async function dockMainWindowToEdge(edge) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (isDocked) {
+    restoreDockedWindow()
+  }
+  const display = screen.getDisplayMatching(mainWindow.getBounds())
+  await dockWindowToEdge(mainWindow, edge === 'left' ? 'left' : 'right', display.workArea)
+}
+
+function inferNearestDockEdge() {
+  if (!mainWindow || mainWindow.isDestroyed()) return 'right'
+  const bounds = mainWindow.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const area = display.workArea
+  const centerX = bounds.x + (bounds.width / 2)
+  return centerX < area.x + (area.width / 2) ? 'left' : 'right'
+}
+
+async function toggleDockShortcut() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (isDocked) {
+    restoreDockedWindow()
+    return
+  }
+  await dockMainWindowToEdge(currentDockEdge || inferNearestDockEdge())
+}
+
+async function toggleMiniModeShortcut() {
+  const data = await readData()
+  const nextMode = data.settings.appMode === 'mini' ? 'normal' : 'mini'
+  // Shortcuts run in the main process, outside React. Persist first and broadcast
+  // the saved data so toolbar state stays consistent with the native window mode.
+  const saved = await saveSettingsFromMain({ appMode: nextMode })
+  currentAppMode = saved.settings.appMode === 'mini' ? 'mini' : 'normal'
+  applyAppModeWindow(currentAppMode)
+}
+
+async function toggleKeepOnTopShortcut() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const data = await readData()
+  const nextKeepOnTop = !data.settings.keepOnTop
+  const saved = await saveSettingsFromMain({ keepOnTop: nextKeepOnTop })
+  if (isDocked) {
+    mainWindow.setAlwaysOnTop(true, 'floating')
+    keepOnTopBeforeDock = Boolean(saved.settings.keepOnTop)
+    return
+  }
+  mainWindow.setAlwaysOnTop(Boolean(saved.settings.keepOnTop))
+}
+
+function runShortcut(action, label) {
+  return () => {
+    Promise.resolve(action()).catch((error) => {
+      void writeLog('warn', 'Global shortcut action failed', {
+        shortcut: label,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }
+}
+
+function unregisterRegisteredGlobalShortcuts() {
+  for (const accelerator of registeredShortcutAccelerators) {
+    globalShortcut.unregister(accelerator)
+  }
+  registeredShortcutAccelerators = new Set()
+}
+
+function registerGlobalShortcuts(settings = null) {
+  if (globalShortcutsSuspended) return
+  const actions = new Map([
+    ['toggleDock', runShortcut(toggleDockShortcut, '切换贴附 / 恢复')],
+    ['dockLeft', runShortcut(() => dockMainWindowToEdge('left'), '贴附到左侧')],
+    ['dockRight', runShortcut(() => dockMainWindowToEdge('right'), '贴附到右侧')],
+    ['toggleMini', runShortcut(toggleMiniModeShortcut, '小卡模式')],
+    ['toggleKeepOnTop', runShortcut(toggleKeepOnTopShortcut, '置顶')],
+  ])
+  const configuredShortcuts = normalizeGlobalShortcuts(settings?.globalShortcuts)
+  const signature = JSON.stringify(configuredShortcuts)
+  if (signature === registeredShortcutSignature) return
+
+  unregisterRegisteredGlobalShortcuts()
+  registeredShortcutSignature = signature
+
+  const seenAccelerators = new Set()
+  for (const binding of shortcutBindings) {
+    const accelerator = configuredShortcuts[binding.action]
+    const normalizedAccelerator = accelerator.toLowerCase()
+    if (seenAccelerators.has(normalizedAccelerator)) {
+      void writeLog('warn', 'Global shortcut skipped because of duplicate accelerator', {
+        accelerator,
+        label: binding.label,
+      })
+      continue
+    }
+    seenAccelerators.add(normalizedAccelerator)
+
+    const registered = globalShortcut.register(accelerator, actions.get(binding.action))
+    if (registered) {
+      registeredShortcutAccelerators.add(accelerator)
+    }
+    void writeLog(registered ? 'info' : 'warn', 'Global shortcut registration result', {
+      accelerator,
+      action: binding.action,
+      label: binding.label,
+      registered,
+    })
+  }
+}
+
+async function setGlobalShortcutCaptureMode(recording) {
+  const nextSuspended = Boolean(recording)
+  if (globalShortcutsSuspended === nextSuspended) return
+  globalShortcutsSuspended = nextSuspended
+  if (globalShortcutsSuspended) {
+    // While the settings panel is recording a shortcut, unregister the current
+    // global shortcuts so the key event reaches the focused recorder button.
+    unregisterRegisteredGlobalShortcuts()
+    registeredShortcutSignature = ''
+    await writeLog('info', 'Global shortcuts suspended for shortcut recording')
+    return
+  }
+
+  const data = await readData()
+  registerGlobalShortcuts(data.settings)
+  await writeLog('info', 'Global shortcuts resumed after shortcut recording')
+}
+
 async function createMainWindow() {
   await ensureStorage()
   let data = await readData()
@@ -2018,6 +2440,7 @@ async function createMainWindow() {
   } else {
     await mainWindow.loadFile(join(__dirname, '../dist/index.html'))
   }
+  registerGlobalShortcuts(data.settings)
 }
 
 app.whenReady().then(createMainWindow)
@@ -2035,6 +2458,11 @@ app.on('window-all-closed', () => {
   }
 })
 
+app.on('will-quit', () => {
+  unregisterRegisteredGlobalShortcuts()
+  registeredShortcutSignature = ''
+})
+
 ipcMain.handle('data:load', async () => readData())
 
 ipcMain.handle('data:save', async (_event, data) => {
@@ -2047,6 +2475,7 @@ ipcMain.handle('data:save', async (_event, data) => {
     }
   }
   await startApiServer(saved.settings)
+  registerGlobalShortcuts(saved.settings)
   return saved
 })
 
@@ -2157,11 +2586,7 @@ ipcMain.handle('dock:restore', async () => {
 
 ipcMain.handle('dock:to-edge', async (_event, edge) => {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false }
-  if (isDocked) {
-    restoreDockedWindow()
-  }
-  const display = screen.getDisplayMatching(mainWindow.getBounds())
-  await dockWindowToEdge(mainWindow, edge === 'left' ? 'left' : 'right', display.workArea)
+  await dockMainWindowToEdge(edge)
   return { ok: true }
 })
 
@@ -2169,6 +2594,11 @@ ipcMain.handle('dock:detail-open', async (_event, open) => setDockDetailOpen(Boo
 
 ipcMain.handle('dock:set-passthrough', async (_event, enabled) => {
   setDockPassthrough(Boolean(enabled) && isDocked)
+  return { ok: true }
+})
+
+ipcMain.handle('shortcuts:set-recording', async (_event, recording) => {
+  await setGlobalShortcutCaptureMode(Boolean(recording))
   return { ok: true }
 })
 
@@ -2201,6 +2631,17 @@ ipcMain.handle('ai:parse-task', async (_event, payload) => {
     return {
       ok: false,
       message: error instanceof Error ? error.message : 'AI 解析失败',
+    }
+  }
+})
+
+ipcMain.handle('ai:edit-task', async (_event, payload) => {
+  try {
+    return await callAiTaskEditor(payload || {}, payload?.settings || {}, payload?.images || [])
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : 'AI 修改失败',
     }
   }
 })
