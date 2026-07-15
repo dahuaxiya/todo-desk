@@ -9,6 +9,10 @@
     "web:dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac --arm64 --x64",
+    "dist:mac:unsigned": "npm run build && electron-builder --mac --dir --arm64 -c.mac.forceCodeSigning=false -c.mac.notarize=false",
+    "mac:allow-open": "bash scripts/prepare-macos-install.sh",
+    "verify:mac": "node scripts/verify-macos-release.mjs",
     "lint": "oxlint",
     "test:ai": "node scripts/test-ai-assistant.mjs",
     "agent:install": "node scripts/install-agent-integration.mjs",
@@ -31,7 +35,13 @@
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "artifactName": "${name}-${version}-${arch}.${ext}",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "forceCodeSigning": true,
+      "notarize": true
     },
     "win": {
       "target": "nsis"

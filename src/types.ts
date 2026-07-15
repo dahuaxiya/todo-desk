@@ -3,6 +3,8 @@ export type TaskColumnStatus = 'doing' | 'todo' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
 export type AppMode = 'normal' | 'mini'
 export type AddMode = 'quick' | 'detail'
+export type ShortcutAction = 'toggleDock' | 'dockLeft' | 'dockRight' | 'toggleMini' | 'toggleKeepOnTop'
+export type ShortcutSettings = Record<ShortcutAction, string>
 export type TaskSortMode =
   | 'manual'
   | 'priority-desc'
@@ -64,6 +66,25 @@ export interface SessionReview {
   resolution?: 'reviewed' | 'rework' | 'dismissed'
 }
 
+export interface TaskParentLink {
+  type: 'subtask_of' | 'discovered_from'
+  reason?: string
+  affectsParentCompletion: boolean
+  createdBy: 'human' | 'agent'
+  createdAt: string
+  confidence: 'explicit' | 'inferred'
+}
+
+export interface ParentCompletionReview {
+  requestedAt: string
+  requestedBy: string
+  message: string
+  reason: 'all_agent_children_done' | 'agent_child_done'
+  childTaskIds: string[]
+  resolvedAt?: string
+  resolution?: 'accepted' | 'kept'
+}
+
 export interface Task {
   id: string
   title: string
@@ -80,6 +101,9 @@ export interface Task {
   completedAt: string
   completionAcceptance?: CompletionAcceptance
   sessionReview?: SessionReview
+  parentTaskId?: string
+  parentLink?: TaskParentLink
+  parentCompletionReview?: ParentCompletionReview
   origin: TaskOrigin
   remindedAt?: string
   deletedAt?: string
@@ -110,6 +134,7 @@ export interface AppSettings {
   miniColumn: TaskColumnStatus
   addMode: AddMode
   columnSorts: Record<TaskColumnStatus, TaskSortMode>
+  globalShortcuts: ShortcutSettings
   edgeDocked: boolean
 }
 
@@ -160,6 +185,7 @@ export interface TodoDeskBridge {
   dockToEdge: (edge: 'left' | 'right') => Promise<{ ok: boolean }>
   setDockDetailOpen: (open: boolean) => Promise<{ ok: boolean; bounds?: { x: number; y: number; width: number; height: number } }>
   setDockPassthrough: (enabled: boolean) => Promise<{ ok: boolean }>
+  setShortcutRecording: (recording: boolean) => Promise<{ ok: boolean }>
   applyWindowMode: (mode: AppMode) => Promise<{ ok: boolean }>
   parseTask: (payload: { text: string; settings: AppSettings; images?: TaskImage[] }) => Promise<{
     ok: boolean
@@ -169,6 +195,19 @@ export interface TodoDeskBridge {
     tasks?: Partial<Task>[]
     imageMode?: 'none' | 'vision' | 'ocr' | 'local'
     usedLocalFallback?: boolean
+  }>
+  editTask: (payload: {
+    originalTask?: Partial<Task>
+    draftTask: Partial<Task>
+    instruction: string
+    settings: AppSettings
+    images?: TaskImage[]
+  }) => Promise<{
+    ok: boolean
+    skipped?: boolean
+    message?: string
+    task?: Partial<Task>
+    imageMode?: 'none' | 'vision' | 'ocr'
   }>
   mergeTasks: (payload: { tasks: Task[]; settings: AppSettings }) => Promise<{
     ok: boolean

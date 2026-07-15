@@ -4,7 +4,46 @@
 
 这份文档也是给 agent 看的操作手册。agent 只有仓库地址时，可以按这里完成检查和配置准备；是否真的写入用户全局配置，由 agent 的主人决定。
 
-## Agent 拿到仓库地址后的流程
+## 安装桌面 App
+
+当用户明确要求 Agent 安装 Todo Desk 桌面 App 时，不要让用户克隆源码、安装 Node.js 或准备 npm。Agent 应先确认仓库地址是：
+
+```text
+https://github.com/dahuaxiya/todo-desk
+```
+
+然后只下载仓库内的独立安装脚本，检查 shell 语法并执行：
+
+```bash
+set -euo pipefail
+INSTALLER="$(mktemp -t todo-desk-installer)"
+trap 'rm -f "$INSTALLER"' EXIT
+curl --fail --location --silent --show-error \
+  https://raw.githubusercontent.com/dahuaxiya/todo-desk/main/scripts/install-macos-release.sh \
+  --output "$INSTALLER"
+bash -n "$INSTALLER"
+bash "$INSTALLER"
+rm -f "$INSTALLER"
+trap - EXIT
+```
+
+`install-macos-release.sh` 只依赖 macOS 内置工具，负责完整流程：
+
+1. 根据 `uname -m` 选择 `arm64` 或 `x64` DMG。
+2. 从 GitHub API 获取最新 Release，不拼接或猜测版本文件名。
+3. 使用 Release 元数据中的 SHA-256 校验下载文件。
+4. 挂载 DMG，要求 `CFBundleIdentifier=com.codex.todo-desk`。
+5. 停止旧进程、备份旧 App，再安装到 `/Applications/Todo Desk.app`；复制失败时恢复。
+6. Gatekeeper 接受签名版本时保留 quarantine；当前未签名版本才执行 `xattr`。
+7. 打开 Todo Desk，等待进程和 `http://127.0.0.1:47731/health` 同时就绪。
+
+Agent 只有看到 `Todo Desk is installed, open, and ready.` 后，才能告诉用户安装完成。如果脚本失败，需要保留并报告实际错误。不要使用 `sudo xattr`、不要全局关闭 Gatekeeper，也不要把移除 quarantine 描述成签名或 Apple 公证。
+
+正式 Release 完成 Developer ID 签名与 Apple 公证后，安装脚本会让 Gatekeeper 正常验收并保留 quarantine，因此 Agent 可以继续使用同一流程。
+
+## 安装 Agent 接入配置（需要源码）
+
+下面的流程不是桌面 App 安装步骤。用户只要求“安装 Todo Desk”时，完成上一节并看到应用界面后就应停止，不得继续克隆源码。只有用户另外要求把 Todo Desk 接入 Codex、Claude、Kimi、Cursor 等 Agent 时，才执行本节。
 
 如果用户只给了 GitHub 地址，agent 先把仓库拉到本地，再读这份文档：
 
@@ -221,6 +260,12 @@ Kimi 当前主要通过 `~/.kimi-code/config.toml` 的 `extra_skill_dirs` 加载
 - `tags` 至少包含当前 agent 名和当前 session id。
 - `session id` 必须来自当前运行时，例如 `CODEX_THREAD_ID`、`CLAUDE_SESSION_ID`、`KIMI_SESSION_ID`、`CURSOR_SESSION_ID` 或等价线程 id。
 - 拿不到 session id 时，不得伪造，也不得创建、更新或完成任务。
+- 如果新任务是当前 Todo Desk 任务的计划拆分，创建时传 `--parent-task-id <当前任务 id> --relation-type subtask_of`。
+- Agent 在执行过程中要主动识别派生任务，不需要等主人再次要求拆分。只有新问题有独立结果、不是当前任务的常规实现步骤，并且可以单独分配/延期/完成或会改变父任务验收时，才自动创建卡片。
+- 自动创建前先查询当前父任务已有的未完成子卡；相同问题已经存在时更新原卡，不重复创建。改代码、补测试、跑构建、常规重构、根因记录和即时解决的临时错误仍记录在当前任务进展里。
+- 自动派生时传 `--parent-task-id <当前任务 id> --relation-type discovered_from --relation-reason <派生原因>`。立即切换处理用 `status=doing`，暂不处理用 `status=todo`。
+- 父任务不解决派生问题就不能验收时使用 `--affects-parent-completion`；不影响父任务交付、可以独立后续处理时使用 `--follow-up-only`。
+- 任务层级只能由明确的 Todo Desk task id 建立，不要根据标题、项目、标签、仓库或相同 session 推断。`session id` 只用于记录执行来源，一个分支可以跨多个 session。
 - 工作推进时更新同一条 Todo Desk 任务，不要重复创建。
 - 实现完成但主人还没有确认时，使用 `--request-completion`，让 Todo Desk 显示红点完成确认。
 - 本轮 session 输出完成但任务尚未完成时，使用 `--request-session-review`，让 Todo Desk 显示非红色未完成提醒。
