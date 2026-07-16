@@ -22,6 +22,8 @@ let keepOnTopBeforeDock = false
 let currentAppMode = 'normal'
 let suppressMoveHandlingUntil = 0
 let dockDragStartBounds = null
+let dockTopologyRestoreBounds = null
+let dockTopologyOpen = false
 let dockPassthrough = false
 let dockTransitioning = false
 let registeredShortcutAccelerators = new Set()
@@ -32,6 +34,9 @@ const dockCollapsedWidth = 152
 const dockDetailWidth = 260
 const dockDetailGap = 12
 const dockExpandedWidth = dockCollapsedWidth + dockDetailGap + dockDetailWidth
+const dockTopologyPreferredWidth = 1040
+const dockTopologyPreferredHeight = 720
+const dockTopologyMargin = 24
 const dockDetachThreshold = 96
 const dockTransitionFadeOutMs = 90
 const dockTransitionFadeInMs = 140
@@ -1972,6 +1977,8 @@ function setDockState(docked, edge = '') {
   currentDockEdge = docked ? edge : ''
   if (!docked) {
     dockDragStartBounds = null
+    dockTopologyRestoreBounds = null
+    dockTopologyOpen = false
     setDockPassthrough(false)
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2053,6 +2060,8 @@ function clampBoundsToWorkArea(bounds, area) {
 async function dockWindowToEdge(window, edge, area) {
   if (!window || window.isDestroyed() || isDocked || dockTransitioning) return
   dockTransitioning = true
+  dockTopologyRestoreBounds = null
+  dockTopologyOpen = false
   lastNormalBounds = window.getBounds()
   keepOnTopBeforeDock = window.isAlwaysOnTop()
   const width = Math.min(dockExpandedWidth, area.width)
@@ -2100,6 +2109,50 @@ function setDockDetailOpen(open) {
   return { ok: true, bounds: nextBounds }
 }
 
+function setDockTopologyOpen(open) {
+  if (!mainWindow || mainWindow.isDestroyed() || !isDocked) return { ok: false }
+  const current = mainWindow.getBounds()
+  const display = screen.getDisplayMatching(current)
+  const area = display.workArea
+
+  if (open) {
+    // Keep the window attached to its edge while giving the topology enough room toward
+    // the screen center. Saving the exact detail bounds makes close lossless on either edge.
+    dockTopologyRestoreBounds ??= current
+    dockTopologyOpen = true
+    const horizontalMargin = area.width > dockTopologyPreferredWidth ? dockTopologyMargin : 0
+    const verticalMargin = area.height > dockTopologyPreferredHeight ? dockTopologyMargin : 0
+    const width = Math.max(
+      Math.min(dockExpandedWidth, area.width),
+      Math.min(dockTopologyPreferredWidth, area.width - (horizontalMargin * 2)),
+    )
+    const height = Math.max(
+      Math.min(current.height, area.height),
+      Math.min(dockTopologyPreferredHeight, area.height - (verticalMargin * 2)),
+    )
+    const x = currentDockEdge === 'left' ? area.x : area.x + area.width - width
+    const y = area.y + Math.round((area.height - height) / 2)
+    const nextBounds = { x, y, width, height }
+    mainWindow.setMinimumSize(Math.min(dockExpandedWidth, width), 260)
+    dockDragStartBounds = nextBounds
+    setDockPassthrough(false)
+    setWindowBounds(mainWindow, nextBounds, false)
+    void writeLog('info', 'Dock topology window opened', { edge: currentDockEdge, bounds: nextBounds })
+    return { ok: true, bounds: nextBounds }
+  }
+
+  const restoreBounds = dockTopologyRestoreBounds
+  dockTopologyRestoreBounds = null
+  dockTopologyOpen = false
+  if (!restoreBounds) return { ok: true, bounds: current }
+  const nextBounds = clampBoundsToWorkArea(restoreBounds, area)
+  mainWindow.setMinimumSize(Math.min(dockExpandedWidth, nextBounds.width), 260)
+  dockDragStartBounds = nextBounds
+  setWindowBounds(mainWindow, nextBounds, false)
+  void writeLog('info', 'Dock topology window closed', { edge: currentDockEdge, bounds: nextBounds })
+  return { ok: true, bounds: nextBounds }
+}
+
 function restoreDockedWindow(anchorBounds = null) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const current = mainWindow.getBounds()
@@ -2133,6 +2186,9 @@ function restoreDockedWindow(anchorBounds = null) {
 
 function maybeRestoreDockedWindow(window, phase) {
   if (!window || window.isDestroyed() || !isDocked) return false
+  // Programmatic topology expansion keeps the dock edge but changes both bounds. Delayed
+  // macOS move events must not be interpreted as the user dragging the dock away.
+  if (dockTopologyOpen) return false
   if (Date.now() < suppressMoveHandlingUntil) return false
 
   const bounds = window.getBounds()
@@ -2591,6 +2647,8 @@ ipcMain.handle('dock:to-edge', async (_event, edge) => {
 })
 
 ipcMain.handle('dock:detail-open', async (_event, open) => setDockDetailOpen(Boolean(open)))
+
+ipcMain.handle('dock:topology-open', async (_event, open) => setDockTopologyOpen(Boolean(open)))
 
 ipcMain.handle('dock:set-passthrough', async (_event, enabled) => {
   setDockPassthrough(Boolean(enabled) && isDocked)

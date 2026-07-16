@@ -184,6 +184,7 @@ export interface TodoDeskBridge {
   restoreDock: () => Promise<{ ok: boolean }>
   dockToEdge: (edge: 'left' | 'right') => Promise<{ ok: boolean }>
   setDockDetailOpen: (open: boolean) => Promise<{ ok: boolean; bounds?: { x: number; y: number; width: number; height: number } }>
+  setDockTopologyOpen: (open: boolean) => Promise<{ ok: boolean; bounds?: { x: number; y: number; width: number; height: number } }>
   setDockPassthrough: (enabled: boolean) => Promise<{ ok: boolean }>
   setShortcutRecording: (recording: boolean) => Promise<{ ok: boolean }>
   applyWindowMode: (mode: AppMode) => Promise<{ ok: boolean }>

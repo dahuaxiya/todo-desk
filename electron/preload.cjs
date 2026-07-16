@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('todoDesk', {
   restoreDock: () => ipcRenderer.invoke('dock:restore'),
   dockToEdge: (edge) => ipcRenderer.invoke('dock:to-edge', edge),
   setDockDetailOpen: (open) => ipcRenderer.invoke('dock:detail-open', open),
+  setDockTopologyOpen: (open) => ipcRenderer.invoke('dock:topology-open', open),
   setDockPassthrough: (enabled) => ipcRenderer.invoke('dock:set-passthrough', enabled),
   setShortcutRecording: (recording) => ipcRenderer.invoke('shortcuts:set-recording', recording),
   applyWindowMode: (mode) => ipcRenderer.invoke('window:apply-mode', mode),

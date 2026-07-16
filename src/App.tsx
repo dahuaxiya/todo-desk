@@ -1451,6 +1451,42 @@ function App() {
     }
   }, [dockState.docked])
 
+  async function openTaskTopology(taskId: string) {
+    if (dockState.docked) {
+      setDockPassthrough(false)
+      const openRequest = window.todoDesk?.setDockTopologyOpen?.(true)
+      // Do not block React on the native resize response. Electron applies bounds synchronously,
+      // while rendering now prevents a delayed IPC response from swallowing the user's click.
+      setTopologyTaskId(taskId)
+      const result = await openRequest
+      if (result && !result.ok) {
+        setTopologyTaskId('')
+        setSyncState('无法展开贴附模式的任务拓扑')
+      }
+      return
+    }
+    setTopologyTaskId(taskId)
+  }
+
+  function closeTaskTopology() {
+    setTopologyTaskId('')
+    if (!dockState.docked) return
+    // Let React remove the fixed overlay before shrinking the native window. Otherwise
+    // one rendered frame is clipped into the narrow dock and looks like a flash.
+    requestAnimationFrame(() => {
+      void window.todoDesk?.setDockTopologyOpen?.(false)
+    })
+  }
+
+  async function openTaskFromTopology(taskId: string) {
+    setTopologyTaskId('')
+    if (dockState.docked) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      await window.todoDesk?.setDockTopologyOpen?.(false)
+    }
+    await openRelatedTask(taskId)
+  }
+
   useEffect(() => {
     if (dockDetailOpen && !selectedDockTaskId) {
       closeDockDetailWindow()
@@ -2697,7 +2733,7 @@ function App() {
 
   function handleDockPointerMove(event: ReactMouseEvent<HTMLElement>) {
     const target = event.target instanceof Element ? event.target : null
-    const isInteractiveDockArea = Boolean(target?.closest('.dock-card, .dock-popover'))
+    const isInteractiveDockArea = Boolean(target?.closest('.dock-card, .dock-popover, .task-topology-backdrop'))
     setDockPassthrough(!isInteractiveDockArea)
   }
 
@@ -2827,7 +2863,7 @@ function App() {
                 onOpenTask={(taskId) => {
                   void openRelatedTask(taskId)
                 }}
-                onOpenTopology={setTopologyTaskId}
+                onOpenTopology={openTaskTopology}
               />
               <TaskChildList
                 task={expandedDockTask}
@@ -2922,6 +2958,14 @@ function App() {
               </button>
             </div>
           </aside>
+        )}
+        {topologyTaskId && taskLookup.has(topologyTaskId) && (
+          <TaskTopologyDialog
+            tasks={data.tasks}
+            currentTaskId={topologyTaskId}
+            onClose={closeTaskTopology}
+            onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
+          />
         )}
       </main>
     )
@@ -3020,7 +3064,7 @@ function App() {
                 onOpenRelatedTask={(taskId) => {
                   void openRelatedTask(taskId)
                 }}
-                onOpenTopology={setTopologyTaskId}
+                onOpenTopology={openTaskTopology}
                 onContinueCompletionRequest={continueCompletionRequest}
                 onDismissCompletionRequest={dismissCompletionRequest}
                 onResolveSessionReview={resolveSessionReview}
@@ -3101,11 +3145,8 @@ function App() {
           <TaskTopologyDialog
             tasks={data.tasks}
             currentTaskId={topologyTaskId}
-            onClose={() => setTopologyTaskId('')}
-            onOpenTask={(taskId) => {
-              setTopologyTaskId('')
-              void openRelatedTask(taskId)
-            }}
+            onClose={closeTaskTopology}
+            onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
           />
         )}
       </main>
@@ -3289,7 +3330,7 @@ function App() {
               onOpenRelatedTask={(taskId) => {
                 void openRelatedTask(taskId)
               }}
-              onOpenTopology={setTopologyTaskId}
+              onOpenTopology={openTaskTopology}
               onContinueCompletionRequest={continueCompletionRequest}
               onDismissCompletionRequest={dismissCompletionRequest}
               onResolveSessionReview={resolveSessionReview}
@@ -3836,11 +3877,8 @@ function App() {
         <TaskTopologyDialog
           tasks={data.tasks}
           currentTaskId={topologyTaskId}
-          onClose={() => setTopologyTaskId('')}
-          onOpenTask={(taskId) => {
-            setTopologyTaskId('')
-            void openRelatedTask(taskId)
-          }}
+          onClose={closeTaskTopology}
+          onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
         />
       )}
     </main>
