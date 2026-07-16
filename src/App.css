@@ -3721,6 +3721,26 @@ select:focus-visible {
   gap: 8px;
 }
 
+.draft-parent-picker {
+  width: min(100%, 560px);
+}
+
+.draft-parent-picker .task-parent-binder {
+  min-height: 36px;
+  padding: 5px 8px;
+  border-color: rgba(48, 43, 35, 0.12);
+  background: rgba(255, 252, 244, 0.5);
+}
+
+.draft-parent-picker .task-parent-binder > span {
+  font-size: 11px;
+}
+
+.draft-parent-picker .parent-picker-trigger {
+  min-height: 26px;
+  background: rgba(255, 255, 255, 0.54);
+}
+
 .draft-parent-banner {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

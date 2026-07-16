@@ -1703,8 +1703,12 @@ function App() {
     const priority = ['high', 'medium', 'low'].includes(draft.priority) ? draft.priority : 'medium'
     const wasDone = existing?.status === 'done'
     const willBeDone = status === 'done'
-    // 只有从父任务显式创建分支时才写关系；编辑已有任务必须保留原关系，避免表单状态误改层级。
-    const newParentTaskId = !existing && draftParentTask ? draftParentTask.id : ''
+    const nextParentTaskId = draftParentTaskId.trim()
+    const keepExistingParentLink = Boolean(
+      nextParentTaskId
+      && existing?.parentTaskId === nextParentTaskId
+      && existing.parentLink,
+    )
     return {
       id: existing?.id ?? crypto.randomUUID(),
       title: toDraftString(draft.title).trim(),
@@ -1721,22 +1725,26 @@ function App() {
       completedAt: willBeDone ? existing?.completedAt || now : wasDone ? '' : existing?.completedAt || '',
       completionAcceptance: existing?.completionAcceptance,
       sessionReview: existing?.sessionReview,
-      parentTaskId: existing?.parentTaskId ?? (newParentTaskId || undefined),
-      parentLink: existing?.parentLink ?? (newParentTaskId
-        ? {
-            type: draftParentLinkType,
-            reason: draftParentLinkReason.trim() || undefined,
-            affectsParentCompletion: draftAffectsParentCompletion,
-            createdBy: 'human',
-            createdAt: now,
-            confidence: 'explicit',
-          }
-        : undefined),
+      parentTaskId: nextParentTaskId || undefined,
+      // 只有人类在表单中新建或更换关系时才重建 parentLink。
+      // 父任务未变时保留 agent 写入的派生类型、原因和创建时间。
+      parentLink: nextParentTaskId
+        ? keepExistingParentLink
+          ? existing?.parentLink
+          : {
+              type: draftParentLinkType,
+              reason: draftParentLinkReason.trim() || undefined,
+              affectsParentCompletion: draftAffectsParentCompletion,
+              createdBy: 'human',
+              createdAt: now,
+              confidence: 'explicit',
+            }
+        : undefined,
       parentCompletionReview: existing?.parentCompletionReview,
       origin: existing?.origin ?? createHumanTaskOrigin('ui-form'),
-    remindedAt: existing?.remindedAt ?? '',
-    calendarSync: existing?.calendarSync,
-    source: existing?.source,
+      remindedAt: existing?.remindedAt ?? '',
+      calendarSync: existing?.calendarSync,
+      source: existing?.source,
       agent: existing?.agent,
       agentSessionId: existing?.agentSessionId,
       repository: existing?.repository,
@@ -1755,6 +1763,15 @@ function App() {
     setAttachedImages([])
     setSelectedTaskId('')
     setComposerCollapsed(false)
+  }
+
+  function changeDraftParentTask(parentTaskId: string) {
+    if (parentTaskId !== draftParentTaskId) {
+      setDraftParentLinkType('subtask_of')
+      setDraftParentLinkReason('')
+      setDraftAffectsParentCompletion(true)
+    }
+    setDraftParentTaskId(parentTaskId)
   }
 
   function startCreateBranchTask(parentTask: Task, relationType: TaskParentLinkType) {
@@ -1783,10 +1800,10 @@ function App() {
 
   function startEdit(task: Task) {
     setEditingTaskId(task.id)
-    setDraftParentTaskId('')
-    setDraftParentLinkType('subtask_of')
-    setDraftParentLinkReason('')
-    setDraftAffectsParentCompletion(true)
+    setDraftParentTaskId(task.parentTaskId || '')
+    setDraftParentLinkType(task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of')
+    setDraftParentLinkReason(task.parentLink?.reason || '')
+    setDraftAffectsParentCompletion(task.parentLink?.affectsParentCompletion !== false)
     setDraft(buildDraftFromTask(task))
     setAiEditInstruction('')
     setAttachedImages(task.imagePaths ?? [])
@@ -1809,23 +1826,51 @@ function App() {
       setSyncState(message)
       return
     }
+    if (draftParentTaskId && !currentData.tasks.some((task) => task.id === draftParentTaskId)) {
+      const message = '保存失败：所选父任务已不存在，请重新选择'
+      setAiState(message)
+      setSyncState(message)
+      return
+    }
+    if (existing && wouldCreateTaskCycle(existing.id, draftParentTaskId, currentData.tasks)) {
+      const message = '保存失败：父任务不能是当前任务或它的后代'
+      setAiState(message)
+      setSyncState(message)
+      return
+    }
 
     setSubmitState('正在保存...')
     setAiState('正在保存任务...')
     try {
       const nextTask = buildTaskFromDraft(existing)
-      const nextTasks = existing
+      let nextTasks = existing
         ? currentData.tasks.map((task) => (task.id === existing.id ? nextTask : task))
         : [nextTask, ...currentData.tasks]
+      const previousParentTaskId = existing?.parentTaskId || ''
+      if (previousParentTaskId && previousParentTaskId !== nextTask.parentTaskId) {
+        // 换父任务或解除关系后，旧父任务的子任务完成提醒已经失真，必须一起清理。
+        nextTasks = nextTasks.map((task) =>
+          task.id === previousParentTaskId && hasActiveParentCompletionReview(task)
+            ? {
+                ...task,
+                parentCompletionReview: undefined,
+                updatedAt: nextTask.updatedAt,
+              }
+            : task,
+        )
+      }
+      if (nextTask.status === 'done' && nextTask.parentTaskId) {
+        nextTasks = applyParentReviewForCompletedChild(nextTasks, nextTask.id, nextTask.updatedAt)
+      }
       const saved = await persist({ ...currentData, tasks: nextTasks })
       const savedTask = saved.tasks.find((task) => task.id === nextTask.id) ?? nextTask
       const message = existing ? '已保存修改' : '已添加任务'
       setSelectedTaskId(savedTask.id)
       setEditingTaskId(savedTask.id)
-      setDraftParentTaskId('')
-      setDraftParentLinkType('subtask_of')
-      setDraftParentLinkReason('')
-      setDraftAffectsParentCompletion(true)
+      setDraftParentTaskId(savedTask.parentTaskId || '')
+      setDraftParentLinkType(savedTask.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of')
+      setDraftParentLinkReason(savedTask.parentLink?.reason || '')
+      setDraftAffectsParentCompletion(savedTask.parentLink?.affectsParentCompletion !== false)
       setDraft(buildDraftFromTask(savedTask))
       setAttachedImages(savedTask.imagePaths ?? [])
       setAiState(message)
@@ -3449,7 +3494,7 @@ function App() {
           </form>
         ) : (
           <form onSubmit={handleSubmit} onPaste={handlePasteImages} noValidate>
-          {draftParentTask && !editingTaskId && (
+          {draftParentTask && !editingTaskId ? (
             <div className="draft-parent-banner">
               <div className="draft-parent-copy">
                 <span>上级任务</span>
@@ -3496,6 +3541,15 @@ function App() {
                   <span>影响上级任务完成</span>
                 </label>
               </div>
+            </div>
+          ) : (
+            <div className="draft-parent-picker">
+              <TaskParentBinder
+                task={{ id: editingTaskId, parentTaskId: draftParentTaskId || undefined }}
+                parentTask={draftParentTask}
+                parentCandidates={parentTaskCandidates}
+                onChangeParentTask={(_taskId, parentTaskId) => changeDraftParentTask(parentTaskId)}
+              />
             </div>
           )}
           <div className="form-grid">
@@ -4211,7 +4265,7 @@ interface ParentCompletionReviewNoticeProps {
 }
 
 interface TaskParentBinderProps {
-  task: Task
+  task: Pick<Task, 'id' | 'parentTaskId'>
   parentTask?: Task
   parentCandidates: Task[]
   onChangeParentTask: (taskId: string, parentTaskId: string) => void
@@ -4310,8 +4364,6 @@ function TaskParentBinder({ task, parentTask, parentCandidates, onChangeParentTa
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [open])
-
-  if (!isAgentCreatedTask(task)) return null
 
   function selectParent(parentTaskId: string) {
     onChangeParentTask(task.id, parentTaskId)
