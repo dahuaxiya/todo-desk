@@ -4836,6 +4836,7 @@ function TaskTopologyNode({
   visited: Set<string>
   hasParent?: boolean
 }) {
+  const [detailOpen, setDetailOpen] = useState(false)
   if (visited.has(task.id)) return null
   const nextVisited = new Set(visited)
   nextVisited.add(task.id)
@@ -4844,36 +4845,82 @@ function TaskTopologyNode({
     .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)))
   const relationType = task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'
   const taskOriginClass = isAgentCreatedTask(task) ? 'agent-task' : 'human-task'
+  const detailId = `task-topology-detail-${task.id}`
 
   return (
     <div className={`task-topology-branch ${hasParent ? 'has-parent' : ''}`} role="treeitem" aria-expanded={childTasks.length > 0 || undefined}>
-      <button
-        className={`task-topology-node ${task.id === currentTaskId ? 'current' : ''} ${taskOriginClass}`}
-        type="button"
-        title={task.title}
+      <article
+        className={`task-topology-node ${task.id === currentTaskId ? 'current' : ''} ${taskOriginClass} ${detailOpen ? 'expanded' : ''}`}
         aria-current={task.id === currentTaskId ? 'true' : undefined}
-        onClick={() => onOpenTask(task.id)}
       >
-        <span className="task-topology-node-title">
-          <i className={`task-topology-status status-${getTaskColumnStatus(task.status)}`} aria-hidden="true" />
-          <strong>
-            <TaskNoticeDots task={task} />
-            {task.title}
-          </strong>
-        </span>
-        <span className="task-topology-node-meta">
-          {task.parentTaskId && (
-            <span className={`task-link-type task-link-type-${relationType}`}>
-              {parentLinkTypeConfig[relationType].shortLabel}
+        {/* 拓扑节点单击只展开上下文；跨视图跳转必须由详情里的明确按钮触发，避免误跳。 */}
+        <button
+          className="task-topology-node-summary"
+          type="button"
+          title={`${detailOpen ? '收起' : '展开'}任务详情：${task.title}`}
+          aria-expanded={detailOpen}
+          aria-controls={detailId}
+          onClick={() => setDetailOpen((current) => !current)}
+        >
+          <span className="task-topology-node-title">
+            <i className={`task-topology-status status-${getTaskColumnStatus(task.status)}`} aria-hidden="true" />
+            <strong>
+              <TaskNoticeDots task={task} />
+              {task.title}
+            </strong>
+          </span>
+          <span className="task-topology-node-meta">
+            {task.parentTaskId && (
+              <span className={`task-link-type task-link-type-${relationType}`}>
+                {parentLinkTypeConfig[relationType].shortLabel}
+              </span>
+            )}
+            <span>{statusConfig[task.status].label}</span>
+            <span>{priorityConfig[task.priority].label}优先级</span>
+            {isAgentCreatedTask(task) && <span>AI</span>}
+            {task.parentLink?.affectsParentCompletion === false && <span>后续</span>}
+            <span className="task-topology-node-expand" aria-hidden="true">
+              {detailOpen ? '收起' : '详情'}
+              <AppIcon name={detailOpen ? 'chevronUp' : 'chevronDown'} />
             </span>
-          )}
-          <span>{statusConfig[task.status].label}</span>
-          <span>{priorityConfig[task.priority].label}优先级</span>
-          {isAgentCreatedTask(task) && <span>AI</span>}
-          {task.parentLink?.affectsParentCompletion === false && <span>后续</span>}
-        </span>
-        {task.parentLink?.reason && <small>{task.parentLink.reason}</small>}
-      </button>
+          </span>
+          {!detailOpen && task.parentLink?.reason && <small>{task.parentLink.reason}</small>}
+        </button>
+        {detailOpen && (
+          <section className="task-topology-node-detail" id={detailId} aria-label={`${task.title} 的任务详情`}>
+            <div className="task-topology-node-detail-scroll">
+              {task.detail ? (
+                <p className="task-topology-node-description">{task.detail}</p>
+              ) : (
+                <p className="task-topology-node-empty">暂无任务详情</p>
+              )}
+              {task.parentLink?.reason && (
+                <div className="task-topology-node-reason">
+                  <strong>{relationType === 'discovered_from' ? '派生原因' : '拆分说明'}</strong>
+                  <p>{task.parentLink.reason}</p>
+                </div>
+              )}
+              <dl className="task-topology-node-facts">
+                {task.project && <div><dt>项目</dt><dd>{task.project}</dd></div>}
+                <div><dt>创建</dt><dd>{formatDateTime(task.createdAt)}</dd></div>
+                {task.updatedAt && <div><dt>更新</dt><dd>{formatDateTime(task.updatedAt)}</dd></div>}
+                {task.dueAt && <div><dt>截止</dt><dd>{formatDateTime(task.dueAt)}</dd></div>}
+                {task.reminderAt && <div><dt>提醒</dt><dd>{formatDateTime(task.reminderAt)}</dd></div>}
+                {task.completedAt && <div><dt>完成</dt><dd>{formatDateTime(task.completedAt)}</dd></div>}
+                {task.imagePaths.length > 0 && <div><dt>附件</dt><dd>{task.imagePaths.length} 张图片</dd></div>}
+              </dl>
+              {task.tags.length > 0 && (
+                <div className="task-topology-node-tags">
+                  {task.tags.map((tag) => <span key={tag}>#{tag}</span>)}
+                </div>
+              )}
+            </div>
+            <footer className="task-topology-node-actions">
+              <button type="button" onClick={() => onOpenTask(task.id)}>打开任务卡片</button>
+            </footer>
+          </section>
+        )}
+      </article>
       {childTasks.length > 0 && (
         <div className="task-topology-children" role="group">
           {childTasks.map((child) => (
