@@ -584,6 +584,7 @@ function getDefaultData() {
       },
       globalShortcuts: getDefaultGlobalShortcuts(),
       edgeDocked: false,
+      topologyPositions: {},
     },
     tasks: [
       {

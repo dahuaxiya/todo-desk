@@ -3,6 +3,19 @@
   min-height: 100vh;
 }
 
+.global-topology-loading {
+  min-height: 360px;
+  height: calc(100vh - 274px);
+  display: grid;
+  place-items: center;
+  margin: 0 18px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .loading-shell {
   display: grid;
   place-items: center;

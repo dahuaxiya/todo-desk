@@ -1,0 +1,553 @@
+.global-topology-view {
+  min-height: 360px;
+  height: calc(100vh - 274px);
+  margin: 0 18px 18px;
+  overflow: hidden;
+  border: 1px solid #dedbd4;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.global-topology-toolbar {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border-bottom: 1px solid #e7e3dc;
+  background: #fff;
+}
+
+.global-topology-toolbar button,
+.global-topology-toolbar select {
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #3d3c38;
+  font: inherit;
+  font-size: 12px;
+}
+
+.global-topology-toolbar button {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.global-topology-toolbar button:hover:not(:disabled) {
+  background: #f2f0eb;
+}
+
+.global-topology-toolbar button:disabled {
+  color: #bbb8b1;
+  cursor: default;
+}
+
+.global-topology-mode {
+  display: flex;
+  padding: 2px;
+  border: 1px solid #dedbd4;
+  border-radius: 7px;
+  background: #f7f6f2;
+}
+
+.global-topology-mode button {
+  height: 28px;
+  min-width: 56px;
+}
+
+.global-topology-mode button.active {
+  border-color: #d6e2fb;
+  background: #eaf1ff;
+  color: #1764d5;
+  font-weight: 650;
+}
+
+.global-topology-toolbar .toolbar-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 3px;
+  background: #e4e0d9;
+}
+
+.global-topology-toolbar .danger-action {
+  color: #b33e37;
+}
+
+.global-topology-filters {
+  display: flex;
+  gap: 7px;
+  margin-left: auto;
+}
+
+.global-topology-toolbar select {
+  max-width: 150px;
+  padding: 0 28px 0 10px;
+  border-color: #dedbd4;
+  background: #fff;
+}
+
+.global-topology-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 318px;
+  height: calc(100% - 50px);
+}
+
+.global-topology-canvas {
+  position: relative;
+  min-width: 0;
+  background: #faf9f5;
+}
+
+.global-topology-canvas.mode-connect .react-flow__pane {
+  cursor: crosshair;
+}
+
+.global-task-node {
+  width: 236px;
+  min-height: 112px;
+  padding: 12px 13px 10px;
+  border: 1px solid #e7c869;
+  border-radius: 7px;
+  background: #fffaf0;
+  box-shadow: 0 4px 12px rgba(61, 55, 43, 0.1);
+  color: #292824;
+}
+
+.global-task-node.agent-task {
+  border-color: #c7b8f4;
+  background: #f5f1ff;
+}
+
+.global-task-node.status-done {
+  border-color: #aacdb8;
+  background: #f1f8f4;
+  color: #56615a;
+}
+
+.global-task-node.selected {
+  border-color: #246cf0;
+  box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.13), 0 5px 14px rgba(39, 70, 122, 0.14);
+}
+
+.global-task-node header {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.global-task-node header strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.global-task-check {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #b4b0a8;
+  border-radius: 3px;
+  background: #fff;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.global-task-check.checked {
+  border-color: #55a776;
+  background: #55a776;
+}
+
+.global-task-node-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.topology-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  display: inline-block;
+  border-radius: 50%;
+  background: #2c71e8;
+}
+
+.topology-status-dot.status-todo {
+  background: #de8415;
+}
+
+.topology-status-dot.status-done {
+  background: #3ba56c;
+}
+
+.global-task-node-meta select {
+  max-width: 68px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.global-task-node-meta .priority,
+.global-task-node-meta .task-origin {
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+}
+
+.global-task-node-meta .priority-high {
+  color: #bc3f37;
+  background: #fff0ee;
+}
+
+.global-task-node-meta .priority-medium {
+  color: #9a6316;
+  background: #fff7e6;
+}
+
+.global-task-node-meta .priority-low {
+  color: #43775b;
+  background: #edf8f1;
+}
+
+.global-task-node-meta .task-origin {
+  margin-left: auto;
+  color: #6447bd;
+  background: #ebe5ff;
+}
+
+.global-task-node footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  color: #74716b;
+  font-size: 10px;
+}
+
+.global-task-node footer span {
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-task-node .react-flow__handle {
+  width: 13px;
+  height: 13px;
+  visibility: hidden;
+  border: 2px solid #2c71e8;
+  background: #fff;
+}
+
+.global-task-node .react-flow__handle.visible {
+  visibility: visible;
+}
+
+.global-topology-canvas .react-flow__edge.selected .react-flow__edge-path {
+  filter: drop-shadow(0 0 2px rgba(37, 105, 226, 0.35));
+}
+
+.global-topology-canvas .react-flow__controls {
+  right: 140px;
+  bottom: 14px;
+  overflow: hidden;
+  border: 1px solid #dedbd4;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.global-topology-canvas .react-flow__controls-button {
+  border-bottom-color: #e6e2db;
+  background: #fff;
+}
+
+.global-topology-canvas .react-flow__minimap {
+  right: 14px;
+  bottom: 14px;
+  width: 116px;
+  height: 76px;
+  border: 1px solid #dedbd4;
+  border-radius: 6px;
+  background: #f7f5f0;
+}
+
+.global-topology-legend {
+  position: absolute;
+  z-index: 4;
+  left: 14px;
+  bottom: 14px;
+  display: flex;
+  gap: 13px;
+  padding: 9px 11px;
+  border: 1px solid #dedbd4;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #5e5b55;
+  font-size: 10px;
+}
+
+.global-topology-legend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.global-topology-legend i {
+  width: 12px;
+  height: 8px;
+  display: inline-block;
+  border-radius: 2px;
+  background: #f4dc93;
+}
+
+.global-topology-legend i.agent {
+  background: #d9cdfc;
+}
+
+.global-topology-legend i.subtask,
+.global-topology-legend i.derived,
+.global-topology-legend i.follow-up {
+  width: 16px;
+  height: 2px;
+  border-radius: 0;
+  background: #7d8792;
+}
+
+.global-topology-legend i.derived {
+  background: #7c5ce5;
+}
+
+.global-topology-legend i.follow-up {
+  height: 0;
+  border-top: 2px dashed #7d8792;
+  background: transparent;
+}
+
+.topology-relation-menu {
+  position: absolute;
+  z-index: 8;
+  top: 50%;
+  left: 50%;
+  width: 208px;
+  padding: 12px;
+  border: 1px solid #d8d4cd;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 14px 36px rgba(36, 42, 52, 0.2);
+  transform: translate(-50%, -50%);
+}
+
+.topology-relation-menu strong {
+  display: block;
+  font-size: 13px;
+}
+
+.topology-relation-menu p {
+  margin: 5px 0 10px;
+  color: #77736c;
+  font-size: 10px;
+}
+
+.topology-relation-menu button {
+  width: 100%;
+  height: 34px;
+  margin-top: 5px;
+  border: 0;
+  border-radius: 5px;
+  background: #eef3ff;
+  color: #1f64cf;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.topology-relation-menu button.cancel {
+  background: #f4f2ee;
+  color: #65625c;
+}
+
+.global-topology-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  color: #8b8881;
+  font-size: 13px;
+  transform: translate(-50%, -50%);
+}
+
+.global-topology-inspector {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid #e5e1da;
+  background: #fff;
+}
+
+.global-topology-inspector > header {
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid #eeeae4;
+}
+
+.global-topology-inspector > header > div {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.global-topology-inspector > header strong {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.inspector-origin {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #fff3cf;
+  color: #825f17;
+  font-size: 10px;
+}
+
+.inspector-origin.agent {
+  background: #eee9ff;
+  color: #6548bd;
+}
+
+.inspector-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 18px 0;
+}
+
+.inspector-badges span {
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #f2f1ee;
+  color: #5c5954;
+  font-size: 10px;
+}
+
+.global-topology-inspector section {
+  margin: 0 18px;
+  padding: 16px 0;
+  border-bottom: 1px solid #eeeae4;
+}
+
+.global-topology-inspector section h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.global-topology-inspector section p {
+  margin: 0 0 7px;
+  overflow-wrap: anywhere;
+  color: #605d57;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.global-topology-inspector .inspector-code {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: #f5f4f1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+}
+
+.inspector-progress {
+  height: 6px;
+  overflow: hidden;
+  margin: 10px 0 6px;
+  border-radius: 5px;
+  background: #eceae5;
+}
+
+.inspector-progress span {
+  height: 100%;
+  display: block;
+  background: #2875ef;
+}
+
+.global-topology-inspector section small {
+  color: #807d76;
+  font-size: 10px;
+}
+
+.global-topology-inspector > footer {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding: 14px 18px 18px;
+  border-top: 1px solid #eeeae4;
+}
+
+.global-topology-inspector > footer button {
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #d9d5ce;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.global-topology-inspector > footer button.primary {
+  flex: 1;
+  border-color: #1769ee;
+  background: #1769ee;
+  color: #fff;
+}
+
+.global-topology-inspector-empty {
+  margin: auto;
+  padding: 30px;
+  text-align: center;
+}
+
+.global-topology-inspector-empty strong {
+  font-size: 14px;
+}
+
+.global-topology-inspector-empty p {
+  margin: 9px 0 0;
+  color: #817e77;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.app-shell:has(.global-topology-view) .composer {
+  display: none;
+}
+
+@media (max-width: 1040px) {
+  .global-topology-body {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+
+  .global-topology-legend {
+    max-width: 420px;
+    flex-wrap: wrap;
+  }
+}

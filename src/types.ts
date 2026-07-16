@@ -115,6 +115,11 @@ export interface Task {
   calendarSync?: TaskCalendarSync
 }
 
+export interface TopologyPosition {
+  x: number
+  y: number
+}
+
 export interface AppSettings {
   larkDoc: string
   larkCalendarId: string
@@ -136,6 +141,7 @@ export interface AppSettings {
   columnSorts: Record<TaskColumnStatus, TaskSortMode>
   globalShortcuts: ShortcutSettings
   edgeDocked: boolean
+  topologyPositions: Record<string, TopologyPosition>
 }
 
 export interface TaskCalendarSyncTarget {
