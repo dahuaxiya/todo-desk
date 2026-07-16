@@ -203,19 +203,39 @@ function splitTaskDetail(detail: string) {
 }
 
 function TaskDetailText({ detail, variant }: { detail: string; variant: TaskDetailVariant }) {
+  const [expanded, setExpanded] = useState(false)
   const blocks = useMemo(() => splitTaskDetail(detail), [detail])
+  useEffect(() => {
+    setExpanded(false)
+  }, [detail, variant])
   if (blocks.length === 0) return null
 
   const isLong = detail.length > 360 || blocks.length > 2
+  const isDockCollapsible = variant === 'dock' && (detail.length > 140 || blocks.length > 1)
 
   return (
-    <section className={`task-detail-text detail-${variant} ${isLong ? 'is-long' : ''}`} aria-label="任务详情正文">
-      {isLong && (
+    <section
+      className={`task-detail-text detail-${variant} ${isLong ? 'is-long' : ''} ${isDockCollapsible ? 'is-collapsible' : ''} ${isDockCollapsible && !expanded ? 'is-collapsed' : ''}`}
+      aria-label="任务详情正文"
+    >
+      {isDockCollapsible ? (
+        <div className="detail-summary-row">
+          <span>任务内容</span>
+          <button
+            className="detail-toggle-button"
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? '收起内容' : '展开内容'}
+          </button>
+        </div>
+      ) : isLong ? (
         <div className="detail-summary-row">
           <span>任务详情</span>
           <span>滚动查看全部</span>
         </div>
-      )}
+      ) : null}
       <div className="detail-block-list">
         {blocks.map((block, index) => (
           <p className="detail-block" key={`${index}-${block.slice(0, 16)}`}>
@@ -2833,7 +2853,11 @@ function App() {
           </form>
         </section>
         {expandedDockTask && (
-          <aside className="dock-popover" aria-label="任务详情" onMouseEnter={handleDockInteractiveEnter}>
+          <aside
+            className={`dock-popover ${isAgentCreatedTask(expandedDockTask) ? 'agent-task' : 'human-task'}`}
+            aria-label="任务详情"
+            onMouseEnter={handleDockInteractiveEnter}
+          >
             <header>
               <span className={`priority priority-${expandedDockTask.priority}`}>{priorityConfig[expandedDockTask.priority].label}</span>
               <button type="button" title="收起详情" onClick={closeDockDetailWindow}>
