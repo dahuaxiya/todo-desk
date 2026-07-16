@@ -123,7 +123,11 @@ function hasSearchCriteria(input) {
 export function searchTasks(tasks, input = {}, now = Date.now()) {
   if (!hasSearchCriteria(input)) throw new Error('at least one search query or exact filter is required')
   const limit = Math.min(maxSearchLimit, Math.max(1, Number(input.limit) || defaultSearchLimit))
-  const queryTokens = tokenize(input.query || input.q)
+  const rawQuery = normalizeText(input.query || input.q)
+  const queryTokens = tokenize(rawQuery)
+  if (rawQuery && queryTokens.size === 0) {
+    throw new Error('search query is too generic after stop-word filtering')
+  }
   const excludeTaskId = normalizeText(input.excludeTaskId)
   const ranked = []
 

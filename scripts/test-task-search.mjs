@@ -57,5 +57,6 @@ assert.ok(!fuzzyResults.some((task) => task.id === 'generic-task-words'))
 const noMatch = searchTasks(tasks, { query: 'zqv isolated phrase', limit: 5 }, now)
 assert.equal(noMatch.length, 0)
 assert.throws(() => searchTasks(tasks, {}, now), /at least one search query or exact filter is required/)
+assert.throws(() => searchTasks(tasks, { query: '任务 Todo Desk 工作' }, now), /search query is too generic/)
 
 console.log('task search tests passed')

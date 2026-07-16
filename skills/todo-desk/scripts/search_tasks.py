@@ -58,6 +58,14 @@ def main() -> int:
     try:
         with urllib.request.urlopen(request, timeout=args.timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = json.loads(exc.read().decode("utf-8"))
+            message = error_body.get("error") or str(exc)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            message = str(exc)
+        print(f"Todo Desk task search failed: {message}", file=sys.stderr)
+        return 1
     except urllib.error.URLError as exc:
         print(f"Todo Desk task search failed: {exc}", file=sys.stderr)
         return 1
