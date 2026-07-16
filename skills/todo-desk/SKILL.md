@@ -45,6 +45,18 @@ Todo Desk exposes a loopback-only HTTP API when the desktop app is running:
 
 The port can be changed in Todo Desk settings. Default port is `47731`.
 
+## Resolve the Parent Before Creating AI Work
+
+Before every `POST /tasks` or `add_work.py` call that creates an AI task, inspect the complete task list from `GET /tasks` and independently decide whether an existing task is its direct parent.
+
+1. Consider all non-trashed tasks as candidates, regardless of whether `origin.kind` is `human` or `agent`. Prefer active tasks, but allow a completed task when the new work is clearly a follow-up derived from it.
+2. Judge the direct relationship from the task goal, acceptance scope, detail, relation history, the user's current request, the task currently selected in Todo Desk, and any explicit task id supplied by the caller. Repository, project, title similarity, tags, source type, and session id are supporting context only; none proves a relationship by itself.
+3. When one candidate is clearly the direct parent, create the AI task with its id in `--parent-task-id`. Use `subtask_of` for planned decomposition within the parent's scope, or `discovered_from` for an independent issue exposed while executing the parent.
+4. Preserve the nearest direct relationship. Do not skip an AI parent and attach its child directly to a human ancestor, and do not flatten a multi-level branch merely because another task has broader or more similar wording.
+5. If the available task list does not support a confident direct-parent judgment, create the AI task without a parent instead of inventing a relationship. Record enough detail for the relationship to be added later.
+
+This parent check is mandatory even when the user only asks the agent to "record the current work." Its purpose is to let the agent use the full Todo Desk context to keep related AI work connected without forcing every AI task under a human card.
+
 ## Add Current Work
 
 Prefer the bundled script:
