@@ -40,6 +40,8 @@ Todo Desk exposes a loopback-only HTTP API when the desktop app is running:
 
 - `GET http://127.0.0.1:47731/health`
 - `GET http://127.0.0.1:47731/tasks`
+- `GET http://127.0.0.1:47731/tasks/<task-id>`
+- `POST http://127.0.0.1:47731/tasks/parent-candidates`
 - `POST http://127.0.0.1:47731/tasks`
 - `PATCH http://127.0.0.1:47731/tasks/<task-id>`
 
@@ -47,15 +49,28 @@ The port can be changed in Todo Desk settings. Default port is `47731`.
 
 ## Resolve the Parent Before Creating AI Work
 
-Before every `POST /tasks` or `add_work.py` call that creates an AI task, inspect the complete task list from `GET /tasks` and independently decide whether an existing task is its direct parent.
+Before every `POST /tasks` or `add_work.py` call that creates an AI task, request a compact candidate set instead of loading the complete task list into model context:
 
-1. Consider all non-trashed tasks as candidates, regardless of whether `origin.kind` is `human` or `agent`. Prefer active tasks, but allow a completed task when the new work is clearly a follow-up derived from it.
-2. Judge the direct relationship from the task goal, acceptance scope, detail, relation history, the user's current request, the task currently selected in Todo Desk, and any explicit task id supplied by the caller. Repository, project, title similarity, tags, source type, and session id are supporting context only; none proves a relationship by itself.
-3. When one candidate is clearly the direct parent, create the AI task with its id in `--parent-task-id`. Use `subtask_of` for planned decomposition within the parent's scope, or `discovered_from` for an independent issue exposed while executing the parent.
-4. Preserve the nearest direct relationship. Do not skip an AI parent and attach its child directly to a human ancestor, and do not flatten a multi-level branch merely because another task has broader or more similar wording.
-5. If the available task list does not support a confident direct-parent judgment, create the AI task without a parent instead of inventing a relationship. Record enough detail for the relationship to be added later.
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/find_parent_candidates.py \
+  --title "<new task title>" \
+  --detail "<new task detail>" \
+  --project "<project>" \
+  --tags "<tags>" \
+  --agent-session-id "<current-session-id>" \
+  --repository "<repo-name>" \
+  --repository-path "<repo-path>"
+```
 
-This parent check is mandatory even when the user only asks the agent to "record the current work." Its purpose is to let the agent use the full Todo Desk context to keep related AI work connected without forcing every AI task under a human card.
+The local API ranks tasks already bound to the current session first, then adds fuzzy matches based on title, detail, project, tags, repository, status, and recency. It returns at most 12 compact summaries by default; it does not send the full task collection or attachment data to the agent.
+
+1. Consider every returned task as a possible direct parent, regardless of whether it was created by a human or an agent.
+2. Independently judge the relationship from the candidate summaries and current request. Session binding and fuzzy scores are retrieval signals, not proof of parentage.
+3. If a summary is insufficient, fetch only that candidate through `GET /tasks/<task-id>` instead of falling back to the complete list.
+4. When one candidate is clearly the direct parent, pass its id through `--parent-task-id`. Use `subtask_of` for planned decomposition or `discovered_from` for an independent issue exposed while executing the parent.
+5. Preserve the nearest direct relationship. If no candidate supports a confident judgment, create the task without a parent and keep enough detail to relate it later.
+
+This candidate check is mandatory even when the user only asks the agent to "record the current work."
 
 ## Add Current Work
 
