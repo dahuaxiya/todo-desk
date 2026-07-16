@@ -74,6 +74,15 @@
   color: #b33e37;
 }
 
+.global-topology-visible-count {
+  padding: 3px 7px;
+  border-radius: 10px;
+  background: #f0eee9;
+  color: #77736c;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .global-topology-filters {
   display: flex;
   gap: 7px;
@@ -89,8 +98,12 @@
 
 .global-topology-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 318px;
+  grid-template-columns: minmax(0, 1fr);
   height: calc(100% - 50px);
+}
+
+.global-topology-body.has-selection {
+  grid-template-columns: minmax(0, 1fr) 318px;
 }
 
 .global-topology-canvas {
@@ -542,7 +555,7 @@
 }
 
 @media (max-width: 1040px) {
-  .global-topology-body {
+  .global-topology-body.has-selection {
     grid-template-columns: minmax(0, 1fr) 280px;
   }
 

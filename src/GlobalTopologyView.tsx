@@ -15,6 +15,7 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
@@ -79,20 +80,79 @@ function getColumnStatus(status: TaskStatus): TaskColumnStatus {
 }
 
 function createAutomaticLayout(tasks: Task[]): Record<string, TopologyPosition> {
-  const graph = new dagre.graphlib.Graph()
-  graph.setDefaultEdgeLabel(() => ({}))
-  graph.setGraph({ rankdir: 'LR', ranksep: 92, nodesep: 46, marginx: 56, marginy: 48 })
-
-  for (const task of tasks) graph.setNode(task.id, { width: nodeWidth, height: nodeHeight })
+  if (tasks.length === 0) return {}
+  const taskIds = new Set(tasks.map((task) => task.id))
+  const neighbors = new Map(tasks.map((task) => [task.id, new Set<string>()]))
   for (const task of tasks) {
-    if (task.parentTaskId && graph.hasNode(task.parentTaskId)) graph.setEdge(task.parentTaskId, task.id)
+    if (!task.parentTaskId || !taskIds.has(task.parentTaskId)) continue
+    neighbors.get(task.id)?.add(task.parentTaskId)
+    neighbors.get(task.parentTaskId)?.add(task.id)
   }
 
-  dagre.layout(graph)
-  return Object.fromEntries(tasks.map((task) => {
-    const point = graph.node(task.id)
-    return [task.id, { x: point.x - nodeWidth / 2, y: point.y - nodeHeight / 2 }]
-  }))
+  const components: Task[][] = []
+  const visited = new Set<string>()
+  for (const task of tasks) {
+    if (visited.has(task.id)) continue
+    const component: Task[] = []
+    const queue = [task.id]
+    visited.add(task.id)
+    while (queue.length > 0) {
+      const taskId = queue.shift()
+      const current = taskId ? tasks.find((item) => item.id === taskId) : undefined
+      if (current) component.push(current)
+      for (const neighbor of taskId ? neighbors.get(taskId) ?? [] : []) {
+        if (visited.has(neighbor)) continue
+        visited.add(neighbor)
+        queue.push(neighbor)
+      }
+    }
+    components.push(component)
+  }
+
+  // Dagre 对大量互不相连的根任务会排成一条很长的带状区域。先分别布局每棵关系树，
+  // 再按接近画布宽高比的货架方式打包，避免少量筛选结果仍继承全量画布的巨大空白。
+  const componentLayouts = components
+    .map((component) => {
+      const graph = new dagre.graphlib.Graph()
+      graph.setDefaultEdgeLabel(() => ({}))
+      graph.setGraph({ rankdir: 'LR', ranksep: 48, nodesep: 18, marginx: 8, marginy: 8 })
+      for (const task of component) graph.setNode(task.id, { width: nodeWidth, height: nodeHeight })
+      for (const task of component) {
+        if (task.parentTaskId && graph.hasNode(task.parentTaskId)) graph.setEdge(task.parentTaskId, task.id)
+      }
+      dagre.layout(graph)
+      const points = component.map((task) => ({ taskId: task.id, point: graph.node(task.id) }))
+      const minX = Math.min(...points.map(({ point }) => point.x - nodeWidth / 2))
+      const minY = Math.min(...points.map(({ point }) => point.y - nodeHeight / 2))
+      const maxX = Math.max(...points.map(({ point }) => point.x + nodeWidth / 2))
+      const maxY = Math.max(...points.map(({ point }) => point.y + nodeHeight / 2))
+      return { points, minX, minY, width: maxX - minX, height: maxY - minY }
+    })
+    .sort((left, right) => right.height * right.width - left.height * left.width)
+
+  const estimatedArea = tasks.length * (nodeWidth + 34) * (nodeHeight + 24)
+  const rowWidth = Math.max(nodeWidth * 2, Math.sqrt(estimatedArea * 1.55))
+  const positions: Record<string, TopologyPosition> = {}
+  let cursorX = 24
+  let cursorY = 24
+  let rowHeight = 0
+
+  for (const layout of componentLayouts) {
+    if (cursorX > 24 && cursorX + layout.width > rowWidth) {
+      cursorX = 24
+      cursorY += rowHeight + 34
+      rowHeight = 0
+    }
+    for (const { taskId, point } of layout.points) {
+      positions[taskId] = {
+        x: cursorX + point.x - nodeWidth / 2 - layout.minX,
+        y: cursorY + point.y - nodeHeight / 2 - layout.minY,
+      }
+    }
+    cursorX += layout.width + 34
+    rowHeight = Math.max(rowHeight, layout.height)
+  }
+  return positions
 }
 
 function buildTaskPath(task: Task, taskLookup: Map<string, Task>) {
@@ -175,10 +235,12 @@ export function GlobalTopologyView({
   const [selectedEdgeId, setSelectedEdgeId] = useState('')
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
   const [localPositions, setLocalPositions] = useState<Record<string, TopologyPosition>>(positions)
+  const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>({})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
   const [historyVersion, setHistoryVersion] = useState(0)
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
+  const flowInstanceRef = useRef<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const externallyVisibleTaskIds = useMemo(() => new Set(includedTaskIds), [includedTaskIds])
@@ -203,16 +265,45 @@ export function GlobalTopologyView({
     [externallyVisibleTaskIds, projectFilter, statusFilter, tasks],
   )
   const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks])
+  const visibleAutomaticPositions = useMemo(() => createAutomaticLayout(visibleTasks), [visibleTasks])
+  const filteredView = statusFilter !== 'all' || projectFilter !== 'all' || visibleTasks.length !== tasks.length
 
   useEffect(() => {
     setLocalPositions((current) => ({ ...automaticPositions, ...current, ...positions }))
   }, [automaticPositions, positions])
 
   useEffect(() => {
+    setFilteredPositionOverrides({})
+    const frame = requestAnimationFrame(() => {
+      flowInstanceRef.current?.fitView({
+        padding: visibleTasks.length > 80 ? 0.035 : 0.075,
+        maxZoom: visibleTasks.length > 40 ? 0.82 : 1.05,
+        duration: 0,
+      })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [filteredView, projectFilter, statusFilter, visibleAutomaticPositions, visibleTasks.length])
+
+  useEffect(() => {
+    // 详情栏出现或收起会改变画布宽度，等 CSS 网格完成一次布局后重新适配，
+    // 否则选中任务时右侧节点会被详情栏直接裁掉。
+    const timer = window.setTimeout(() => {
+      flowInstanceRef.current?.fitView({
+        padding: visibleTasks.length > 80 ? 0.035 : 0.075,
+        maxZoom: visibleTasks.length > 40 ? 0.82 : 1.05,
+        duration: 0,
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [selectedTaskId, visibleTasks.length])
+
+  useEffect(() => {
     setNodes(visibleTasks.map((task) => ({
       id: task.id,
       type: 'task',
-      position: localPositions[task.id] ?? automaticPositions[task.id] ?? { x: 0, y: 0 },
+      position: filteredView
+        ? filteredPositionOverrides[task.id] ?? visibleAutomaticPositions[task.id] ?? { x: 0, y: 0 }
+        : localPositions[task.id] ?? automaticPositions[task.id] ?? { x: 0, y: 0 },
       data: {
         task,
         childCount: childCountByParentId.get(task.id) ?? 0,
@@ -224,7 +315,7 @@ export function GlobalTopologyView({
       draggable: mode === 'select',
       connectable: mode === 'connect',
     })))
-  }, [automaticPositions, childCountByParentId, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleTasks])
+  }, [automaticPositions, childCountByParentId, filteredPositionOverrides, filteredView, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleAutomaticPositions, visibleTasks])
 
   useEffect(() => {
     if (selectedTaskId && !taskLookup.has(selectedTaskId)) setSelectedTaskId('')
@@ -271,6 +362,10 @@ export function GlobalTopologyView({
   }
 
   function handleNodeDragStop(_: unknown, node: TaskFlowNode) {
+    if (filteredView) {
+      setFilteredPositionOverrides((current) => ({ ...current, [node.id]: node.position }))
+      return
+    }
     commitPositions({ ...localPositions, [node.id]: node.position })
   }
 
@@ -293,7 +388,13 @@ export function GlobalTopologyView({
   }
 
   function autoLayout() {
+    if (filteredView) {
+      setFilteredPositionOverrides({})
+      requestAnimationFrame(() => flowInstanceRef.current?.fitView({ padding: 0.075, maxZoom: 1.05, duration: 0 }))
+      return
+    }
     commitPositions(createAutomaticLayout(tasks))
+    requestAnimationFrame(() => flowInstanceRef.current?.fitView({ padding: 0.05, maxZoom: 0.9, duration: 0 }))
   }
 
   async function confirmConnection(relationType: TopologyRelationType) {
@@ -325,6 +426,7 @@ export function GlobalTopologyView({
         <button type="button" title="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>↶</button>
         <button type="button" title="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>↷</button>
         <button type="button" onClick={autoLayout}>自动整理</button>
+        <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
         {selectedEdgeId && <button className="danger-action" type="button" onClick={() => void unlinkSelectedEdge()}>解除关系</button>}
         <div className="global-topology-filters">
           <select value={statusFilter} aria-label="按状态筛选" onChange={(event) => setStatusFilter(event.target.value as TopologyStatusFilter)}>
@@ -340,13 +442,16 @@ export function GlobalTopologyView({
         </div>
       </div>
 
-      <div className="global-topology-body">
+      <div className={`global-topology-body ${selectedTask ? 'has-selection' : ''}`}>
         <div className={`global-topology-canvas mode-${mode}`}>
           <ReactFlow<TaskFlowNode, TaskFlowEdge>
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
+            onInit={(instance) => {
+              flowInstanceRef.current = instance
+            }}
             onNodeClick={(_, node) => {
               setSelectedTaskId(node.id)
               setSelectedEdgeId('')
@@ -362,8 +467,8 @@ export function GlobalTopologyView({
             onNodeDragStop={handleNodeDragStop}
             onConnect={(connection) => setPendingConnection(connection)}
             fitView
-            fitViewOptions={{ padding: 0.16, maxZoom: 1 }}
-            minZoom={0.2}
+            fitViewOptions={{ padding: 0.075, maxZoom: 1.05 }}
+            minZoom={0.08}
             maxZoom={1.8}
             deleteKeyCode={null}
             proOptions={{ hideAttribution: true }}
@@ -401,8 +506,8 @@ export function GlobalTopologyView({
           {visibleTasks.length === 0 && <div className="global-topology-empty">当前筛选条件下没有任务</div>}
         </div>
 
-        <aside className="global-topology-inspector">
-          {selectedTask ? (
+        {selectedTask && (
+          <aside className="global-topology-inspector">
             <>
               <header>
                 <div>
@@ -441,13 +546,8 @@ export function GlobalTopologyView({
                 <button className="primary" type="button" onClick={() => onOpenTask(selectedTask.id)}>打开任务卡片</button>
               </footer>
             </>
-          ) : (
-            <div className="global-topology-inspector-empty">
-              <strong>选择一个任务</strong>
-              <p>查看完整内容、父子路径和 Agent 上下文。切换到“连线”后，可从父任务右侧拖到子任务左侧。</p>
-            </div>
-          )}
-        </aside>
+          </aside>
+        )}
       </div>
     </section>
   )
