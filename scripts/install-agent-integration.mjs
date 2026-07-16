@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -60,31 +60,34 @@ function isTarget(options, name) {
 
 function instructionBlock(sharedSkillDir) {
   const addScript = join(sharedSkillDir, 'scripts', 'add_work.py')
-  const candidateScript = join(sharedSkillDir, 'scripts', 'find_parent_candidates.py')
+  const searchScript = join(sharedSkillDir, 'scripts', 'search_tasks.py')
   const updateScript = join(sharedSkillDir, 'scripts', 'update_task.py')
 
   return `## Todo Desk 工作挂载
 
 每次开始处理用户明确交办的工作时，先使用 Todo Desk 记录当前工作，并使用当前工具名作为 \`agent\`，例如 \`codex\`、\`claude\`、\`kimi\`、\`cursor\`。
 
-创建 AI 任务前必须先查询少量父任务候选，不要把完整任务列表放进模型上下文：
+Todo Desk 只提供通用任务搜索能力，是否存在父子关系以及如何关联由 agent 自己判断。创建 AI 任务前先查当前 session 已绑定的任务：
 
 \`\`\`bash
-python3 ${candidateScript} \\
-  --title "<当前工作标题>" \\
-  --detail "<用户要求、当前判断和下一步>" \\
-  --project "<项目或仓库名>" \\
-  --tags "<agent>,<session-id>,todo-desk" \\
+python3 ${searchScript} \\
   --agent-session-id "<session-id>" \\
-  --repository "<repo-name>" \\
-  --repository-path "<repo-path>"
+  --limit 10
 \`\`\`
 
-- 本地 API 优先返回当前 session 已绑定的任务，再结合标题、详情、项目、标签、仓库、状态和更新时间进行模糊搜索，默认最多返回 12 条摘要。
-- 人工任务和 AI 任务都可以作为候选；agent 根据候选摘要和当前上下文自主判断最近一级直接父任务。session 匹配和模糊分数只是召回信号，不能单独证明父子关系。
-- 摘要不足时只读取 \`GET /tasks/<task-id>\` 的单条详情，不得退回读取完整任务列表。
-- 能明确判断时创建 AI 卡片必须传 \`--parent-task-id\`；计划内拆分使用 \`subtask_of\`，执行中发现的独立问题使用 \`discovered_from\`。
-- 无法可靠判断时保持无父任务，不得强行关联；已知直接父任务是 AI 卡片时不要跳过它挂到更上层祖先。
+如果 session 查询不能明确找到相关任务，再由 agent 使用当前工作标题和有区分度的详情做模糊搜索；仓库、项目、状态、来源、agent 和标签只是可选过滤条件：
+
+\`\`\`bash
+python3 ${searchScript} \\
+  --query "<当前工作标题和关键详情>" \\
+  --repository-path "<repo-path>" \\
+  --limit 12
+\`\`\`
+
+- 搜索接口只执行通用精确过滤和模糊匹配，返回少量任务摘要，不判断父任务。
+- agent 必须结合搜索结果与当前对话自行判断最近一级直接父任务；session 命中和模糊分数不能单独证明父子关系。
+- 过滤条件没有结果时应放宽条件重试；摘要不足时只读取 \`GET /tasks/<task-id>\` 的单条详情，不得读取完整任务列表进入模型上下文。
+- 能明确判断时创建 AI 卡片传 \`--parent-task-id\`；计划内拆分使用 \`subtask_of\`，执行中发现的独立问题使用 \`discovered_from\`。无法可靠判断时不得强行关联。
 
 优先使用本机脚本：
 
@@ -237,6 +240,8 @@ async function copySkillTo(destination, options, summary) {
   if (options.dryRun) return
 
   await mkdir(dirname(destination), { recursive: true })
+  // Remove the superseded parent-specific helper so upgraded agents only see the generic search tool.
+  await rm(join(destination, 'scripts', 'find_parent_candidates.py'), { force: true })
   await cp(source, destination, { recursive: true, force: true })
 }
 

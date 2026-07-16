@@ -41,36 +41,44 @@ Todo Desk exposes a loopback-only HTTP API when the desktop app is running:
 - `GET http://127.0.0.1:47731/health`
 - `GET http://127.0.0.1:47731/tasks`
 - `GET http://127.0.0.1:47731/tasks/<task-id>`
-- `POST http://127.0.0.1:47731/tasks/parent-candidates`
+- `POST http://127.0.0.1:47731/tasks/search`
 - `POST http://127.0.0.1:47731/tasks`
 - `PATCH http://127.0.0.1:47731/tasks/<task-id>`
 
 The port can be changed in Todo Desk settings. Default port is `47731`.
 
-## Resolve the Parent Before Creating AI Work
+## Search for Related Tasks Before Creating AI Work
 
-Before every `POST /tasks` or `add_work.py` call that creates an AI task, request a compact candidate set instead of loading the complete task list into model context:
+Todo Desk only provides generic task search. The agent is responsible for deciding how to use the results and whether a parent relationship exists.
+
+Before creating an AI task, first search for tasks already bound to the current session:
 
 ```bash
-python3 /Users/dxm/.agents/skills/todo-desk/scripts/find_parent_candidates.py \
-  --title "<new task title>" \
-  --detail "<new task detail>" \
-  --project "<project>" \
-  --tags "<tags>" \
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/search_tasks.py \
   --agent-session-id "<current-session-id>" \
-  --repository "<repo-name>" \
-  --repository-path "<repo-path>"
+  --limit 10
 ```
 
-The local API ranks tasks already bound to the current session first, then adds fuzzy matches based on title, detail, project, tags, repository, status, and recency. It returns at most 12 compact summaries by default; it does not send the full task collection or attachment data to the agent.
+If the session results do not identify the related task clearly, perform a fuzzy search using the new work's title and key detail. Add repository, project, status, origin, agent, or tag filters only when they are useful:
 
-1. Consider every returned task as a possible direct parent, regardless of whether it was created by a human or an agent.
-2. Independently judge the relationship from the candidate summaries and current request. Session binding and fuzzy scores are retrieval signals, not proof of parentage.
-3. If a summary is insufficient, fetch only that candidate through `GET /tasks/<task-id>` instead of falling back to the complete list.
-4. When one candidate is clearly the direct parent, pass its id through `--parent-task-id`. Use `subtask_of` for planned decomposition or `discovered_from` for an independent issue exposed while executing the parent.
-5. Preserve the nearest direct relationship. If no candidate supports a confident judgment, create the task without a parent and keep enough detail to relate it later.
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/search_tasks.py \
+  --query "<new task title and distinctive detail>" \
+  --repository-path "<repo-path>" \
+  --limit 12
+```
 
-This candidate check is mandatory even when the user only asks the agent to "record the current work."
+The search API applies exact filters supplied by the agent and fuzzy-matches `query` against task title, detail, tags, and project. It returns compact summaries only and does not decide which task is a parent.
+
+The agent must inspect the search results and current conversation itself:
+
+1. Treat session matches and fuzzy scores only as retrieval signals, not as proof of a relationship.
+2. If a repository or project filter returns no useful result, retry with a broader search instead of assuming no related task exists.
+3. If a summary is insufficient, fetch only that task through `GET /tasks/<task-id>`; do not load the complete task list into model context.
+4. If one task is clearly the nearest direct parent, pass its id through `--parent-task-id`. Use `subtask_of` for planned decomposition or `discovered_from` for an independent issue exposed while executing it.
+5. If the agent cannot establish the relationship confidently, create the task without a parent rather than forcing a link.
+
+This search process is mandatory even when the user only asks the agent to "record the current work."
 
 ## Add Current Work
 

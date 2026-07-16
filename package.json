@@ -15,7 +15,7 @@
     "verify:mac": "node scripts/verify-macos-release.mjs",
     "lint": "oxlint",
     "test:ai": "node scripts/test-ai-assistant.mjs",
-    "test:parent-search": "node scripts/test-parent-candidate-search.mjs",
+    "test:task-search": "node scripts/test-task-search.mjs",
     "agent:install": "node scripts/install-agent-integration.mjs",
     "preview": "vite preview"
   },

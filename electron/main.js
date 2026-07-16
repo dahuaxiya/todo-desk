@@ -7,7 +7,7 @@ import http from 'node:http'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, editTaskWithAiAndImages, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
-import { findParentTaskCandidates } from './task-parent-search.js'
+import { searchTasks } from './task-search.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -1630,12 +1630,12 @@ async function handleApiRequest(request, response) {
       return
     }
 
-    if (request.method === 'POST' && url.pathname === '/tasks/parent-candidates') {
+    if (request.method === 'POST' && url.pathname === '/tasks/search') {
       const body = await readRequestJson(request)
       const data = await readData()
       sendJson(response, 200, {
         ok: true,
-        candidates: findParentTaskCandidates(data.tasks, body),
+        tasks: searchTasks(data.tasks, body),
       })
       return
     }
