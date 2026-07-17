@@ -28,6 +28,7 @@ type TopologyRelationshipFilter = 'managed' | 'all' | 'unresolved' | 'independen
 interface GlobalTopologyViewProps {
   tasks: Task[]
   includedTaskIds: string[]
+  expandRelatedTasks: boolean
   positions: Record<string, TopologyPosition>
   onSavePositions: (positions: Record<string, TopologyPosition>) => Promise<void> | void
   onLinkTasks: (parentTaskId: string, childTaskId: string, relationType: TopologyRelationType) => Promise<void> | void
@@ -291,6 +292,7 @@ const nodeTypes = { task: TaskNode }
 export function GlobalTopologyView({
   tasks,
   includedTaskIds,
+  expandRelatedTasks,
   positions,
   onSavePositions,
   onLinkTasks,
@@ -310,7 +312,6 @@ export function GlobalTopologyView({
 }: GlobalTopologyViewProps) {
   const [mode, setMode] = useState<TopologyMode>('select')
   const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>('all')
-  const [projectFilter, setProjectFilter] = useState('all')
   const [relationshipFilter, setRelationshipFilter] = useState<TopologyRelationshipFilter>('managed')
   const [inboxOpen, setInboxOpen] = useState(false)
   const [selectedOrphanIds, setSelectedOrphanIds] = useState<Set<string>>(() => new Set())
@@ -331,11 +332,32 @@ export function GlobalTopologyView({
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
-  const externallyVisibleTaskIds = useMemo(() => new Set(includedTaskIds), [includedTaskIds])
-  const projects = useMemo(
-    () => [...new Set(tasks.map((task) => task.project).filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN')),
-    [tasks],
-  )
+  const externallyVisibleTaskIds = useMemo(() => {
+    const visibleIds = new Set(includedTaskIds)
+    if (!expandRelatedTasks) return visibleIds
+
+    const childrenByParentId = new Map<string, string[]>()
+    for (const task of tasks) {
+      if (!task.parentTaskId) continue
+      childrenByParentId.set(task.parentTaskId, [...(childrenByParentId.get(task.parentTaskId) ?? []), task.id])
+    }
+
+    // 搜索命中只是入口。这里同时向父级和子级递归补齐整条关系链，
+    // 避免用户只看到孤立命中节点，却无法判断它在任务树中的上下文。
+    const queue = [...visibleIds]
+    while (queue.length > 0) {
+      const taskId = queue.shift()
+      if (!taskId) continue
+      const parentTaskId = taskLookup.get(taskId)?.parentTaskId
+      const relatedIds = [parentTaskId, ...(childrenByParentId.get(taskId) ?? [])].filter(Boolean) as string[]
+      for (const relatedId of relatedIds) {
+        if (visibleIds.has(relatedId)) continue
+        visibleIds.add(relatedId)
+        queue.push(relatedId)
+      }
+    }
+    return visibleIds
+  }, [expandRelatedTasks, includedTaskIds, taskLookup, tasks])
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
   const unresolvedAgentTasks = useMemo(() => tasks.filter(isUnresolvedAgentTask), [tasks])
   const unresolvedTaskIds = useMemo(() => new Set(unresolvedAgentTasks.map((task) => task.id)), [unresolvedAgentTasks])
@@ -343,13 +365,12 @@ export function GlobalTopologyView({
     () => tasks.filter((task) => {
       if (!externallyVisibleTaskIds.has(task.id)) return false
       if (statusFilter !== 'all' && getColumnStatus(task.status) !== statusFilter) return false
-      if (projectFilter !== 'all' && task.project !== projectFilter) return false
-      if (relationshipFilter === 'managed') return !unresolvedTaskIds.has(task.id)
+      if (relationshipFilter === 'managed') return expandRelatedTasks || !unresolvedTaskIds.has(task.id)
       if (relationshipFilter === 'unresolved') return unresolvedTaskIds.has(task.id)
       if (relationshipFilter === 'independent_root') return task.relationshipState === 'independent_root'
       return true
     }),
-    [externallyVisibleTaskIds, projectFilter, relationshipFilter, statusFilter, tasks, unresolvedTaskIds],
+    [expandRelatedTasks, externallyVisibleTaskIds, relationshipFilter, statusFilter, tasks, unresolvedTaskIds],
   )
   const filteredChildrenByParentId = useMemo(() => {
     const filteredTaskIds = new Set(filteredTasks.map((task) => task.id))
@@ -378,7 +399,6 @@ export function GlobalTopologyView({
   const filteredAutomaticPositions = useMemo(() => createAutomaticLayout(filteredTasks), [filteredTasks])
   const externalFilterActive = includedTaskIds.length !== tasks.length
   const filteredView = statusFilter !== 'all'
-    || projectFilter !== 'all'
     || externalFilterActive
     || relationshipFilter === 'unresolved'
     || relationshipFilter === 'independent_root'
@@ -392,7 +412,7 @@ export function GlobalTopologyView({
     // 筛选变化需要重新采用对应任务集合的紧凑坐标，但不能自动缩放或平移画布。
     // 视口只允许由用户拖动、缩放或点击 React Flow 的恢复视口按钮来改变。
     setFilteredPositionOverrides({})
-  }, [filteredAutomaticPositions, projectFilter, relationshipFilter, statusFilter])
+  }, [filteredAutomaticPositions, relationshipFilter, statusFilter])
 
   useEffect(() => {
     const unresolvedIds = new Set(unresolvedAgentTasks.map((task) => task.id))
@@ -622,10 +642,6 @@ export function GlobalTopologyView({
             <option value="doing">正在做</option>
             <option value="todo">Todo</option>
             <option value="done">已完成</option>
-          </select>
-          <select value={projectFilter} aria-label="按项目筛选" onChange={(event) => setProjectFilter(event.target.value)}>
-            <option value="all">全部项目</option>
-            {projects.map((project) => <option key={project} value={project}>{project}</option>)}
           </select>
           <select value={relationshipFilter} aria-label="按关系状态筛选" onChange={(event) => setRelationshipFilter(event.target.value as TopologyRelationshipFilter)}>
             <option value="managed">已管理</option>

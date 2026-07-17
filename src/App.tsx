@@ -3552,6 +3552,7 @@ function App() {
           <GlobalTopologyView
             tasks={data.tasks}
             includedTaskIds={filteredTasks.map((task) => task.id)}
+            expandRelatedTasks={Boolean(search.trim())}
             positions={data.settings.topologyPositions}
             onSavePositions={saveTopologyPositions}
             onLinkTasks={linkTopologyTasks}
