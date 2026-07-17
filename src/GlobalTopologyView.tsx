@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dagre from '@dagrejs/dagre'
+import { Redo2, Undo2 } from 'lucide-react'
 import {
   Background,
   BackgroundVariant,
@@ -615,8 +616,12 @@ export function GlobalTopologyView({
           <button className={mode === 'connect' ? 'active' : ''} type="button" onClick={() => setMode('connect')}>连线</button>
         </div>
         <button className="topology-add-task" type="button" onClick={onAddTask}>＋ 新增任务</button>
-        <button className="topology-toolbar-icon" type="button" title="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>↶</button>
-        <button className="topology-toolbar-icon" type="button" title="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>↷</button>
+        <button className="topology-toolbar-icon" type="button" title="撤销布局" aria-label="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>
+          <Undo2 aria-hidden="true" size={16} strokeWidth={1.8} />
+        </button>
+        <button className="topology-toolbar-icon" type="button" title="重做布局" aria-label="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>
+          <Redo2 aria-hidden="true" size={16} strokeWidth={1.8} />
+        </button>
         <span className="toolbar-divider" aria-hidden="true" />
         <button
           className={`relationship-inbox-trigger ${inboxOpen ? 'active' : ''}`}
