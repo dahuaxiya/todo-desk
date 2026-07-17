@@ -614,7 +614,10 @@ export function GlobalTopologyView({
           <button className={mode === 'select' ? 'active' : ''} type="button" onClick={() => setMode('select')}>选择</button>
           <button className={mode === 'connect' ? 'active' : ''} type="button" onClick={() => setMode('connect')}>连线</button>
         </div>
-        <button type="button" onClick={onAddTask}>＋ 新增任务</button>
+        <button className="topology-add-task" type="button" onClick={onAddTask}>＋ 新增任务</button>
+        <button className="topology-toolbar-icon" type="button" title="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>↶</button>
+        <button className="topology-toolbar-icon" type="button" title="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>↷</button>
+        <span className="toolbar-divider" aria-hidden="true" />
         <button
           className={`relationship-inbox-trigger ${inboxOpen ? 'active' : ''}`}
           type="button"
@@ -622,6 +625,35 @@ export function GlobalTopologyView({
         >
           待归类 AI <span>{unresolvedAgentTasks.length}</span>
         </button>
+        <button className="topology-layout-action" type="button" onClick={autoLayout} title="自动整理任务位置">
+          <span aria-hidden="true">✣</span><span className="toolbar-action-label">自动整理</span>
+        </button>
+        <button
+          className="topology-layout-action"
+          type="button"
+          disabled={collapsibleTaskIds.size === 0}
+          title={allParentsCollapsed ? '展开所有父节点' : '收起所有父节点'}
+          onClick={() => setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))}
+        >
+          <span aria-hidden="true">{allParentsCollapsed ? '▾' : '▸'}</span>
+          <span className="toolbar-action-label">{allParentsCollapsed ? '全部展开' : '全部收起'}</span>
+        </button>
+        {selectedEdgeId && <button className="danger-action" type="button" onClick={() => void unlinkSelectedEdge()}>解除关系</button>}
+        <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
+        <div className="global-topology-filters">
+          <select value={statusFilter} aria-label="按状态筛选" onChange={(event) => setStatusFilter(event.target.value as TopologyStatusFilter)}>
+            <option value="all">全部状态</option>
+            <option value="doing">正在做</option>
+            <option value="todo">Todo</option>
+            <option value="done">已完成</option>
+          </select>
+          <select value={relationshipFilter} aria-label="按关系状态筛选" onChange={(event) => setRelationshipFilter(event.target.value as TopologyRelationshipFilter)}>
+            <option value="managed">已管理</option>
+            <option value="all">全部关系</option>
+            <option value="unresolved">待归类</option>
+            <option value="independent_root">独立任务</option>
+          </select>
+        </div>
       </div>
 
       {inboxOpen && (
@@ -762,43 +794,6 @@ export function GlobalTopologyView({
               maskColor="rgba(248, 247, 242, 0.72)"
             />
           </ReactFlow>
-          <div className="topology-floating-panel topology-layout-tools" role="toolbar" aria-label="画布布局工具">
-            <button type="button" onClick={autoLayout} title="自动整理任务位置">
-              <span aria-hidden="true">✣</span><b>自动整理</b>
-            </button>
-            <button
-              type="button"
-              disabled={collapsibleTaskIds.size === 0}
-              title={allParentsCollapsed ? '展开所有父节点' : '收起所有父节点'}
-              onClick={() => setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))}
-            >
-              <span aria-hidden="true">{allParentsCollapsed ? '▾' : '▸'}</span><b>{allParentsCollapsed ? '全部展开' : '全部收起'}</b>
-            </button>
-            <span className="floating-tool-divider" aria-hidden="true" />
-            <button className="icon-only" type="button" title="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>↶</button>
-            <button className="icon-only" type="button" title="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>↷</button>
-            {selectedEdgeId && (
-              <>
-                <span className="floating-tool-divider" aria-hidden="true" />
-                <button className="danger-action" type="button" onClick={() => void unlinkSelectedEdge()}>解除关系</button>
-              </>
-            )}
-          </div>
-          <div className="topology-floating-panel topology-filter-tools" aria-label="拓扑筛选">
-            <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
-            <select value={statusFilter} aria-label="按状态筛选" onChange={(event) => setStatusFilter(event.target.value as TopologyStatusFilter)}>
-              <option value="all">全部状态</option>
-              <option value="doing">正在做</option>
-              <option value="todo">Todo</option>
-              <option value="done">已完成</option>
-            </select>
-            <select value={relationshipFilter} aria-label="按关系状态筛选" onChange={(event) => setRelationshipFilter(event.target.value as TopologyRelationshipFilter)}>
-              <option value="managed">已管理</option>
-              <option value="all">全部关系</option>
-              <option value="unresolved">待归类</option>
-              <option value="independent_root">独立任务</option>
-            </select>
-          </div>
           <div className="global-topology-legend">
             <span><i className="human" />人工任务</span>
             <span><i className="agent" />AI 任务</span>

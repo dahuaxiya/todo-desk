@@ -10,16 +10,24 @@
 }
 
 .global-topology-toolbar {
-  height: 46px;
+  height: 50px;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
+  overflow-x: auto;
   padding: 0 12px;
   border-bottom: 1px solid #e7e3dc;
   background: #fff;
+  scrollbar-width: none;
+  white-space: nowrap;
 }
 
-.global-topology-toolbar button {
+.global-topology-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.global-topology-toolbar button,
+.global-topology-toolbar select {
   height: 32px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -43,6 +51,39 @@
   cursor: default;
 }
 
+.global-topology-toolbar .topology-add-task {
+  border-color: #e0b744;
+  background: #f5c84d;
+  color: #302817;
+  font-weight: 650;
+}
+
+.global-topology-toolbar .topology-toolbar-icon {
+  width: 34px;
+  flex: 0 0 34px;
+  padding: 0;
+  border-color: #e1ded7;
+  font-size: 16px;
+}
+
+.global-topology-toolbar .toolbar-divider {
+  width: 1px;
+  height: 22px;
+  flex: 0 0 1px;
+  margin: 0 3px;
+  background: #e4e0d9;
+}
+
+.global-topology-toolbar .topology-layout-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.global-topology-toolbar .danger-action {
+  color: #b33e37;
+}
+
 .global-topology-mode {
   display: flex;
   padding: 2px;
@@ -64,6 +105,7 @@
 }
 
 .global-topology-toolbar .relationship-inbox-trigger {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -98,10 +140,26 @@
   white-space: nowrap;
 }
 
+.global-topology-filters {
+  min-width: 0;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.global-topology-toolbar select {
+  min-width: 108px;
+  padding: 0 27px 0 9px;
+  border-color: #dedbd4;
+  background: #fff;
+  cursor: pointer;
+}
+
 .global-topology-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100% - 46px);
+  height: calc(100% - 50px);
 }
 
 .global-topology-body.has-selection {
@@ -116,92 +174,6 @@
 
 .global-topology-canvas.mode-connect .react-flow__pane {
   cursor: crosshair;
-}
-
-.topology-floating-panel {
-  position: absolute;
-  z-index: 6;
-  top: 14px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 38px;
-  padding: 4px;
-  border: 1px solid rgba(211, 207, 199, 0.94);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 5px 16px rgba(53, 51, 46, 0.1);
-  backdrop-filter: blur(10px);
-}
-
-.topology-layout-tools {
-  left: 14px;
-}
-
-.topology-filter-tools {
-  right: 14px;
-}
-
-.topology-floating-panel button,
-.topology-floating-panel select {
-  height: 30px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  color: #4b4944;
-  font: inherit;
-  font-size: 10px;
-}
-
-.topology-floating-panel button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 0 8px;
-  cursor: pointer;
-}
-
-.topology-floating-panel button:hover:not(:disabled) {
-  background: #f2f0eb;
-}
-
-.topology-floating-panel button:disabled {
-  color: #bbb8b1;
-  cursor: default;
-}
-
-.topology-floating-panel button b {
-  font-weight: 550;
-}
-
-.topology-floating-panel button.icon-only {
-  width: 30px;
-  padding: 0;
-  font-size: 15px;
-}
-
-.topology-floating-panel .danger-action {
-  color: #b33e37;
-}
-
-.floating-tool-divider {
-  width: 1px;
-  height: 20px;
-  margin: 0 1px;
-  background: #e5e1da;
-}
-
-.topology-filter-tools select {
-  min-width: 105px;
-  padding: 0 26px 0 9px;
-  border-color: #dedbd4;
-  background: #fff;
-  cursor: pointer;
-}
-
-.topology-filter-tools .global-topology-visible-count {
-  margin: 0 3px;
 }
 
 .global-task-node {
@@ -1069,13 +1041,43 @@
     grid-template-columns: minmax(0, 1fr) 280px;
   }
 
-  /* 详情栏会压窄画布；筛选浮层改为第二行，避免遮住左侧工具且不触碰画布视口。 */
-  .global-topology-body.has-selection .topology-filter-tools {
-    top: 58px;
-  }
-
   .global-topology-legend {
     max-width: 420px;
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 900px) {
+  .global-topology-toolbar {
+    gap: 4px;
+    padding: 0 8px;
+  }
+
+  .global-topology-mode button {
+    min-width: 48px;
+  }
+
+  .global-topology-toolbar button {
+    padding-right: 7px;
+    padding-left: 7px;
+    font-size: 11px;
+  }
+
+  /* 最小正常窗口仍保持单行，低频布局动作在窄宽度下只保留图标和 tooltip。 */
+  .global-topology-toolbar .topology-layout-action {
+    width: 32px;
+    flex: 0 0 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .global-topology-toolbar .toolbar-action-label,
+  .global-topology-toolbar > .global-topology-visible-count {
+    display: none;
+  }
+
+  .global-topology-toolbar select {
+    min-width: 94px;
+    font-size: 10px;
   }
 }
