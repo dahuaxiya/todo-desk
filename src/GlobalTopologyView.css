@@ -10,7 +10,7 @@
 }
 
 .global-topology-toolbar {
-  height: 50px;
+  height: 46px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -19,8 +19,7 @@
   background: #fff;
 }
 
-.global-topology-toolbar button,
-.global-topology-toolbar select {
+.global-topology-toolbar button {
   height: 32px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -64,17 +63,6 @@
   font-weight: 650;
 }
 
-.global-topology-toolbar .toolbar-divider {
-  width: 1px;
-  height: 22px;
-  margin: 0 3px;
-  background: #e4e0d9;
-}
-
-.global-topology-toolbar .danger-action {
-  color: #b33e37;
-}
-
 .global-topology-toolbar .relationship-inbox-trigger {
   display: inline-flex;
   align-items: center;
@@ -110,23 +98,10 @@
   white-space: nowrap;
 }
 
-.global-topology-filters {
-  display: flex;
-  gap: 7px;
-  margin-left: auto;
-}
-
-.global-topology-toolbar select {
-  max-width: 150px;
-  padding: 0 28px 0 10px;
-  border-color: #dedbd4;
-  background: #fff;
-}
-
 .global-topology-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  height: calc(100% - 50px);
+  height: calc(100% - 46px);
 }
 
 .global-topology-body.has-selection {
@@ -141,6 +116,92 @@
 
 .global-topology-canvas.mode-connect .react-flow__pane {
   cursor: crosshair;
+}
+
+.topology-floating-panel {
+  position: absolute;
+  z-index: 6;
+  top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 38px;
+  padding: 4px;
+  border: 1px solid rgba(211, 207, 199, 0.94);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 5px 16px rgba(53, 51, 46, 0.1);
+  backdrop-filter: blur(10px);
+}
+
+.topology-layout-tools {
+  left: 14px;
+}
+
+.topology-filter-tools {
+  right: 14px;
+}
+
+.topology-floating-panel button,
+.topology-floating-panel select {
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #4b4944;
+  font: inherit;
+  font-size: 10px;
+}
+
+.topology-floating-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.topology-floating-panel button:hover:not(:disabled) {
+  background: #f2f0eb;
+}
+
+.topology-floating-panel button:disabled {
+  color: #bbb8b1;
+  cursor: default;
+}
+
+.topology-floating-panel button b {
+  font-weight: 550;
+}
+
+.topology-floating-panel button.icon-only {
+  width: 30px;
+  padding: 0;
+  font-size: 15px;
+}
+
+.topology-floating-panel .danger-action {
+  color: #b33e37;
+}
+
+.floating-tool-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 1px;
+  background: #e5e1da;
+}
+
+.topology-filter-tools select {
+  min-width: 105px;
+  padding: 0 26px 0 9px;
+  border-color: #dedbd4;
+  background: #fff;
+  cursor: pointer;
+}
+
+.topology-filter-tools .global-topology-visible-count {
+  margin: 0 3px;
 }
 
 .global-task-node {
@@ -1006,6 +1067,11 @@
 @media (max-width: 1040px) {
   .global-topology-body.has-selection {
     grid-template-columns: minmax(0, 1fr) 280px;
+  }
+
+  /* 详情栏会压窄画布；筛选浮层改为第二行，避免遮住左侧工具且不触碰画布视口。 */
+  .global-topology-body.has-selection .topology-filter-tools {
+    top: 58px;
   }
 
   .global-topology-legend {
