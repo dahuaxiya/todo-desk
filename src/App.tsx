@@ -2423,9 +2423,9 @@ function App() {
     await linkParentTask(childTaskId, parentTaskId, relationType)
   }
 
-  function openTaskFromGlobalTopology(taskId: string) {
+  function editTaskFromGlobalTopology(task: Task) {
     setMainView('board')
-    void openRelatedTask(taskId)
+    startEdit(task)
   }
 
   function addTaskFromGlobalTopology() {
@@ -3440,7 +3440,12 @@ function App() {
             onUnlinkTask={(taskId) => linkParentTask(taskId, '')}
             onChangeStatus={moveTask}
             onToggleDone={toggleDone}
-            onOpenTask={openTaskFromGlobalTopology}
+            onCopyTask={copyTask}
+            canOpenAgentSession={canOpenAgentSession}
+            onOpenAgentSession={openAgentSession}
+            onOpenCalendar={openCalendar}
+            onEditTask={editTaskFromGlobalTopology}
+            onDeleteTask={deleteTask}
             onAddTask={addTaskFromGlobalTopology}
           />
         </Suspense>

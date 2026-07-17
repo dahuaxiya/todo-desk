@@ -438,8 +438,27 @@
 }
 
 .global-topology-inspector > header {
+  flex: 0 0 auto;
   padding: 18px 18px 14px;
   border-bottom: 1px solid #eeeae4;
+}
+
+.global-topology-inspector-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.global-topology-inspector-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.global-topology-inspector-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: #d8d4cd;
+  background-clip: padding-box;
 }
 
 .global-topology-inspector > header > div {
@@ -533,15 +552,19 @@
 
 .global-topology-inspector > footer {
   display: flex;
-  gap: 8px;
-  margin-top: auto;
-  padding: 14px 18px 18px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px 14px;
   border-top: 1px solid #eeeae4;
+  background: #fff;
 }
 
 .global-topology-inspector > footer button {
-  height: 38px;
-  padding: 0 12px;
+  min-width: 58px;
+  height: 32px;
+  flex: 1 1 58px;
+  padding: 0 10px;
   border: 1px solid #d9d5ce;
   border-radius: 6px;
   background: #fff;
@@ -550,10 +573,14 @@
 }
 
 .global-topology-inspector > footer button.primary {
-  flex: 1;
   border-color: #1769ee;
   background: #1769ee;
   color: #fff;
+}
+
+.global-topology-inspector > footer button.danger {
+  border-color: #ead0cc;
+  color: #b33b2f;
 }
 
 .global-topology-inspector-empty {

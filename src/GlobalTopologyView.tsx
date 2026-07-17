@@ -33,7 +33,12 @@ interface GlobalTopologyViewProps {
   onUnlinkTask: (taskId: string) => Promise<void> | void
   onChangeStatus: (taskId: string, status: TaskColumnStatus) => Promise<void> | void
   onToggleDone: (taskId: string) => Promise<void> | void
-  onOpenTask: (taskId: string) => void
+  onCopyTask: (task: Task) => Promise<void> | void
+  canOpenAgentSession: (task: Task) => boolean
+  onOpenAgentSession: (task: Task) => Promise<boolean> | void
+  onOpenCalendar: (task: Task) => Promise<void> | void
+  onEditTask: (task: Task) => void
+  onDeleteTask: (taskId: string) => Promise<void> | void
   onAddTask: () => void
 }
 
@@ -257,7 +262,12 @@ export function GlobalTopologyView({
   onUnlinkTask,
   onChangeStatus,
   onToggleDone,
-  onOpenTask,
+  onCopyTask,
+  canOpenAgentSession,
+  onOpenAgentSession,
+  onOpenCalendar,
+  onEditTask,
+  onDeleteTask,
   onAddTask,
 }: GlobalTopologyViewProps) {
   const [mode, setMode] = useState<TopologyMode>('select')
@@ -561,34 +571,48 @@ export function GlobalTopologyView({
                 </div>
                 <span className={`inspector-origin ${isAgentTask(selectedTask) ? 'agent' : 'human'}`}>{isAgentTask(selectedTask) ? 'AI 任务' : '人工任务'}</span>
               </header>
-              <div className="inspector-badges">
-                <span>{statusLabels[selectedTask.status]}</span>
-                <span>{priorityLabels[selectedTask.priority]}优先级</span>
-                {selectedTask.project && <span>{selectedTask.project}</span>}
-              </div>
-              <section>
-                <h3>任务内容</h3>
-                <p>{selectedTask.detail || '暂无任务详情'}</p>
-              </section>
-              <section>
-                <h3>关系与进度</h3>
-                <p>{selectedTaskPath.map((task) => task.title).join(' › ')}</p>
-                <div className="inspector-progress">
-                  <span style={{ width: `${selectedTaskChildren.length === 0 ? 0 : (selectedTaskChildren.filter((task) => task.status === 'done').length / selectedTaskChildren.length) * 100}%` }} />
+              <div className="global-topology-inspector-scroll">
+                <div className="inspector-badges">
+                  <span>{statusLabels[selectedTask.status]}</span>
+                  <span>{priorityLabels[selectedTask.priority]}优先级</span>
+                  {selectedTask.project && <span>{selectedTask.project}</span>}
                 </div>
-                <small>{selectedTaskChildren.filter((task) => task.status === 'done').length} / {selectedTaskChildren.length} 个子任务已完成</small>
-              </section>
-              {(selectedTask.repository || selectedTask.repositoryPath || selectedTask.agentSessionId) && (
                 <section>
-                  <h3>Agent 上下文</h3>
-                  {selectedTask.repository && <p>{selectedTask.repository}</p>}
-                  {selectedTask.repositoryPath && <p className="inspector-code">{selectedTask.repositoryPath}</p>}
-                  {selectedTask.agentSessionId && <p className="inspector-code">{selectedTask.agent || 'agent'} · {selectedTask.agentSessionId}</p>}
+                  <h3>任务内容</h3>
+                  <p>{selectedTask.detail || '暂无任务详情'}</p>
                 </section>
-              )}
+                <section>
+                  <h3>关系与进度</h3>
+                  <p>{selectedTaskPath.map((task) => task.title).join(' › ')}</p>
+                  <div className="inspector-progress">
+                    <span style={{ width: `${selectedTaskChildren.length === 0 ? 0 : (selectedTaskChildren.filter((task) => task.status === 'done').length / selectedTaskChildren.length) * 100}%` }} />
+                  </div>
+                  <small>{selectedTaskChildren.filter((task) => task.status === 'done').length} / {selectedTaskChildren.length} 个子任务已完成</small>
+                </section>
+                {(selectedTask.repository || selectedTask.repositoryPath || selectedTask.agentSessionId) && (
+                  <section>
+                    <h3>Agent 上下文</h3>
+                    {selectedTask.repository && <p>{selectedTask.repository}</p>}
+                    {selectedTask.repositoryPath && <p className="inspector-code">{selectedTask.repositoryPath}</p>}
+                    {selectedTask.agentSessionId && <p className="inspector-code">{selectedTask.agent || 'agent'} · {selectedTask.agentSessionId}</p>}
+                  </section>
+                )}
+              </div>
               <footer>
-                {selectedTask.status === 'todo' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'doing')}>开始处理</button>}
-                <button className="primary" type="button" onClick={() => onOpenTask(selectedTask.id)}>打开任务卡片</button>
+                {selectedTask.status !== 'done' && (
+                  <button className="primary" type="button" onClick={() => void onToggleDone(selectedTask.id)}>
+                    {selectedTask.status === 'pending_acceptance' ? '确认完成' : '完成'}
+                  </button>
+                )}
+                {selectedTask.status === 'done' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'todo')}>转待办</button>}
+                {selectedTask.status === 'done' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'doing')}>继续做</button>}
+                {selectedTask.status !== 'done' && selectedTask.status !== 'doing' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'doing')}>开始</button>}
+                {selectedTask.status !== 'done' && selectedTask.status !== 'todo' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'todo')}>待办</button>}
+                <button type="button" onClick={() => void onCopyTask(selectedTask)}>复制</button>
+                {canOpenAgentSession(selectedTask) && <button type="button" onClick={() => void onOpenAgentSession(selectedTask)}>会话</button>}
+                {(selectedTask.reminderAt || selectedTask.dueAt) && <button type="button" onClick={() => void onOpenCalendar(selectedTask)}>日历</button>}
+                <button type="button" onClick={() => onEditTask(selectedTask)}>编辑</button>
+                <button className="danger" type="button" onClick={() => void onDeleteTask(selectedTask.id)}>删除</button>
               </footer>
             </>
           </aside>
