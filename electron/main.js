@@ -7,6 +7,7 @@ import http from 'node:http'
 import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, editTaskWithAiAndImages, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
+import { searchTasks } from './task-search.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -1629,6 +1630,16 @@ async function handleApiRequest(request, response) {
       return
     }
 
+    if (request.method === 'POST' && url.pathname === '/tasks/search') {
+      const body = await readRequestJson(request)
+      const data = await readData()
+      sendJson(response, 200, {
+        ok: true,
+        tasks: searchTasks(data.tasks, body),
+      })
+      return
+    }
+
     if (request.method === 'POST' && url.pathname === '/tasks') {
       const body = await readRequestJson(request)
       const result = await addTasksFromApi(body)
@@ -1641,6 +1652,18 @@ async function handleApiRequest(request, response) {
     }
 
     const taskPatchMatch = url.pathname.match(/^\/tasks\/([^/]+)$/)
+    if (request.method === 'GET' && taskPatchMatch) {
+      const data = await readData()
+      const taskId = decodeURIComponent(taskPatchMatch[1])
+      const task = data.tasks.find((item) => item.id === taskId)
+      if (!task) {
+        sendJson(response, 404, { ok: false, error: 'task not found' })
+        return
+      }
+      sendJson(response, 200, { ok: true, task })
+      return
+    }
+
     if (request.method === 'PATCH' && taskPatchMatch) {
       const body = await readRequestJson(request)
       const result = await updateTaskFromApi(decodeURIComponent(taskPatchMatch[1]), body)
