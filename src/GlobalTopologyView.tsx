@@ -273,6 +273,7 @@ export function GlobalTopologyView({
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const flowInstanceRef = useRef<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
+  const skipNextSelectionFitRef = useRef(false)
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const externallyVisibleTaskIds = useMemo(() => new Set(includedTaskIds), [includedTaskIds])
@@ -311,8 +312,10 @@ export function GlobalTopologyView({
   }, [collapsedTaskIds, filteredChildrenByParentId])
   const visibleTasks = useMemo(() => filteredTasks.filter((task) => !hiddenTaskIds.has(task.id)), [filteredTasks, hiddenTaskIds])
   const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks])
-  const visibleAutomaticPositions = useMemo(() => createAutomaticLayout(visibleTasks), [visibleTasks])
-  const filteredView = statusFilter !== 'all' || projectFilter !== 'all' || filteredTasks.length !== tasks.length || collapsedTaskIds.size > 0
+  // 收缩只改变节点可见性，不能拿收缩后的节点集合重新跑布局，否则剩余卡片会跳到新位置。
+  // 筛选布局以完整 filteredTasks 为基准，展开时也能精确恢复到收缩前坐标。
+  const filteredAutomaticPositions = useMemo(() => createAutomaticLayout(filteredTasks), [filteredTasks])
+  const filteredView = statusFilter !== 'all' || projectFilter !== 'all' || filteredTasks.length !== tasks.length
   const allParentsCollapsed = collapsibleTaskIds.size > 0 && [...collapsibleTaskIds].every((taskId) => collapsedTaskIds.has(taskId))
 
   useEffect(() => {
@@ -320,18 +323,29 @@ export function GlobalTopologyView({
   }, [automaticPositions, positions])
 
   useEffect(() => {
+    if (!skipNextSelectionFitRef.current) return
+    // 收缩可能先改变可见节点数量，再因选中节点被隐藏而关闭详情栏，会产生两次渲染。
+    // 延迟到下一帧再恢复详情栏的自动适配，确保这两次渲染都沿用原视口。
+    const frame = requestAnimationFrame(() => {
+      skipNextSelectionFitRef.current = false
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [collapsedTaskIds])
+
+  useEffect(() => {
     setFilteredPositionOverrides({})
     const frame = requestAnimationFrame(() => {
       flowInstanceRef.current?.fitView({
-        padding: visibleTasks.length > 80 ? 0.035 : 0.075,
-        maxZoom: visibleTasks.length > 40 ? 0.82 : 1.05,
+        padding: filteredTasks.length > 80 ? 0.035 : 0.075,
+        maxZoom: filteredTasks.length > 40 ? 0.82 : 1.05,
         duration: 0,
       })
     })
     return () => cancelAnimationFrame(frame)
-  }, [filteredView, projectFilter, statusFilter, visibleAutomaticPositions, visibleTasks.length])
+  }, [filteredAutomaticPositions, filteredTasks.length, projectFilter, statusFilter])
 
   useEffect(() => {
+    if (skipNextSelectionFitRef.current) return
     // 详情栏出现或收起会改变画布宽度，等 CSS 网格完成一次布局后重新适配，
     // 否则选中任务时右侧节点会被详情栏直接裁掉。
     const timer = window.setTimeout(() => {
@@ -349,7 +363,7 @@ export function GlobalTopologyView({
       id: task.id,
       type: 'task',
       position: filteredView
-        ? filteredPositionOverrides[task.id] ?? visibleAutomaticPositions[task.id] ?? { x: 0, y: 0 }
+        ? filteredPositionOverrides[task.id] ?? filteredAutomaticPositions[task.id] ?? { x: 0, y: 0 }
         : localPositions[task.id] ?? automaticPositions[task.id] ?? { x: 0, y: 0 },
       data: {
         task,
@@ -360,6 +374,7 @@ export function GlobalTopologyView({
         onChangeStatus,
         onToggleDone,
         onToggleCollapse: (taskId: string) => {
+          skipNextSelectionFitRef.current = true
           setCollapsedTaskIds((current) => {
             const next = new Set(current)
             if (next.has(taskId)) next.delete(taskId)
@@ -372,7 +387,7 @@ export function GlobalTopologyView({
       draggable: mode === 'select',
       connectable: mode === 'connect',
     })))
-  }, [automaticPositions, collapsedTaskIds, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleAutomaticPositions, visibleTasks])
+  }, [automaticPositions, collapsedTaskIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleTasks])
 
   useEffect(() => {
     if (selectedTaskId && (!taskLookup.has(selectedTaskId) || !visibleTaskIds.has(selectedTaskId))) setSelectedTaskId('')
@@ -487,7 +502,10 @@ export function GlobalTopologyView({
           type="button"
           disabled={collapsibleTaskIds.size === 0}
           title={allParentsCollapsed ? '展开所有父节点' : '收起所有父节点'}
-          onClick={() => setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))}
+          onClick={() => {
+            skipNextSelectionFitRef.current = true
+            setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))
+          }}
         >
           {allParentsCollapsed ? '▾ 全部展开' : '▸ 全部收起'}
         </button>
