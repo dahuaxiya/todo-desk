@@ -1,7 +1,7 @@
 {
   "name": "todo-desk",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.3.0",
   "main": "electron/main.js",
   "type": "module",
   "scripts": {
@@ -15,6 +15,7 @@
     "verify:mac": "node scripts/verify-macos-release.mjs",
     "lint": "oxlint",
     "test:ai": "node scripts/test-ai-assistant.mjs",
+    "test:task-search": "node scripts/test-task-search.mjs",
     "agent:install": "node scripts/install-agent-integration.mjs",
     "preview": "vite preview"
   },

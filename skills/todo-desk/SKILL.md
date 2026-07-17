@@ -40,10 +40,45 @@ Todo Desk exposes a loopback-only HTTP API when the desktop app is running:
 
 - `GET http://127.0.0.1:47731/health`
 - `GET http://127.0.0.1:47731/tasks`
+- `GET http://127.0.0.1:47731/tasks/<task-id>`
+- `POST http://127.0.0.1:47731/tasks/search`
 - `POST http://127.0.0.1:47731/tasks`
 - `PATCH http://127.0.0.1:47731/tasks/<task-id>`
 
 The port can be changed in Todo Desk settings. Default port is `47731`.
+
+## Search for Related Tasks Before Creating AI Work
+
+Todo Desk only provides generic task search. The agent is responsible for deciding how to use the results and whether a parent relationship exists.
+
+Before creating an AI task, first search for tasks already bound to the current session:
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/search_tasks.py \
+  --agent-session-id "<current-session-id>" \
+  --limit 10
+```
+
+If the session results do not identify the related task clearly, perform a fuzzy search using the new work's title and key detail. Add repository, project, status, origin, agent, or tag filters only when they are useful:
+
+```bash
+python3 /Users/dxm/.agents/skills/todo-desk/scripts/search_tasks.py \
+  --query "<new task title and distinctive detail>" \
+  --repository-path "<repo-path>" \
+  --limit 12
+```
+
+The search API applies exact filters supplied by the agent and fuzzy-matches `query` against task title, detail, tags, and project. It returns compact summaries only and does not decide which task is a parent.
+
+The agent must inspect the search results and current conversation itself:
+
+1. Treat session matches and fuzzy scores only as retrieval signals, not as proof of a relationship.
+2. If a repository or project filter returns no useful result, retry with a broader search instead of assuming no related task exists.
+3. If a summary is insufficient, fetch only that task through `GET /tasks/<task-id>`; do not load the complete task list into model context.
+4. If one task is clearly the nearest direct parent, pass its id through `--parent-task-id`. Use `subtask_of` for planned decomposition or `discovered_from` for an independent issue exposed while executing it.
+5. If the agent cannot establish the relationship confidently, create the task without a parent rather than forcing a link.
+
+This search process is mandatory even when the user only asks the agent to "record the current work."
 
 ## Add Current Work
 
