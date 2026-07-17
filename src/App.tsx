@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import './App.css'
 import addTaskIcon from './assets/icons/add-task.png'
@@ -15,7 +15,9 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
-import type { AddMode, AppData, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskSortMode, TaskStatus } from './types'
+import type { AddMode, AppData, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
+
+const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
 
 const storageKey = 'todo-desk-data'
 const compactQuickTextareaBaseHeight = 124
@@ -40,7 +42,7 @@ const completionAcceptanceMessage = '实现已完成，等待用户确认是否�
 const incompleteSessionMessage = '本轮 session 输出完成，但任务尚未完成'
 const parentCompletionReviewMessage = '关联 AI 子任务已全部完成，请确认父任务是否也完成。'
 type TaskOriginFilter = 'all' | 'ai' | 'human'
-type MainView = 'board' | 'calendar'
+type MainView = 'board' | 'calendar' | 'topology'
 type AiTestStatus = 'idle' | 'checking' | 'ok' | 'failed'
 type CalendarSyncStatus = 'ok' | 'failed' | 'skipped' | 'deleted' | 'pending'
 type CalendarTaskState = 'overdue' | 'open' | 'done'
@@ -373,11 +375,19 @@ function normalizeParentFields(task: Task): Pick<Task, 'parentTaskId' | 'parentL
 
 function normalizeTaskOrigin(task: Task): Task {
   const parentFields = normalizeParentFields(task)
-  if (hasValidOrigin(task)) return { ...task, ...parentFields }
+  const withRelationshipState = (normalizedTask: Task): Task => ({
+    ...normalizedTask,
+    relationshipState: parentFields.parentTaskId
+      ? 'linked'
+      : normalizedTask.origin.kind === 'agent'
+        ? normalizedTask.relationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
+        : undefined,
+  })
+  if (hasValidOrigin(task)) return withRelationshipState({ ...task, ...parentFields })
 
   const source = (task.source || '').trim().toLowerCase()
   if (task.agent?.trim() || task.agentSessionId?.trim() || legacyAgentSources.has(source)) {
-    return {
+    return withRelationshipState({
       ...task,
       ...parentFields,
       origin: {
@@ -395,11 +405,11 @@ function normalizeTaskOrigin(task: Task): Task {
           path: task.repositoryPath?.trim() || undefined,
         },
       },
-    }
+    })
   }
 
   if (uiDerivedSources.has(source)) {
-    return {
+    return withRelationshipState({
       ...task,
       ...parentFields,
       origin: {
@@ -408,11 +418,11 @@ function normalizeTaskOrigin(task: Task): Task {
         createdVia: source,
         confidence: 'legacy-inferred',
       },
-    }
+    })
   }
 
   if (source) {
-    return {
+    return withRelationshipState({
       ...task,
       ...parentFields,
       origin: {
@@ -421,10 +431,10 @@ function normalizeTaskOrigin(task: Task): Task {
         createdVia: source,
         confidence: 'legacy-inferred',
       },
-    }
+    })
   }
 
-  return {
+  return withRelationshipState({
     ...task,
     ...parentFields,
     origin: {
@@ -433,7 +443,7 @@ function normalizeTaskOrigin(task: Task): Task {
       createdVia: 'legacy-ui',
       confidence: 'legacy-inferred',
     },
-  }
+  })
 }
 
 const appModeOptions: Array<{ value: AppMode; label: string }> = [
@@ -621,6 +631,7 @@ function createDefaultData(): AppData {
       columnSorts: defaultColumnSorts,
       globalShortcuts: defaultGlobalShortcuts,
       edgeDocked: false,
+      topologyPositions: {},
     },
     tasks: [
       {
@@ -675,6 +686,7 @@ function mergeWithDefaults(value: AppData): AppData {
       },
       globalShortcuts: normalizeGlobalShortcuts(value.settings?.globalShortcuts),
       edgeDocked: false,
+      topologyPositions: value.settings?.topologyPositions || {},
     },
     tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTaskOrigin) : [],
     trash: Array.isArray(value.trash) ? value.trash.map(normalizeTaskOrigin) : [],
@@ -1726,6 +1738,11 @@ function App() {
       completionAcceptance: existing?.completionAcceptance,
       sessionReview: existing?.sessionReview,
       parentTaskId: nextParentTaskId || undefined,
+      relationshipState: nextParentTaskId
+        ? 'linked'
+        : existing && isAgentCreatedTask(existing)
+          ? existing.relationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
+          : undefined,
       // 只有人类在表单中新建或更换关系时才重建 parentLink。
       // 父任务未变时保留 agent 写入的派生类型、原因和创建时间。
       parentLink: nextParentTaskId
@@ -2116,7 +2133,7 @@ function App() {
     [data, persist],
   )
 
-  async function linkParentTask(taskId: string, parentTaskId: string) {
+  async function linkParentTask(taskId: string, parentTaskId: string, relationType?: TaskParentLinkType) {
     const currentData = dataRef.current
     const taskToLink = currentData.tasks.find((task) => task.id === taskId)
     const parentTask = parentTaskId ? currentData.tasks.find((task) => task.id === parentTaskId) : undefined
@@ -2132,13 +2149,24 @@ function App() {
     const now = new Date().toISOString()
     const previousParentTaskId = taskToLink.parentTaskId || ''
     const keepExistingRelation = previousParentTaskId === parentTaskId
+    const nextRelationType = relationType
+      || (keepExistingRelation && taskToLink.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of')
     const nextTask: Task = {
       ...taskToLink,
       parentTaskId: parentTaskId || undefined,
+      relationshipState: parentTaskId
+        ? 'linked'
+        : isAgentCreatedTask(taskToLink)
+          ? 'unresolved'
+          : undefined,
       parentLink: parentTaskId
         ? {
-            type: keepExistingRelation && taskToLink.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of',
-            reason: keepExistingRelation ? taskToLink.parentLink?.reason : undefined,
+            type: nextRelationType,
+            reason: keepExistingRelation
+              ? taskToLink.parentLink?.reason
+              : nextRelationType === 'discovered_from'
+                ? '通过全局拓扑建立的派生关系'
+                : undefined,
             affectsParentCompletion: keepExistingRelation
               ? taskToLink.parentLink?.affectsParentCompletion !== false
               : true,
@@ -2170,7 +2198,11 @@ function App() {
     const saved = await persist({ ...currentData, tasks: nextTasks })
     const savedTask = saved.tasks.find((task) => task.id === taskId)
     setSelectedTaskId(taskId)
-    setSyncState(parentTaskId ? `已绑定父任务：${parentTask?.title || savedTask?.parentTaskId}` : '已解除父任务绑定')
+    setSyncState(
+      parentTaskId
+        ? `已建立${parentLinkTypeConfig[nextRelationType].shortLabel}关系：${parentTask?.title || savedTask?.parentTaskId}`
+        : '已解除父任务绑定',
+    )
   }
 
   async function openRelatedTask(taskId: string) {
@@ -2379,6 +2411,144 @@ function App() {
     await updateTask(taskId, { status, completedAt: '' })
     setSelectedTaskId(taskId)
     setDraggingTaskId('')
+  }
+
+  async function saveTopologyPositions(positions: Record<string, TopologyPosition>) {
+    const currentData = dataRef.current
+    const taskIds = new Set(currentData.tasks.map((task) => task.id))
+    const normalizedPositions = Object.fromEntries(
+      Object.entries(positions).filter(([taskId, point]) =>
+        taskIds.has(taskId) && Number.isFinite(point.x) && Number.isFinite(point.y),
+      ),
+    )
+
+    // 节点拖动可能和 Agent API 写任务同时发生，必须基于 dataRef 的最新快照保存，
+    // 否则使用渲染闭包里的旧 data 会把刚创建的任务覆盖掉。
+    await persist({
+      ...currentData,
+      settings: {
+        ...currentData.settings,
+        topologyPositions: normalizedPositions,
+      },
+    })
+  }
+
+  async function linkTopologyTasks(parentTaskId: string, childTaskId: string, relationType: TaskParentLinkType) {
+    if (parentTaskId === childTaskId) {
+      setSyncState('任务不能连接到自己')
+      return
+    }
+    await linkParentTask(childTaskId, parentTaskId, relationType)
+  }
+
+  async function setTaskRelationshipState(taskIds: string[], state: TaskRelationshipState) {
+    if (state !== 'independent_root' && state !== 'unresolved') return
+    const selectedIds = new Set(taskIds)
+    const now = new Date().toISOString()
+    const currentData = dataRef.current
+    const nextTasks = currentData.tasks.map((task) => {
+      if (!selectedIds.has(task.id) || task.parentTaskId || !isAgentCreatedTask(task)) return task
+      return { ...task, relationshipState: state, updatedAt: now }
+    })
+    await persist({ ...currentData, tasks: nextTasks })
+    setSyncState(state === 'independent_root' ? `已将 ${selectedIds.size} 个 AI 任务标记为独立任务` : `已将 ${selectedIds.size} 个 AI 任务移回待归类`)
+  }
+
+  async function linkTopologyTasksBatch(parentTaskId: string, childTaskIds: string[], relationType: TaskParentLinkType) {
+    const currentData = dataRef.current
+    const childIds = [...new Set(childTaskIds)].filter((taskId) => taskId !== parentTaskId)
+    const parentTask = currentData.tasks.find((task) => task.id === parentTaskId)
+    if (!parentTask || childIds.length === 0) {
+      setSyncState('批量绑定失败：请选择父任务和待绑定任务')
+      return
+    }
+    if (childIds.some((taskId) => wouldCreateTaskCycle(taskId, parentTaskId, currentData.tasks))) {
+      setSyncState('批量绑定失败：所选关系会形成循环')
+      return
+    }
+
+    const now = new Date().toISOString()
+    const childIdSet = new Set(childIds)
+    // 批量关系必须一次持久化，避免只保存部分任务后 UI 与磁盘形成半完成状态。
+    const nextTasks = currentData.tasks.map((task) => childIdSet.has(task.id)
+      ? {
+          ...task,
+          parentTaskId,
+          relationshipState: 'linked' as const,
+          parentLink: {
+            type: relationType,
+            reason: relationType === 'discovered_from' ? '通过关系收件箱批量建立的派生关系' : undefined,
+            affectsParentCompletion: true,
+            createdBy: 'human' as const,
+            createdAt: now,
+            confidence: 'explicit' as const,
+          },
+          updatedAt: now,
+        }
+      : task)
+    await persist({ ...currentData, tasks: nextTasks })
+    setSyncState(`已将 ${childIds.length} 个 AI 任务绑定到「${parentTask.title}」`)
+  }
+
+  async function createTopologyParentTask(childTaskIds: string[], title: string, relationType: TaskParentLinkType) {
+    const currentData = dataRef.current
+    const childIdSet = new Set(childTaskIds)
+    const children = currentData.tasks.filter((task) => childIdSet.has(task.id))
+    const parentTitle = title.trim()
+    if (!parentTitle || children.length === 0) {
+      setSyncState('创建父任务失败：请输入标题并选择 AI 任务')
+      return
+    }
+
+    const now = new Date().toISOString()
+    const sharedProject = children.every((task) => task.project === children[0]?.project) ? children[0]?.project : 'Todo Desk'
+    const priority = children.some((task) => task.priority === 'high')
+      ? 'high'
+      : children.some((task) => task.priority === 'medium') ? 'medium' : 'low'
+    const parentTask: Task = {
+      id: crypto.randomUUID(),
+      title: parentTitle,
+      detail: `由以下 AI 任务归类创建：\n${children.map((task) => `- ${task.title}`).join('\n')}`,
+      status: 'doing',
+      priority,
+      project: sharedProject || 'Todo Desk',
+      tags: [],
+      dueAt: '',
+      reminderAt: '',
+      imagePaths: [],
+      createdAt: now,
+      updatedAt: now,
+      completedAt: '',
+      origin: createHumanTaskOrigin('topology-relationship-inbox'),
+    }
+    const nextChildren = currentData.tasks.map((task) => childIdSet.has(task.id)
+      ? {
+          ...task,
+          parentTaskId: parentTask.id,
+          relationshipState: 'linked' as const,
+          parentLink: {
+            type: relationType,
+            reason: relationType === 'discovered_from' ? '归类时创建人工父任务并建立派生关系' : undefined,
+            affectsParentCompletion: true,
+            createdBy: 'human' as const,
+            createdAt: now,
+            confidence: 'explicit' as const,
+          },
+          updatedAt: now,
+        }
+      : task)
+    await persist({ ...currentData, tasks: [parentTask, ...nextChildren] })
+    setSyncState(`已创建人工父任务「${parentTask.title}」，并关联 ${children.length} 个 AI 任务`)
+  }
+
+  function editTaskFromGlobalTopology(task: Task) {
+    setMainView('board')
+    startEdit(task)
+  }
+
+  function addTaskFromGlobalTopology() {
+    setMainView('board')
+    startCreate('todo')
   }
 
   useEffect(() => {
@@ -3326,6 +3496,15 @@ function App() {
           >
             日历
           </button>
+          <button
+            className={mainView === 'topology' ? 'active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={mainView === 'topology'}
+            onClick={() => setMainView('topology')}
+          >
+            拓扑
+          </button>
         </div>
         <div className="calendar-mini-status">
           <span>TD {calendarSyncSummary.todoDesk}</span>
@@ -3368,6 +3547,30 @@ function App() {
           onSyncTask={syncTaskCalendar}
           onOpenCalendar={openCalendar}
         />
+      ) : mainView === 'topology' ? (
+        <Suspense fallback={<div className="global-topology-loading">正在加载任务拓扑...</div>}>
+          <GlobalTopologyView
+            tasks={data.tasks}
+            includedTaskIds={filteredTasks.map((task) => task.id)}
+            expandRelatedTasks={Boolean(search.trim())}
+            positions={data.settings.topologyPositions}
+            onSavePositions={saveTopologyPositions}
+            onLinkTasks={linkTopologyTasks}
+            onLinkTasksBatch={linkTopologyTasksBatch}
+            onCreateParentTask={createTopologyParentTask}
+            onSetRelationshipState={setTaskRelationshipState}
+            onUnlinkTask={(taskId) => linkParentTask(taskId, '')}
+            onChangeStatus={moveTask}
+            onToggleDone={toggleDone}
+            onCopyTask={copyTask}
+            canOpenAgentSession={canOpenAgentSession}
+            onOpenAgentSession={openAgentSession}
+            onOpenCalendar={openCalendar}
+            onEditTask={editTaskFromGlobalTopology}
+            onDeleteTask={deleteTask}
+            onAddTask={addTaskFromGlobalTopology}
+          />
+        </Suspense>
       ) : (
         <section className="board board-three">
           {taskStatuses.map((status) => (

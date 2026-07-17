@@ -1,6 +1,7 @@
 export type TaskStatus = 'doing' | 'todo' | 'pending_acceptance' | 'done'
 export type TaskColumnStatus = 'doing' | 'todo' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
+export type TaskRelationshipState = 'linked' | 'unresolved' | 'independent_root'
 export type AppMode = 'normal' | 'mini'
 export type AddMode = 'quick' | 'detail'
 export type ShortcutAction = 'toggleDock' | 'dockLeft' | 'dockRight' | 'toggleMini' | 'toggleKeepOnTop'
@@ -103,6 +104,7 @@ export interface Task {
   sessionReview?: SessionReview
   parentTaskId?: string
   parentLink?: TaskParentLink
+  relationshipState?: TaskRelationshipState
   parentCompletionReview?: ParentCompletionReview
   origin: TaskOrigin
   remindedAt?: string
@@ -113,6 +115,11 @@ export interface Task {
   repository?: string
   repositoryPath?: string
   calendarSync?: TaskCalendarSync
+}
+
+export interface TopologyPosition {
+  x: number
+  y: number
 }
 
 export interface AppSettings {
@@ -136,6 +143,7 @@ export interface AppSettings {
   columnSorts: Record<TaskColumnStatus, TaskSortMode>
   globalShortcuts: ShortcutSettings
   edgeDocked: boolean
+  topologyPositions: Record<string, TopologyPosition>
 }
 
 export interface TaskCalendarSyncTarget {
