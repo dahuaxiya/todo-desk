@@ -15,7 +15,6 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
-  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
@@ -272,9 +271,6 @@ export function GlobalTopologyView({
   const [historyVersion, setHistoryVersion] = useState(0)
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
-  const flowInstanceRef = useRef<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
-  const skipNextSelectionFitRef = useRef(false)
-  const inspectorWasOpenRef = useRef(false)
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const externallyVisibleTaskIds = useMemo(() => new Set(includedTaskIds), [includedTaskIds])
@@ -324,43 +320,10 @@ export function GlobalTopologyView({
   }, [automaticPositions, positions])
 
   useEffect(() => {
-    if (!skipNextSelectionFitRef.current) return
-    // 收缩可能先改变可见节点数量，再因选中节点被隐藏而关闭详情栏，会产生两次渲染。
-    // 延迟到下一帧再恢复详情栏的自动适配，确保这两次渲染都沿用原视口。
-    const frame = requestAnimationFrame(() => {
-      skipNextSelectionFitRef.current = false
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [collapsedTaskIds])
-
-  useEffect(() => {
+    // 筛选变化需要重新采用对应任务集合的紧凑坐标，但不能自动缩放或平移画布。
+    // 视口只允许由用户拖动、缩放或点击 React Flow 的恢复视口按钮来改变。
     setFilteredPositionOverrides({})
-    const frame = requestAnimationFrame(() => {
-      flowInstanceRef.current?.fitView({
-        padding: filteredTasks.length > 80 ? 0.035 : 0.075,
-        maxZoom: filteredTasks.length > 40 ? 0.82 : 1.05,
-        duration: 0,
-      })
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [filteredAutomaticPositions, filteredTasks.length, projectFilter, statusFilter])
-
-  useEffect(() => {
-    const inspectorIsOpen = Boolean(selectedTaskId)
-    const inspectorWasOpen = inspectorWasOpenRef.current
-    inspectorWasOpenRef.current = inspectorIsOpen
-    // 只在详情栏首次出现时适配一次，避免右侧节点被详情栏裁掉。
-    // 关闭详情或在任务之间切换时保持当前视口，否则整张拓扑会突然重新居中。
-    if (skipNextSelectionFitRef.current || !inspectorIsOpen || inspectorWasOpen) return
-    const timer = window.setTimeout(() => {
-      flowInstanceRef.current?.fitView({
-        padding: visibleTasks.length > 80 ? 0.035 : 0.075,
-        maxZoom: visibleTasks.length > 40 ? 0.82 : 1.05,
-        duration: 0,
-      })
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [selectedTaskId, visibleTasks.length])
+  }, [filteredAutomaticPositions, projectFilter, statusFilter])
 
   useEffect(() => {
     setNodes(visibleTasks.map((task) => ({
@@ -378,7 +341,6 @@ export function GlobalTopologyView({
         onChangeStatus,
         onToggleDone,
         onToggleCollapse: (taskId: string) => {
-          skipNextSelectionFitRef.current = true
           setCollapsedTaskIds((current) => {
             const next = new Set(current)
             if (next.has(taskId)) next.delete(taskId)
@@ -466,11 +428,9 @@ export function GlobalTopologyView({
   function autoLayout() {
     if (filteredView) {
       setFilteredPositionOverrides({})
-      requestAnimationFrame(() => flowInstanceRef.current?.fitView({ padding: 0.075, maxZoom: 1.05, duration: 0 }))
       return
     }
     commitPositions(createAutomaticLayout(tasks))
-    requestAnimationFrame(() => flowInstanceRef.current?.fitView({ padding: 0.05, maxZoom: 0.9, duration: 0 }))
   }
 
   async function confirmConnection(relationType: TopologyRelationType) {
@@ -506,10 +466,7 @@ export function GlobalTopologyView({
           type="button"
           disabled={collapsibleTaskIds.size === 0}
           title={allParentsCollapsed ? '展开所有父节点' : '收起所有父节点'}
-          onClick={() => {
-            skipNextSelectionFitRef.current = true
-            setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))
-          }}
+          onClick={() => setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))}
         >
           {allParentsCollapsed ? '▾ 全部展开' : '▸ 全部收起'}
         </button>
@@ -536,9 +493,6 @@ export function GlobalTopologyView({
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
-            onInit={(instance) => {
-              flowInstanceRef.current = instance
-            }}
             onNodeClick={(_, node) => {
               setSelectedTaskId(node.id)
               setSelectedEdgeId('')
@@ -553,8 +507,6 @@ export function GlobalTopologyView({
             }}
             onNodeDragStop={handleNodeDragStop}
             onConnect={(connection) => setPendingConnection(connection)}
-            fitView
-            fitViewOptions={{ padding: 0.075, maxZoom: 1.05 }}
             minZoom={0.08}
             maxZoom={1.8}
             deleteKeyCode={null}
