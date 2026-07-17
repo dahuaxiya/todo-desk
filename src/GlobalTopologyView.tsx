@@ -18,11 +18,12 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
-import type { Task, TaskColumnStatus, TaskParentLink, TaskStatus, TopologyPosition } from './types'
+import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyPosition } from './types'
 
 type TopologyRelationType = TaskParentLink['type']
 type TopologyStatusFilter = 'all' | TaskColumnStatus
 type TopologyMode = 'select' | 'connect'
+type TopologyRelationshipFilter = 'managed' | 'all' | 'unresolved' | 'independent_root'
 
 interface GlobalTopologyViewProps {
   tasks: Task[]
@@ -30,6 +31,9 @@ interface GlobalTopologyViewProps {
   positions: Record<string, TopologyPosition>
   onSavePositions: (positions: Record<string, TopologyPosition>) => Promise<void> | void
   onLinkTasks: (parentTaskId: string, childTaskId: string, relationType: TopologyRelationType) => Promise<void> | void
+  onLinkTasksBatch: (parentTaskId: string, childTaskIds: string[], relationType: TopologyRelationType) => Promise<void> | void
+  onCreateParentTask: (childTaskIds: string[], title: string, relationType: TopologyRelationType) => Promise<void> | void
+  onSetRelationshipState: (taskIds: string[], state: TaskRelationshipState) => Promise<void> | void
   onUnlinkTask: (taskId: string) => Promise<void> | void
   onChangeStatus: (taskId: string, status: TaskColumnStatus) => Promise<void> | void
   onToggleDone: (taskId: string) => Promise<void> | void
@@ -86,6 +90,32 @@ function isAgentTask(task: Task) {
 
 function getColumnStatus(status: TaskStatus): TaskColumnStatus {
   return status === 'pending_acceptance' ? 'doing' : status
+}
+
+function hasActiveCompletionGate(task: Task) {
+  return task.status === 'pending_acceptance' && !task.completionAcceptance?.resolvedAt
+}
+
+function hasActiveSessionReview(task: Task) {
+  return Boolean(task.sessionReview && !task.sessionReview.resolvedAt)
+}
+
+function hasActiveParentCompletionReview(task: Task) {
+  return Boolean(task.parentCompletionReview && !task.parentCompletionReview.resolvedAt)
+}
+
+function isUnresolvedAgentTask(task: Task) {
+  return isAgentTask(task) && !task.parentTaskId && task.relationshipState !== 'independent_root'
+}
+
+function TaskReviewDots({ task }: { task: Task }) {
+  return (
+    <span className="topology-review-dots" aria-label="需要用户处理的提醒">
+      {hasActiveCompletionGate(task) && <i className="completion" title="等待确认完成" />}
+      {hasActiveSessionReview(task) && <i className="session" title="本轮会话已结束，任务未完成" />}
+      {hasActiveParentCompletionReview(task) && <i className="parent" title="等待复核父任务" />}
+    </span>
+  )
 }
 
 function createAutomaticLayout(tasks: Task[]): Record<string, TopologyPosition> {
@@ -195,7 +225,7 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
   const columnStatus = getColumnStatus(task.status)
 
   return (
-    <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} ${selected ? 'selected' : ''}`}>
+    <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} relationship-${task.relationshipState || 'root'} ${selected ? 'selected' : ''}`}>
       <Handle className={connectMode ? 'visible' : ''} type="target" position={Position.Left} />
       <header>
         <button
@@ -209,7 +239,10 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
         >
           {task.status === 'done' ? '✓' : ''}
         </button>
-        <strong title={task.title}>{task.title}</strong>
+        <span className="global-task-title">
+          <strong title={task.title}>{task.title}</strong>
+          <TaskReviewDots task={task} />
+        </span>
       </header>
       <div className="global-task-node-meta">
         <span className={`topology-status-dot status-${columnStatus}`} />
@@ -225,6 +258,8 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
         </select>
         <span className={`priority priority-${task.priority}`}>{priorityRanks[task.priority]} · {priorityLabels[task.priority]}</span>
         {agentTask && <span className="task-origin">AI</span>}
+        {task.relationshipState === 'unresolved' && <span className="relationship-tag unresolved">待归类</span>}
+        {task.relationshipState === 'independent_root' && <span className="relationship-tag independent">独立任务</span>}
       </div>
       <footer>
         <span>{task.project || '未分组'}</span>
@@ -259,6 +294,9 @@ export function GlobalTopologyView({
   positions,
   onSavePositions,
   onLinkTasks,
+  onLinkTasksBatch,
+  onCreateParentTask,
+  onSetRelationshipState,
   onUnlinkTask,
   onChangeStatus,
   onToggleDone,
@@ -273,6 +311,14 @@ export function GlobalTopologyView({
   const [mode, setMode] = useState<TopologyMode>('select')
   const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>('all')
   const [projectFilter, setProjectFilter] = useState('all')
+  const [relationshipFilter, setRelationshipFilter] = useState<TopologyRelationshipFilter>('managed')
+  const [inboxOpen, setInboxOpen] = useState(false)
+  const [selectedOrphanIds, setSelectedOrphanIds] = useState<Set<string>>(() => new Set())
+  const [relationType, setRelationType] = useState<TopologyRelationType>('subtask_of')
+  const [parentSearch, setParentSearch] = useState('')
+  const [selectedParentId, setSelectedParentId] = useState('')
+  const [parentPickerOpen, setParentPickerOpen] = useState(false)
+  const [newParentTitle, setNewParentTitle] = useState('')
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(() => new Set())
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [selectedEdgeId, setSelectedEdgeId] = useState('')
@@ -291,13 +337,19 @@ export function GlobalTopologyView({
     [tasks],
   )
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
+  const unresolvedAgentTasks = useMemo(() => tasks.filter(isUnresolvedAgentTask), [tasks])
+  const unresolvedTaskIds = useMemo(() => new Set(unresolvedAgentTasks.map((task) => task.id)), [unresolvedAgentTasks])
   const filteredTasks = useMemo(
     () => tasks.filter((task) => {
       if (!externallyVisibleTaskIds.has(task.id)) return false
       if (statusFilter !== 'all' && getColumnStatus(task.status) !== statusFilter) return false
-      return projectFilter === 'all' || task.project === projectFilter
+      if (projectFilter !== 'all' && task.project !== projectFilter) return false
+      if (relationshipFilter === 'managed') return !unresolvedTaskIds.has(task.id)
+      if (relationshipFilter === 'unresolved') return unresolvedTaskIds.has(task.id)
+      if (relationshipFilter === 'independent_root') return task.relationshipState === 'independent_root'
+      return true
     }),
-    [externallyVisibleTaskIds, projectFilter, statusFilter, tasks],
+    [externallyVisibleTaskIds, projectFilter, relationshipFilter, statusFilter, tasks, unresolvedTaskIds],
   )
   const filteredChildrenByParentId = useMemo(() => {
     const filteredTaskIds = new Set(filteredTasks.map((task) => task.id))
@@ -324,7 +376,12 @@ export function GlobalTopologyView({
   // 收缩只改变节点可见性，不能拿收缩后的节点集合重新跑布局，否则剩余卡片会跳到新位置。
   // 筛选布局以完整 filteredTasks 为基准，展开时也能精确恢复到收缩前坐标。
   const filteredAutomaticPositions = useMemo(() => createAutomaticLayout(filteredTasks), [filteredTasks])
-  const filteredView = statusFilter !== 'all' || projectFilter !== 'all' || filteredTasks.length !== tasks.length
+  const externalFilterActive = includedTaskIds.length !== tasks.length
+  const filteredView = statusFilter !== 'all'
+    || projectFilter !== 'all'
+    || externalFilterActive
+    || relationshipFilter === 'unresolved'
+    || relationshipFilter === 'independent_root'
   const allParentsCollapsed = collapsibleTaskIds.size > 0 && [...collapsibleTaskIds].every((taskId) => collapsedTaskIds.has(taskId))
 
   useEffect(() => {
@@ -335,7 +392,12 @@ export function GlobalTopologyView({
     // 筛选变化需要重新采用对应任务集合的紧凑坐标，但不能自动缩放或平移画布。
     // 视口只允许由用户拖动、缩放或点击 React Flow 的恢复视口按钮来改变。
     setFilteredPositionOverrides({})
-  }, [filteredAutomaticPositions, projectFilter, statusFilter])
+  }, [filteredAutomaticPositions, projectFilter, relationshipFilter, statusFilter])
+
+  useEffect(() => {
+    const unresolvedIds = new Set(unresolvedAgentTasks.map((task) => task.id))
+    setSelectedOrphanIds((current) => new Set([...current].filter((taskId) => unresolvedIds.has(taskId))))
+  }, [unresolvedAgentTasks])
 
   useEffect(() => {
     setNodes(visibleTasks.map((task) => ({
@@ -398,6 +460,38 @@ export function GlobalTopologyView({
     () => selectedTask ? buildTaskPath(selectedTask, taskLookup) : [],
     [selectedTask, taskLookup],
   )
+  const orphanGroups = useMemo(() => {
+    const groups = new Map<string, { repository: string; session: string; tasks: Task[] }>()
+    for (const task of unresolvedAgentTasks) {
+      const repository = task.repository || task.origin?.repository?.name || task.repositoryPath || '未关联代码库'
+      const session = task.agentSessionId || task.origin?.agent?.sessionId || '未记录 Session'
+      const key = `${repository}\u0000${session}`
+      const group = groups.get(key) ?? { repository, session, tasks: [] }
+      group.tasks.push(task)
+      groups.set(key, group)
+    }
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        tasks: group.tasks.sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+      }))
+      .sort((left, right) => (right.tasks[0]?.createdAt || '').localeCompare(left.tasks[0]?.createdAt || ''))
+  }, [unresolvedAgentTasks])
+  const selectedOrphanTasks = useMemo(
+    () => unresolvedAgentTasks.filter((task) => selectedOrphanIds.has(task.id)),
+    [selectedOrphanIds, unresolvedAgentTasks],
+  )
+  const parentCandidates = useMemo(() => {
+    const query = parentSearch.trim().toLocaleLowerCase('zh-CN')
+    return tasks
+      .filter((task) => !selectedOrphanIds.has(task.id))
+      // 未归类 AI 根任务不能充当新父级，否则只是把待处理关系继续藏到另一层。
+      .filter((task) => !isUnresolvedAgentTask(task))
+      .filter((task) => !query || [task.title, task.detail, task.project, task.repository].some((value) => String(value || '').toLocaleLowerCase('zh-CN').includes(query)))
+      .sort((left, right) => Number(isAgentTask(left)) - Number(isAgentTask(right)) || right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 30)
+  }, [parentSearch, selectedOrphanIds, tasks])
+  const selectedParentTask = selectedParentId ? taskLookup.get(selectedParentId) : undefined
 
   const onNodesChange = useCallback((changes: NodeChange<TaskFlowNode>[]) => {
     setNodes((current) => applyNodeChanges(changes, current))
@@ -460,6 +554,37 @@ export function GlobalTopologyView({
     setSelectedEdgeId('')
   }
 
+  function toggleOrphanSelection(taskId: string) {
+    setSelectedOrphanIds((current) => {
+      const next = new Set(current)
+      if (next.has(taskId)) next.delete(taskId)
+      else next.add(taskId)
+      return next
+    })
+  }
+
+  async function bindSelectedOrphans() {
+    if (!selectedParentId || selectedOrphanIds.size === 0) return
+    await onLinkTasksBatch(selectedParentId, [...selectedOrphanIds], relationType)
+    setSelectedOrphanIds(new Set())
+    setSelectedParentId('')
+    setParentSearch('')
+    setParentPickerOpen(false)
+  }
+
+  async function createParentForSelectedOrphans() {
+    if (!newParentTitle.trim() || selectedOrphanIds.size === 0) return
+    await onCreateParentTask([...selectedOrphanIds], newParentTitle, relationType)
+    setSelectedOrphanIds(new Set())
+    setNewParentTitle('')
+  }
+
+  async function markSelectedAsIndependent() {
+    if (selectedOrphanIds.size === 0) return
+    await onSetRelationshipState([...selectedOrphanIds], 'independent_root')
+    setSelectedOrphanIds(new Set())
+  }
+
   void historyVersion
 
   return (
@@ -470,6 +595,13 @@ export function GlobalTopologyView({
           <button className={mode === 'connect' ? 'active' : ''} type="button" onClick={() => setMode('connect')}>连线</button>
         </div>
         <button type="button" onClick={onAddTask}>＋ 新增任务</button>
+        <button
+          className={`relationship-inbox-trigger ${inboxOpen ? 'active' : ''}`}
+          type="button"
+          onClick={() => setInboxOpen((current) => !current)}
+        >
+          待归类 AI <span>{unresolvedAgentTasks.length}</span>
+        </button>
         <span className="toolbar-divider" />
         <button type="button" title="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>↶</button>
         <button type="button" title="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>↷</button>
@@ -495,8 +627,108 @@ export function GlobalTopologyView({
             <option value="all">全部项目</option>
             {projects.map((project) => <option key={project} value={project}>{project}</option>)}
           </select>
+          <select value={relationshipFilter} aria-label="按关系状态筛选" onChange={(event) => setRelationshipFilter(event.target.value as TopologyRelationshipFilter)}>
+            <option value="managed">已管理</option>
+            <option value="all">全部关系</option>
+            <option value="unresolved">待归类</option>
+            <option value="independent_root">独立任务</option>
+          </select>
         </div>
       </div>
+
+      {inboxOpen && (
+        <aside className="relationship-inbox" aria-label="AI 任务关系收件箱">
+          <header>
+            <div>
+              <strong>AI 任务待归类</strong>
+              <span>{unresolvedAgentTasks.length} 个任务尚未确认父级</span>
+            </div>
+            <button type="button" title="关闭" onClick={() => setInboxOpen(false)}>×</button>
+          </header>
+          <div className="relationship-inbox-list">
+            {orphanGroups.length === 0 && <div className="relationship-inbox-empty">没有待归类的 AI 任务</div>}
+            {orphanGroups.map((group) => (
+              <section className="relationship-inbox-group" key={`${group.repository}-${group.session}`}>
+                <div className="relationship-inbox-group-title">
+                  <strong>{group.repository}</strong>
+                  <span title={group.session}>{group.session}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrphanIds((current) => {
+                      const next = new Set(current)
+                      const allSelected = group.tasks.every((task) => next.has(task.id))
+                      for (const task of group.tasks) {
+                        if (allSelected) next.delete(task.id)
+                        else next.add(task.id)
+                      }
+                      return next
+                    })}
+                  >
+                    {group.tasks.every((task) => selectedOrphanIds.has(task.id)) ? '取消本组' : '选择本组'}
+                  </button>
+                </div>
+                {group.tasks.map((task) => (
+                  <label className={`relationship-inbox-task ${selectedOrphanIds.has(task.id) ? 'selected' : ''}`} key={task.id}>
+                    <input type="checkbox" checked={selectedOrphanIds.has(task.id)} onChange={() => toggleOrphanSelection(task.id)} />
+                    <span>
+                      <strong>{task.title}</strong>
+                      <small>{task.agent || task.origin?.agent?.name || 'agent'} · {new Date(task.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</small>
+                    </span>
+                    <TaskReviewDots task={task} />
+                  </label>
+                ))}
+              </section>
+            ))}
+          </div>
+          <footer>
+            <div className="relationship-selection-summary">
+              <span>已选 {selectedOrphanTasks.length}</span>
+              <div role="group" aria-label="关系类型">
+                <button className={relationType === 'subtask_of' ? 'active' : ''} type="button" onClick={() => setRelationType('subtask_of')}>子任务</button>
+                <button className={relationType === 'discovered_from' ? 'active' : ''} type="button" onClick={() => setRelationType('discovered_from')}>派生</button>
+              </div>
+            </div>
+            <div className="relationship-parent-picker">
+              <button
+                className="relationship-parent-value"
+                type="button"
+                disabled={selectedOrphanIds.size === 0}
+                onClick={() => setParentPickerOpen((current) => !current)}
+              >
+                {selectedParentTask?.title || '选择已有父任务'}
+              </button>
+              {parentPickerOpen && (
+                <div className="relationship-parent-popover">
+                  <input autoFocus value={parentSearch} placeholder="搜索标题、详情、项目或仓库" onChange={(event) => setParentSearch(event.target.value)} />
+                  <div>
+                    {parentCandidates.map((task) => (
+                      <button
+                        className={task.id === selectedParentId ? 'selected' : ''}
+                        type="button"
+                        key={task.id}
+                        onClick={() => {
+                          setSelectedParentId(task.id)
+                          setParentPickerOpen(false)
+                        }}
+                      >
+                        <strong>{task.title}</strong>
+                        <small>{isAgentTask(task) ? 'AI' : '人工'} · {task.project || '未分组'}</small>
+                      </button>
+                    ))}
+                    {parentCandidates.length === 0 && <span>没有匹配任务</span>}
+                  </div>
+                </div>
+              )}
+              <button className="primary" type="button" disabled={!selectedParentId || selectedOrphanIds.size === 0} onClick={() => void bindSelectedOrphans()}>绑定</button>
+            </div>
+            <div className="relationship-create-parent">
+              <input value={newParentTitle} disabled={selectedOrphanIds.size === 0} placeholder="输入新的人工父任务标题" onChange={(event) => setNewParentTitle(event.target.value)} />
+              <button type="button" disabled={!newParentTitle.trim() || selectedOrphanIds.size === 0} onClick={() => void createParentForSelectedOrphans()}>创建并绑定</button>
+            </div>
+            <button className="relationship-independent-action" type="button" disabled={selectedOrphanIds.size === 0} onClick={() => void markSelectedAsIndependent()}>标记为独立任务</button>
+          </footer>
+        </aside>
+      )}
 
       <div className={`global-topology-body ${selectedTask ? 'has-selection' : ''}`}>
         <div className={`global-topology-canvas mode-${mode}`}>
@@ -568,6 +800,7 @@ export function GlobalTopologyView({
                 <div>
                   <span className={`topology-status-dot status-${getColumnStatus(selectedTask.status)}`} />
                   <strong>{selectedTask.title}</strong>
+                  <TaskReviewDots task={selectedTask} />
                 </div>
                 <span className={`inspector-origin ${isAgentTask(selectedTask) ? 'agent' : 'human'}`}>{isAgentTask(selectedTask) ? 'AI 任务' : '人工任务'}</span>
               </header>
@@ -612,6 +845,9 @@ export function GlobalTopologyView({
                 {canOpenAgentSession(selectedTask) && <button type="button" onClick={() => void onOpenAgentSession(selectedTask)}>会话</button>}
                 {(selectedTask.reminderAt || selectedTask.dueAt) && <button type="button" onClick={() => void onOpenCalendar(selectedTask)}>日历</button>}
                 <button type="button" onClick={() => onEditTask(selectedTask)}>编辑</button>
+                {selectedTask.relationshipState === 'independent_root' && (
+                  <button type="button" onClick={() => void onSetRelationshipState([selectedTask.id], 'unresolved')}>移回待归类</button>
+                )}
                 <button className="danger" type="button" onClick={() => void onDeleteTask(selectedTask.id)}>删除</button>
               </footer>
             </>

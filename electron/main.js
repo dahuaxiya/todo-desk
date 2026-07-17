@@ -67,6 +67,7 @@ const originChannels = new Set(['ui', 'local-api', 'todo-desk-skill', 'import', 
 const originConfidences = new Set(['explicit', 'legacy-inferred'])
 const parentLinkTypes = new Set(['subtask_of', 'discovered_from'])
 const parentLinkConfidences = new Set(['explicit', 'inferred'])
+const taskRelationshipStates = new Set(['linked', 'unresolved', 'independent_root'])
 const parentCompletionReviewReasons = new Set(['all_agent_children_done', 'agent_child_done'])
 const parentCompletionReviewResolutions = new Set(['accepted', 'kept'])
 const legacyAgentSources = new Set(['codex', 'claude', 'cursor', 'kimi', 'forceclaw'])
@@ -195,8 +196,25 @@ function normalizeTaskOrigin(task, confidence = 'legacy-inferred') {
   const parentTaskId = normalizeParentTaskId(task.parentTaskId || task.parentId)
   const parentLink = normalizeParentLink(task.parentLink, task, parentTaskId)
   const parentCompletionReview = normalizeParentCompletionReview(task.parentCompletionReview)
-  if (explicit) return compactObject({ ...task, completionAcceptance, sessionReview, parentTaskId, parentLink, parentCompletionReview, origin: explicit })
-  return compactObject({ ...task, completionAcceptance, sessionReview, parentTaskId, parentLink, parentCompletionReview, origin: inferOriginFromTask(task, confidence) })
+  const origin = explicit || inferOriginFromTask(task, confidence)
+  const requestedRelationshipState = taskRelationshipStates.has(task.relationshipState) ? task.relationshipState : undefined
+  // 关系状态是父子结构的派生事实：有父任务必然 linked；无父 Agent 默认待归类，
+  // 只有用户明确标记后才允许成为独立根任务。这样旧数据无需迁移也能进入关系收件箱。
+  const relationshipState = parentTaskId
+    ? 'linked'
+    : origin.kind === 'agent'
+      ? requestedRelationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
+      : undefined
+  return compactObject({
+    ...task,
+    completionAcceptance,
+    sessionReview,
+    parentTaskId,
+    parentLink,
+    relationshipState,
+    parentCompletionReview,
+    origin,
+  })
 }
 
 function isAgentLikeTask(task) {
@@ -1427,6 +1445,7 @@ function normalizeExternalTask(input) {
     sessionReview: normalizeSessionReview(input.sessionReview),
     parentTaskId,
     parentLink: normalizeParentLink(input.parentLink, { ...input, agent, agentSessionId, source }, parentTaskId, now),
+    relationshipState: taskRelationshipStates.has(input.relationshipState) ? input.relationshipState : undefined,
     parentCompletionReview: normalizeParentCompletionReview(input.parentCompletionReview),
     source,
     agent,
@@ -1466,6 +1485,7 @@ function normalizeTaskPatch(input, currentTask) {
   if (input.parentCompletionReview && typeof input.parentCompletionReview === 'object') {
     patch.parentCompletionReview = normalizeParentCompletionReview(input.parentCompletionReview)
   }
+  if (taskRelationshipStates.has(input.relationshipState)) patch.relationshipState = input.relationshipState
   if (Object.prototype.hasOwnProperty.call(input, 'parentTaskId') || Object.prototype.hasOwnProperty.call(input, 'parentId')) {
     const parentTaskId = normalizeParentTaskId(input.parentTaskId || input.parentId)
     patch.parentTaskId = parentTaskId || undefined
