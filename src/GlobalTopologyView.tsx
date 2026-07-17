@@ -53,6 +53,8 @@ type TaskFlowEdge = Edge<{ childTaskId: string; relationType: TopologyRelationTy
 
 const nodeWidth = 236
 const nodeHeight = 112
+const minTopologyZoom = 0.08
+const maxTopologyZoom = 1.8
 
 const statusLabels: Record<TaskStatus, string> = {
   doing: '正在做',
@@ -507,14 +509,18 @@ export function GlobalTopologyView({
             }}
             onNodeDragStop={handleNodeDragStop}
             onConnect={(connection) => setPendingConnection(connection)}
-            minZoom={0.08}
-            maxZoom={1.8}
+            minZoom={minTopologyZoom}
+            maxZoom={maxTopologyZoom}
             deleteKeyCode={null}
             proOptions={{ hideAttribution: true }}
             nodesConnectable={mode === 'connect'}
             nodesDraggable={mode === 'select'}
             selectionOnDrag={mode === 'select'}
             panOnDrag
+            panOnScroll
+            panOnScrollSpeed={0.8}
+            zoomOnScroll={false}
+            zoomOnPinch
           >
             <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="#ece8df" />
             <Controls position="bottom-right" showInteractive={false} />
