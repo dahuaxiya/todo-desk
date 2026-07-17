@@ -106,26 +106,6 @@
   color: #b33e37;
 }
 
-.global-topology-mode {
-  display: flex;
-  padding: 2px;
-  border: 1px solid #dedbd4;
-  border-radius: 7px;
-  background: #f7f6f2;
-}
-
-.global-topology-mode button {
-  height: 28px;
-  min-width: 56px;
-}
-
-.global-topology-mode button.active {
-  border-color: #d6e2fb;
-  background: #eaf1ff;
-  color: #1764d5;
-  font-weight: 650;
-}
-
 .global-topology-toolbar .relationship-inbox-trigger {
   flex: 0 0 auto;
   display: inline-flex;
@@ -162,6 +142,16 @@
   white-space: nowrap;
 }
 
+.global-topology-selection-count {
+  padding: 3px 7px;
+  border-radius: 10px;
+  background: #eaf1ff;
+  color: #1764d5;
+  font-size: calc(10px * var(--app-font-scale));
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .global-topology-filters {
   min-width: 0;
   display: flex;
@@ -178,6 +168,11 @@
   cursor: pointer;
 }
 
+.global-topology-toolbar select.project-filter {
+  min-width: 128px;
+  max-width: 180px;
+}
+
 .global-topology-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -192,10 +187,6 @@
   position: relative;
   min-width: 0;
   background: #faf9f5;
-}
-
-.global-topology-canvas.mode-connect .react-flow__pane {
-  cursor: crosshair;
 }
 
 .global-task-node {
@@ -743,13 +734,23 @@
 .global-task-node .react-flow__handle {
   width: 13px;
   height: 13px;
-  visibility: hidden;
   border: 2px solid #2c71e8;
   background: #fff;
+  opacity: 0.42;
+  transition: opacity 120ms ease, transform 120ms ease;
 }
 
-.global-task-node .react-flow__handle.visible {
-  visibility: visible;
+.global-task-node:hover .react-flow__handle,
+.global-task-node.selected .react-flow__handle,
+.global-task-node .react-flow__handle.connectingfrom,
+.global-task-node .react-flow__handle.connectingto {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.global-topology-canvas .react-flow__selection {
+  border: 1px solid #2c71e8;
+  background: rgba(44, 113, 232, 0.1);
 }
 
 .global-topology-canvas .react-flow__edge.selected .react-flow__edge-path {
@@ -1079,10 +1080,6 @@
   .global-topology-toolbar {
     gap: 4px;
     padding: 0 8px;
-  }
-
-  .global-topology-mode button {
-    min-width: 48px;
   }
 
   .global-topology-toolbar button {
