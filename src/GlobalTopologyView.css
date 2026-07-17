@@ -262,6 +262,29 @@
   white-space: nowrap;
 }
 
+.global-task-node footer .global-task-collapse {
+  max-width: 62%;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  padding: 0 5px;
+  border: 1px solid rgba(116, 113, 107, 0.22);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #66635d;
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.global-task-node footer .global-task-collapse:hover {
+  border-color: rgba(36, 108, 240, 0.38);
+  color: #246cf0;
+}
+
 .global-task-node .react-flow__handle {
   width: 13px;
   height: 13px;

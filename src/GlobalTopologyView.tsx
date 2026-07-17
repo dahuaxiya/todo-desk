@@ -41,9 +41,12 @@ interface GlobalTopologyViewProps {
 interface TaskNodeData extends Record<string, unknown> {
   task: Task
   childCount: number
+  collapsed: boolean
+  hiddenDescendantCount: number
   connectMode: boolean
   onChangeStatus: GlobalTopologyViewProps['onChangeStatus']
   onToggleDone: GlobalTopologyViewProps['onToggleDone']
+  onToggleCollapse: (taskId: string) => void
 }
 
 type TaskFlowNode = Node<TaskNodeData, 'task'>
@@ -168,8 +171,20 @@ function buildTaskPath(task: Task, taskLookup: Map<string, Task>) {
   return path
 }
 
+function collectDescendantIds(parentTaskId: string, childrenByParentId: Map<string, Task[]>) {
+  const descendants = new Set<string>()
+  const queue = [...(childrenByParentId.get(parentTaskId) ?? [])]
+  while (queue.length > 0) {
+    const child = queue.shift()
+    if (!child || descendants.has(child.id)) continue
+    descendants.add(child.id)
+    queue.push(...(childrenByParentId.get(child.id) ?? []))
+  }
+  return descendants
+}
+
 function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
-  const { task, childCount, connectMode, onChangeStatus, onToggleDone } = data
+  const { task, childCount, collapsed, hiddenDescendantCount, connectMode, onChangeStatus, onToggleDone, onToggleCollapse } = data
   const agentTask = isAgentTask(task)
   const columnStatus = getColumnStatus(task.status)
 
@@ -207,7 +222,23 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
       </div>
       <footer>
         <span>{task.project || '未分组'}</span>
-        <span>{childCount > 0 ? `${childCount} 个子任务` : task.tags[0] ? `#${task.tags[0]}` : '无标签'}</span>
+        {childCount > 0 ? (
+          <button
+            className="global-task-collapse"
+            type="button"
+            title={collapsed ? `展开 ${hiddenDescendantCount} 个后代任务` : `收起 ${hiddenDescendantCount} 个后代任务`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleCollapse(task.id)
+            }}
+          >
+            <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+            {collapsed ? `已收起 ${hiddenDescendantCount}` : `${childCount} 个子任务`}
+          </button>
+        ) : (
+          <span>{task.tags[0] ? `#${task.tags[0]}` : '无标签'}</span>
+        )}
       </footer>
       <Handle className={connectMode ? 'visible' : ''} type="source" position={Position.Right} />
     </article>
@@ -231,6 +262,7 @@ export function GlobalTopologyView({
   const [mode, setMode] = useState<TopologyMode>('select')
   const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>('all')
   const [projectFilter, setProjectFilter] = useState('all')
+  const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(() => new Set())
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [selectedEdgeId, setSelectedEdgeId] = useState('')
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
@@ -248,15 +280,8 @@ export function GlobalTopologyView({
     () => [...new Set(tasks.map((task) => task.project).filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN')),
     [tasks],
   )
-  const childCountByParentId = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const task of tasks) {
-      if (task.parentTaskId) counts.set(task.parentTaskId, (counts.get(task.parentTaskId) ?? 0) + 1)
-    }
-    return counts
-  }, [tasks])
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
-  const visibleTasks = useMemo(
+  const filteredTasks = useMemo(
     () => tasks.filter((task) => {
       if (!externallyVisibleTaskIds.has(task.id)) return false
       if (statusFilter !== 'all' && getColumnStatus(task.status) !== statusFilter) return false
@@ -264,9 +289,31 @@ export function GlobalTopologyView({
     }),
     [externallyVisibleTaskIds, projectFilter, statusFilter, tasks],
   )
+  const filteredChildrenByParentId = useMemo(() => {
+    const filteredTaskIds = new Set(filteredTasks.map((task) => task.id))
+    const grouped = new Map<string, Task[]>()
+    for (const task of filteredTasks) {
+      if (!task.parentTaskId || !filteredTaskIds.has(task.parentTaskId)) continue
+      grouped.set(task.parentTaskId, [...(grouped.get(task.parentTaskId) ?? []), task])
+    }
+    return grouped
+  }, [filteredTasks])
+  const collapsibleTaskIds = useMemo(() => new Set(filteredChildrenByParentId.keys()), [filteredChildrenByParentId])
+  const hiddenDescendantCountByTaskId = useMemo(() => new Map(
+    [...collapsibleTaskIds].map((taskId) => [taskId, collectDescendantIds(taskId, filteredChildrenByParentId).size]),
+  ), [collapsibleTaskIds, filteredChildrenByParentId])
+  const hiddenTaskIds = useMemo(() => {
+    const hidden = new Set<string>()
+    for (const taskId of collapsedTaskIds) {
+      for (const descendantId of collectDescendantIds(taskId, filteredChildrenByParentId)) hidden.add(descendantId)
+    }
+    return hidden
+  }, [collapsedTaskIds, filteredChildrenByParentId])
+  const visibleTasks = useMemo(() => filteredTasks.filter((task) => !hiddenTaskIds.has(task.id)), [filteredTasks, hiddenTaskIds])
   const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks])
   const visibleAutomaticPositions = useMemo(() => createAutomaticLayout(visibleTasks), [visibleTasks])
-  const filteredView = statusFilter !== 'all' || projectFilter !== 'all' || visibleTasks.length !== tasks.length
+  const filteredView = statusFilter !== 'all' || projectFilter !== 'all' || filteredTasks.length !== tasks.length || collapsedTaskIds.size > 0
+  const allParentsCollapsed = collapsibleTaskIds.size > 0 && [...collapsibleTaskIds].every((taskId) => collapsedTaskIds.has(taskId))
 
   useEffect(() => {
     setLocalPositions((current) => ({ ...automaticPositions, ...current, ...positions }))
@@ -306,20 +353,30 @@ export function GlobalTopologyView({
         : localPositions[task.id] ?? automaticPositions[task.id] ?? { x: 0, y: 0 },
       data: {
         task,
-        childCount: childCountByParentId.get(task.id) ?? 0,
+        childCount: filteredChildrenByParentId.get(task.id)?.length ?? 0,
+        collapsed: collapsedTaskIds.has(task.id),
+        hiddenDescendantCount: hiddenDescendantCountByTaskId.get(task.id) ?? 0,
         connectMode: mode === 'connect',
         onChangeStatus,
         onToggleDone,
+        onToggleCollapse: (taskId: string) => {
+          setCollapsedTaskIds((current) => {
+            const next = new Set(current)
+            if (next.has(taskId)) next.delete(taskId)
+            else next.add(taskId)
+            return next
+          })
+        },
       },
       selected: task.id === selectedTaskId,
       draggable: mode === 'select',
       connectable: mode === 'connect',
     })))
-  }, [automaticPositions, childCountByParentId, filteredPositionOverrides, filteredView, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleAutomaticPositions, visibleTasks])
+  }, [automaticPositions, collapsedTaskIds, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleAutomaticPositions, visibleTasks])
 
   useEffect(() => {
-    if (selectedTaskId && !taskLookup.has(selectedTaskId)) setSelectedTaskId('')
-  }, [selectedTaskId, taskLookup])
+    if (selectedTaskId && (!taskLookup.has(selectedTaskId) || !visibleTaskIds.has(selectedTaskId))) setSelectedTaskId('')
+  }, [selectedTaskId, taskLookup, visibleTaskIds])
 
   const edges = useMemo<TaskFlowEdge[]>(() => visibleTasks.flatMap((task) => {
     if (!task.parentTaskId || !visibleTaskIds.has(task.parentTaskId)) return []
@@ -426,6 +483,14 @@ export function GlobalTopologyView({
         <button type="button" title="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>↶</button>
         <button type="button" title="重做布局" disabled={redoStackRef.current.length === 0} onClick={redoLayout}>↷</button>
         <button type="button" onClick={autoLayout}>自动整理</button>
+        <button
+          type="button"
+          disabled={collapsibleTaskIds.size === 0}
+          title={allParentsCollapsed ? '展开所有父节点' : '收起所有父节点'}
+          onClick={() => setCollapsedTaskIds(allParentsCollapsed ? new Set() : new Set(collapsibleTaskIds))}
+        >
+          {allParentsCollapsed ? '▾ 全部展开' : '▸ 全部收起'}
+        </button>
         <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
         {selectedEdgeId && <button className="danger-action" type="button" onClick={() => void unlinkSelectedEdge()}>解除关系</button>}
         <div className="global-topology-filters">
