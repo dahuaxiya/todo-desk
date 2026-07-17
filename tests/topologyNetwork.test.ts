@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { collectRelationshipNetworkIds } from '../src/topologyNetwork.ts'
+import { collectRelationshipNetworkIds, normalizeTopologyProject } from '../src/topologyNetwork.ts'
+
+test('历史任务缺少项目字段时按未分组处理', () => {
+  assert.equal(normalizeTopologyProject(undefined, '__ungrouped__'), '__ungrouped__')
+  assert.equal(normalizeTopologyProject(null, '__ungrouped__'), '__ungrouped__')
+  assert.equal(normalizeTopologyProject('   ', '__ungrouped__'), '__ungrouped__')
+  assert.equal(normalizeTopologyProject('  Todo Desk  ', '__ungrouped__'), 'Todo Desk')
+})
 
 test('命中关系网中的任意节点时补齐整张关系网', () => {
   const tasks = [

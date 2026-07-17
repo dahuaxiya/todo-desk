@@ -20,7 +20,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
-import { collectRelationshipNetworkIds } from './topologyNetwork'
+import { collectRelationshipNetworkIds, normalizeTopologyProject } from './topologyNetwork'
 import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyPosition } from './types'
 
 type TopologyRelationType = TaskParentLink['type']
@@ -345,7 +345,7 @@ export function GlobalTopologyView({
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
   const unresolvedAgentTasks = useMemo(() => tasks.filter(isUnresolvedAgentTask), [tasks])
   const unresolvedTaskIds = useMemo(() => new Set(unresolvedAgentTasks.map((task) => task.id)), [unresolvedAgentTasks])
-  const projectOptions = useMemo(() => [...new Set(tasks.map((task) => task.project.trim() || ungroupedProjectFilter))]
+  const projectOptions = useMemo(() => [...new Set(tasks.map((task) => normalizeTopologyProject(task.project, ungroupedProjectFilter)))]
     .sort((left, right) => {
       if (left === ungroupedProjectFilter) return 1
       if (right === ungroupedProjectFilter) return -1
@@ -358,7 +358,7 @@ export function GlobalTopologyView({
     const includedIds = new Set(includedTaskIds)
     return new Set(tasks.filter((task) => {
       if (!includedIds.has(task.id)) return false
-      if (projectFilter !== 'all' && (task.project.trim() || ungroupedProjectFilter) !== projectFilter) return false
+      if (projectFilter !== 'all' && normalizeTopologyProject(task.project, ungroupedProjectFilter) !== projectFilter) return false
       if (statusFilter !== 'all' && getColumnStatus(task.status) !== statusFilter) return false
       if (relationshipFilter === 'managed') return !unresolvedTaskIds.has(task.id)
       if (relationshipFilter === 'unresolved') return unresolvedTaskIds.has(task.id)

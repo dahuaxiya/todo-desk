@@ -2,6 +2,12 @@ import type { Task } from './types'
 
 type RelationshipTask = Pick<Task, 'id' | 'parentTaskId'>
 
+export function normalizeTopologyProject(project: string | null | undefined, ungroupedValue: string) {
+  // 历史任务可能没有 project 字段。拓扑筛选必须在运行时兼容旧数据，否则切换到
+  // 拓扑页时会在首帧调用 undefined.trim()，导致透明 Electron 窗口看起来直接消失。
+  return typeof project === 'string' && project.trim() ? project.trim() : ungroupedValue
+}
+
 export function collectRelationshipNetworkIds(tasks: RelationshipTask[], seedTaskIds: Iterable<string>) {
   const neighbors = new Map(tasks.map((task) => [task.id, new Set<string>()]))
   for (const task of tasks) {
