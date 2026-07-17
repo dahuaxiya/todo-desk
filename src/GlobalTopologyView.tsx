@@ -274,6 +274,7 @@ export function GlobalTopologyView({
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const flowInstanceRef = useRef<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
   const skipNextSelectionFitRef = useRef(false)
+  const inspectorWasOpenRef = useRef(false)
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const externallyVisibleTaskIds = useMemo(() => new Set(includedTaskIds), [includedTaskIds])
@@ -345,9 +346,12 @@ export function GlobalTopologyView({
   }, [filteredAutomaticPositions, filteredTasks.length, projectFilter, statusFilter])
 
   useEffect(() => {
-    if (skipNextSelectionFitRef.current) return
-    // 详情栏出现或收起会改变画布宽度，等 CSS 网格完成一次布局后重新适配，
-    // 否则选中任务时右侧节点会被详情栏直接裁掉。
+    const inspectorIsOpen = Boolean(selectedTaskId)
+    const inspectorWasOpen = inspectorWasOpenRef.current
+    inspectorWasOpenRef.current = inspectorIsOpen
+    // 只在详情栏首次出现时适配一次，避免右侧节点被详情栏裁掉。
+    // 关闭详情或在任务之间切换时保持当前视口，否则整张拓扑会突然重新居中。
+    if (skipNextSelectionFitRef.current || !inspectorIsOpen || inspectorWasOpen) return
     const timer = window.setTimeout(() => {
       flowInstanceRef.current?.fitView({
         padding: visibleTasks.length > 80 ? 0.035 : 0.075,
