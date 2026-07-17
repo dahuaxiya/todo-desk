@@ -122,6 +122,8 @@ export interface TopologyPosition {
   y: number
 }
 
+export type AppFontSize = 'small' | 'standard' | 'large'
+
 export interface AppSettings {
   larkDoc: string
   larkCalendarId: string
@@ -137,6 +139,7 @@ export interface AppSettings {
   aiBaseUrl: string
   aiModel: string
   aiApiKey: string
+  fontSize: AppFontSize
   appMode: AppMode
   miniColumn: TaskColumnStatus
   addMode: AddMode

@@ -1,4 +1,5 @@
 :root {
+  --app-font-scale: 1;
   --paper: #f6ead2;
   --surface: #fffaf0;
   --card: #fff7df;
@@ -18,7 +19,7 @@
     Segoe UI,
     Helvetica Neue,
     sans-serif;
-  font-size: 14px;
+  font-size: calc(14px * var(--app-font-scale));
   line-height: 1.35;
   color: var(--ink);
   background: transparent;

@@ -15,7 +15,7 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
-import type { AddMode, AppData, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
+import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
 
@@ -34,6 +34,41 @@ const priorityConfig: Record<TaskPriority, { label: string }> = {
   high: { label: '高' },
   medium: { label: '中' },
   low: { label: '低' },
+}
+
+const fontSizeOptions: Array<{ value: AppFontSize; label: string; scale: number }> = [
+  { value: 'small', label: '小', scale: 0.9 },
+  { value: 'standard', label: '标准', scale: 1 },
+  { value: 'large', label: '大', scale: 1.15 },
+]
+
+const fontSizeScale = Object.fromEntries(
+  fontSizeOptions.map((option) => [option.value, option.scale]),
+) as Record<AppFontSize, number>
+
+function normalizeFontSize(value: unknown): AppFontSize {
+  return fontSizeOptions.some((option) => option.value === value) ? value as AppFontSize : 'standard'
+}
+
+function FontSizeSetting({ value, onChange }: { value: AppFontSize; onChange: (value: AppFontSize) => void }) {
+  return (
+    <div className="font-size-setting">
+      <span>界面字号</span>
+      <div className="font-size-options" role="group" aria-label="界面字号">
+        {fontSizeOptions.map((option) => (
+          <button
+            className={value === option.value ? 'active' : ''}
+            key={option.value}
+            type="button"
+            aria-pressed={value === option.value}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 const taskStatuses = ['doing', 'todo', 'done'] as const satisfies readonly TaskColumnStatus[]
@@ -625,6 +660,7 @@ function createDefaultData(): AppData {
       aiBaseUrl: 'https://api.openai.com/v1',
       aiModel: 'gpt-4o-mini',
       aiApiKey: '',
+      fontSize: 'standard',
       appMode: 'normal',
       miniColumn: 'doing',
       addMode: 'quick',
@@ -685,6 +721,7 @@ function mergeWithDefaults(value: AppData): AppData {
         ...value.settings?.columnSorts,
       },
       globalShortcuts: normalizeGlobalShortcuts(value.settings?.globalShortcuts),
+      fontSize: normalizeFontSize(value.settings?.fontSize),
       edgeDocked: false,
       topologyPositions: value.settings?.topologyPositions || {},
     },
@@ -1281,6 +1318,12 @@ function App() {
   useEffect(() => {
     dataRef.current = data
   }, [data])
+
+  useEffect(() => {
+    // 所有界面共用根级字号比例，包含挂到 body 的弹窗和懒加载拓扑视图。
+    // 只改组件内字号会让不同模式出现大小不一致，因此统一从 documentElement 继承。
+    document.documentElement.style.setProperty('--app-font-scale', String(fontSizeScale[data.settings.fontSize]))
+  }, [data.settings.fontSize])
 
   useEffect(() => {
     if (!settingsOpen && recordingShortcutAction) {
@@ -3346,6 +3389,7 @@ function App() {
                   <AppIcon name="close" />
                 </button>
               </header>
+              <FontSizeSetting value={data.settings.fontSize} onChange={(fontSize) => void updateSettings({ fontSize })} />
               <button type="button" onClick={() => updateSettings({ appMode: 'normal' })}>
                 返回正常模式
               </button>
@@ -3903,6 +3947,8 @@ function App() {
                 <AppIcon name="close" />
               </button>
             </header>
+
+            <FontSizeSetting value={data.settings.fontSize} onChange={(fontSize) => void updateSettings({ fontSize })} />
 
             <label className="settings-field">
               <span>飞书文档 URL / Token</span>
