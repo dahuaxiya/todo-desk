@@ -320,20 +320,26 @@
 }
 
 .topology-status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: 0 0 auto;
   display: inline-block;
   border-radius: 50%;
-  background: #2c71e8;
+}
+
+.topology-status-dot.status-doing {
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .topology-status-dot.status-todo {
-  background: #de8415;
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.12);
 }
 
 .topology-status-dot.status-done {
-  background: #3ba56c;
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
 }
 
 .global-task-node-meta select {
