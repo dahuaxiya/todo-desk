@@ -107,7 +107,12 @@ function hasActiveParentCompletionReview(task: Task) {
 }
 
 function isUnresolvedAgentTask(task: Task) {
-  return isAgentTask(task) && !task.parentTaskId && task.relationshipState !== 'independent_root'
+  // 关系收件箱只处理当前仍在执行的 AI 任务。Todo、待确认和已完成任务继续保留在
+  // 拓扑中，但不占用待归类入口，避免历史任务淹没用户眼下需要整理的工作。
+  return task.status === 'doing'
+    && isAgentTask(task)
+    && !task.parentTaskId
+    && task.relationshipState !== 'independent_root'
 }
 
 function TaskReviewDots({ task }: { task: Task }) {
