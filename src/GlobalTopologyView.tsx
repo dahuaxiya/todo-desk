@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import dagre from '@dagrejs/dagre'
 import { Redo2, Undo2 } from 'lucide-react'
 import {
@@ -17,11 +17,13 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type OnConnectEnd,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
 import { collectRelationshipNetworkIds, normalizeTopologyProject } from './topologyNetwork'
-import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyPosition } from './types'
+import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
 type TopologyRelationType = TaskParentLink['type']
 type TopologyStatusFilter = 'all' | TaskColumnStatus
@@ -35,6 +37,7 @@ interface GlobalTopologyViewProps {
   onLinkTasks: (parentTaskId: string, childTaskId: string, relationType: TopologyRelationType) => Promise<void> | void
   onLinkTasksBatch: (parentTaskId: string, childTaskIds: string[], relationType: TopologyRelationType) => Promise<void> | void
   onCreateParentTask: (childTaskIds: string[], title: string, relationType: TopologyRelationType) => Promise<void> | void
+  onCreateTask: (request: TopologyTaskCreateRequest) => void
   onSetRelationshipState: (taskIds: string[], state: TaskRelationshipState) => Promise<void> | void
   onUnlinkTask: (taskId: string) => Promise<void> | void
   onChangeStatus: (taskId: string, status: TaskColumnStatus) => Promise<void> | void
@@ -55,6 +58,12 @@ interface TaskNodeData extends Record<string, unknown> {
   onChangeStatus: GlobalTopologyViewProps['onChangeStatus']
   onToggleDone: GlobalTopologyViewProps['onToggleDone']
   onToggleCollapse: (taskId: string) => void
+}
+
+interface PendingCanvasTaskCreation {
+  anchorTaskId: string
+  direction: 'parent' | 'child'
+  position: TopologyPosition
 }
 
 type TaskFlowNode = Node<TaskNodeData, 'task'>
@@ -236,7 +245,7 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
 
   return (
     <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} relationship-${task.relationshipState || 'root'} ${selected ? 'selected' : ''}`}>
-      <Handle type="target" position={Position.Left} />
+      <Handle id="parent" type="target" position={Position.Left} title="拖到空白处创建父任务" />
       <header>
         <button
           className={`global-task-check ${task.status === 'done' ? 'checked' : ''}`}
@@ -291,7 +300,7 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
           <span>{task.tags[0] ? `#${task.tags[0]}` : '无标签'}</span>
         )}
       </footer>
-      <Handle type="source" position={Position.Right} />
+      <Handle id="child" type="source" position={Position.Right} title="拖到空白处创建子任务" />
     </article>
   )
 }
@@ -306,6 +315,7 @@ export function GlobalTopologyView({
   onLinkTasks,
   onLinkTasksBatch,
   onCreateParentTask,
+  onCreateTask,
   onSetRelationshipState,
   onUnlinkTask,
   onChangeStatus,
@@ -332,6 +342,7 @@ export function GlobalTopologyView({
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const [selectedEdgeId, setSelectedEdgeId] = useState('')
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
+  const [pendingCanvasTask, setPendingCanvasTask] = useState<PendingCanvasTaskCreation | null>(null)
   const [localPositions, setLocalPositions] = useState<Record<string, TopologyPosition>>(positions)
   const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>({})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
@@ -339,6 +350,7 @@ export function GlobalTopologyView({
   const selectedTaskIdsRef = useRef<Set<string>>(new Set())
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
+  const reactFlowRef = useRef<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
@@ -589,6 +601,39 @@ export function GlobalTopologyView({
     selectSingleTask(connection.target)
   }
 
+  function getFlowPosition(event: MouseEvent | TouchEvent | ReactMouseEvent<Element>) {
+    const touch = 'changedTouches' in event ? event.changedTouches[0] : undefined
+    const clientX = touch?.clientX ?? ('clientX' in event ? event.clientX : 0)
+    const clientY = touch?.clientY ?? ('clientY' in event ? event.clientY : 0)
+    const instance = reactFlowRef.current
+    if (!instance || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return null
+
+    const pointer = instance.screenToFlowPosition({ x: clientX, y: clientY })
+    // React Flow 的节点坐标是左上角；减去半个节点尺寸后，新卡片会以用户落点为中心出现。
+    return { x: pointer.x - nodeWidth / 2, y: pointer.y - nodeHeight / 2 }
+  }
+
+  const handleConnectEnd: OnConnectEnd = (event, connectionState) => {
+    // 成功落到另一个连接点时由 onConnect 处理。只有落在空白画布上，才进入新建任务流程。
+    if (connectionState.toNode || !connectionState.fromNode || !connectionState.fromHandle) return
+    const position = getFlowPosition(event)
+    if (!position) return
+
+    setPendingConnection(null)
+    setPendingCanvasTask({
+      anchorTaskId: connectionState.fromNode.id,
+      direction: connectionState.fromHandle.type === 'target' ? 'parent' : 'child',
+      position,
+    })
+  }
+
+  function confirmCanvasTaskCreation(relationType: TopologyRelationType) {
+    const request = pendingCanvasTask
+    setPendingCanvasTask(null)
+    if (!request) return
+    onCreateTask({ ...request, relationType })
+  }
+
   async function unlinkSelectedEdge() {
     const edge = edges.find((item) => item.id === selectedEdgeId)
     if (!edge?.data?.childTaskId) return
@@ -779,7 +824,7 @@ export function GlobalTopologyView({
       )}
 
       <div className={`global-topology-body ${selectedTask ? 'has-selection' : ''}`}>
-        <div className="global-topology-canvas" title="按住 Shift、Command 或 Control 拖动可圈选任务">
+        <div className="global-topology-canvas" title="双击空白处新建任务；按住 Shift、Command 或 Control 拖动可圈选任务">
           <ReactFlow<TaskFlowNode, TaskFlowEdge>
             nodes={nodes}
             edges={edges}
@@ -793,7 +838,15 @@ export function GlobalTopologyView({
               setSelectedEdgeId(edge.id)
               selectSingleTask(edge.target)
             }}
-            onPaneClick={() => {
+            onInit={(instance) => {
+              reactFlowRef.current = instance
+            }}
+            onPaneClick={(event) => {
+              if (event.detail >= 2) {
+                const position = getFlowPosition(event)
+                if (position) onCreateTask({ direction: 'independent', position })
+                return
+              }
               setSelectedTaskId('')
               replaceSelectedTaskIds([])
               setSelectedEdgeId('')
@@ -810,6 +863,7 @@ export function GlobalTopologyView({
             }}
             onNodeDragStop={handleNodeDragStop}
             onConnect={(connection) => setPendingConnection(connection)}
+            onConnectEnd={handleConnectEnd}
             minZoom={minTopologyZoom}
             maxZoom={maxTopologyZoom}
             deleteKeyCode={null}
@@ -825,6 +879,7 @@ export function GlobalTopologyView({
             panOnScrollSpeed={0.8}
             zoomOnScroll={false}
             zoomOnPinch
+            zoomOnDoubleClick={false}
           >
             <Background variant={BackgroundVariant.Lines} gap={24} size={1} color="#ece8df" />
             <Controls position="bottom-right" showInteractive={false} />
@@ -850,6 +905,19 @@ export function GlobalTopologyView({
               <button type="button" onClick={() => void confirmConnection('subtask_of')}>设为子任务</button>
               <button type="button" onClick={() => void confirmConnection('discovered_from')}>标记为派生</button>
               <button className="cancel" type="button" onClick={() => setPendingConnection(null)}>取消</button>
+            </div>
+          )}
+          {pendingCanvasTask && (
+            <div className="topology-relation-menu" role="dialog" aria-label="选择新任务关系">
+              <strong>{pendingCanvasTask.direction === 'parent' ? '创建父任务' : '创建子任务'}</strong>
+              <p>
+                {pendingCanvasTask.direction === 'parent'
+                  ? '左侧连接点：新任务将成为当前任务的父任务'
+                  : '右侧连接点：新任务将成为当前任务的子任务'}
+              </p>
+              <button type="button" onClick={() => confirmCanvasTaskCreation('subtask_of')}>计划内子任务</button>
+              <button type="button" onClick={() => confirmCanvasTaskCreation('discovered_from')}>执行中派生</button>
+              <button className="cancel" type="button" onClick={() => setPendingCanvasTask(null)}>取消</button>
             </div>
           )}
           {visibleTasks.length === 0 && <div className="global-topology-empty">当前筛选条件下没有任务</div>}

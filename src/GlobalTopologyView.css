@@ -872,6 +872,7 @@
   position: absolute;
   top: 50%;
   left: 50%;
+  pointer-events: none;
   color: #8b8881;
   font-size: calc(13px * var(--app-font-scale));
   transform: translate(-50%, -50%);
@@ -1054,7 +1055,7 @@
   line-height: 1.65;
 }
 
-.app-shell:has(.global-topology-view) .composer {
+.app-shell:has(.global-topology-view):not(.topology-composer-open) .composer {
   display: none;
 }
 

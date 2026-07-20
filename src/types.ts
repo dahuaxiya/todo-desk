@@ -122,6 +122,15 @@ export interface TopologyPosition {
   y: number
 }
 
+export type TopologyTaskCreateDirection = 'independent' | 'parent' | 'child'
+
+export interface TopologyTaskCreateRequest {
+  position: TopologyPosition
+  direction: TopologyTaskCreateDirection
+  anchorTaskId?: string
+  relationType?: TaskParentLink['type']
+}
+
 export type AppFontSize = 'small' | 'standard' | 'large'
 
 export interface AppSettings {

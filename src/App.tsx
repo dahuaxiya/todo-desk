@@ -15,7 +15,7 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
-import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
+import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
 const TaskTopologyCanvas = lazy(() => import('./TaskTopologyCanvas').then((module) => ({ default: module.TaskTopologyCanvas })))
@@ -1285,6 +1285,8 @@ function App() {
   const [draftParentLinkType, setDraftParentLinkType] = useState<TaskParentLinkType>('subtask_of')
   const [draftParentLinkReason, setDraftParentLinkReason] = useState('')
   const [draftAffectsParentCompletion, setDraftAffectsParentCompletion] = useState(true)
+  const [pendingTopologyTaskCreate, setPendingTopologyTaskCreate] = useState<TopologyTaskCreateRequest | null>(null)
+  const composerRef = useRef<HTMLElement | null>(null)
   const [composerCollapsed, setComposerCollapsed] = useState(false)
   const [aiEditInstruction, setAiEditInstruction] = useState('')
   const [aiEditing, setAiEditing] = useState(false)
@@ -1360,6 +1362,14 @@ function App() {
       setDockState({ docked: state.docked, edge: state.edge || '' })
     })
   }, [])
+
+  useEffect(() => {
+    if (!pendingTopologyTaskCreate || composerCollapsed) return
+    // 拓扑画布会占满当前视口，新建栏位于其后方。等表单完成展开后直接滚到它，
+    // 保证双击或拖线创建不会出现“已经触发但看不到输入框”的假失效。
+    const frame = window.requestAnimationFrame(() => composerRef.current?.scrollIntoView({ block: 'end' }))
+    return () => window.cancelAnimationFrame(frame)
+  }, [composerCollapsed, pendingTopologyTaskCreate])
 
   const searchedTasks = useMemo(() => {
     return data.tasks.filter((task) => taskMatchesSearch(task, search))
@@ -1469,6 +1479,7 @@ function App() {
     setDraftParentLinkType('subtask_of')
     setDraftParentLinkReason('')
     setDraftAffectsParentCompletion(true)
+    setPendingTopologyTaskCreate(null)
     setDraft({
       ...emptyTaskDraft,
       status: 'todo',
@@ -1819,11 +1830,48 @@ function App() {
     setDraftParentLinkType('subtask_of')
     setDraftParentLinkReason('')
     setDraftAffectsParentCompletion(true)
+    setPendingTopologyTaskCreate(null)
     setDraft({ ...emptyTaskDraft, status })
     setAiEditInstruction('')
     setAttachedImages([])
     setSelectedTaskId('')
     setComposerCollapsed(false)
+  }
+
+  function startCreateFromTopology(request: TopologyTaskCreateRequest) {
+    const anchorTask = request.anchorTaskId
+      ? dataRef.current.tasks.find((task) => task.id === request.anchorTaskId)
+      : undefined
+    if (request.direction !== 'independent' && !anchorTask) {
+      setSyncState('无法新建关联任务：原任务已不存在')
+      return
+    }
+
+    const relationType = request.relationType === 'discovered_from' ? 'discovered_from' : 'subtask_of'
+    setEditingTaskId('')
+    setDraftParentTaskId(request.direction === 'child' ? anchorTask?.id || '' : '')
+    setDraftParentLinkType(relationType)
+    setDraftParentLinkReason(request.direction === 'child' ? '从拓扑图右侧连接点创建' : '')
+    setDraftAffectsParentCompletion(true)
+    setPendingTopologyTaskCreate({ ...request, relationType })
+    setDraft({
+      ...emptyTaskDraft,
+      status: 'todo',
+      project: anchorTask?.project || '',
+    })
+    setAiEditInstruction('')
+    setAttachedImages([])
+    setSelectedTaskId(anchorTask?.id || '')
+    setComposerCollapsed(false)
+    setAiState(request.direction === 'parent'
+      ? `正在为「${anchorTask?.title}」创建父任务`
+      : request.direction === 'child'
+        ? `正在为「${anchorTask?.title}」创建${parentLinkTypeConfig[relationType].label}`
+        : '正在从拓扑画布创建独立任务')
+    setSubmitState('')
+    if (data.settings.addMode !== 'detail') {
+      void updateSettings({ addMode: 'detail' })
+    }
   }
 
   function changeDraftParentTask(parentTaskId: string) {
@@ -1842,6 +1890,7 @@ function App() {
     setDraftParentLinkType(relationType)
     setDraftParentLinkReason('')
     setDraftAffectsParentCompletion(true)
+    setPendingTopologyTaskCreate(null)
     setDraft({
       ...emptyTaskDraft,
       status: 'todo',
@@ -1860,6 +1909,7 @@ function App() {
   }
 
   function startEdit(task: Task) {
+    setPendingTopologyTaskCreate(null)
     setEditingTaskId(task.id)
     setDraftParentTaskId(task.parentTaskId || '')
     setDraftParentLinkType(task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of')
@@ -1881,6 +1931,7 @@ function App() {
 
     const currentData = dataRef.current
     const existing = editingTaskId ? currentData.tasks.find((task) => task.id === editingTaskId) : undefined
+    const topologyCreate = existing ? null : pendingTopologyTaskCreate
     if (editingTaskId && !existing) {
       const message = '保存失败：原任务已不存在，请重新选择任务'
       setAiState(message)
@@ -1889,6 +1940,13 @@ function App() {
     }
     if (draftParentTaskId && !currentData.tasks.some((task) => task.id === draftParentTaskId)) {
       const message = '保存失败：所选父任务已不存在，请重新选择'
+      setAiState(message)
+      setSyncState(message)
+      return
+    }
+    if (topologyCreate?.direction !== 'independent'
+      && !currentData.tasks.some((task) => task.id === topologyCreate?.anchorTaskId)) {
+      const message = '保存失败：拓扑中的关联任务已不存在，请重新创建'
       setAiState(message)
       setSyncState(message)
       return
@@ -1907,6 +1965,39 @@ function App() {
       let nextTasks = existing
         ? currentData.tasks.map((task) => (task.id === existing.id ? nextTask : task))
         : [nextTask, ...currentData.tasks]
+      if (topologyCreate?.direction === 'parent' && topologyCreate.anchorTaskId) {
+        const anchorTask = currentData.tasks.find((task) => task.id === topologyCreate.anchorTaskId)
+        const previousAnchorParentId = anchorTask?.parentTaskId || ''
+        const relationType = topologyCreate.relationType === 'discovered_from' ? 'discovered_from' : 'subtask_of'
+
+        // 左侧连接点表示“为当前任务补一个上级”。这里必须在同一次持久化中完成重挂载，
+        // 否则应用意外退出时可能只留下新父任务，却没有建立关系。
+        nextTasks = nextTasks.map((task) => {
+          if (task.id === topologyCreate.anchorTaskId) {
+            return {
+              ...task,
+              parentTaskId: nextTask.id,
+              parentLink: {
+                type: relationType,
+                reason: '从拓扑图左侧连接点创建父任务',
+                affectsParentCompletion: true,
+                createdBy: 'human' as const,
+                createdAt: nextTask.updatedAt,
+                confidence: 'explicit' as const,
+              },
+              relationshipState: 'linked' as const,
+              updatedAt: nextTask.updatedAt,
+            }
+          }
+          if (task.id === previousAnchorParentId && hasActiveParentCompletionReview(task)) {
+            return { ...task, parentCompletionReview: undefined, updatedAt: nextTask.updatedAt }
+          }
+          return task
+        })
+        if (anchorTask?.status === 'done') {
+          nextTasks = applyParentReviewForCompletedChild(nextTasks, anchorTask.id, nextTask.updatedAt)
+        }
+      }
       const previousParentTaskId = existing?.parentTaskId || ''
       if (previousParentTaskId && previousParentTaskId !== nextTask.parentTaskId) {
         // 换父任务或解除关系后，旧父任务的子任务完成提醒已经失真，必须一起清理。
@@ -1923,7 +2014,16 @@ function App() {
       if (nextTask.status === 'done' && nextTask.parentTaskId) {
         nextTasks = applyParentReviewForCompletedChild(nextTasks, nextTask.id, nextTask.updatedAt)
       }
-      const saved = await persist({ ...currentData, tasks: nextTasks })
+      const nextSettings = topologyCreate
+        ? {
+            ...currentData.settings,
+            topologyPositions: {
+              ...currentData.settings.topologyPositions,
+              [nextTask.id]: topologyCreate.position,
+            },
+          }
+        : currentData.settings
+      const saved = await persist({ ...currentData, tasks: nextTasks, settings: nextSettings })
       const savedTask = saved.tasks.find((task) => task.id === nextTask.id) ?? nextTask
       const message = existing ? '已保存修改' : '已添加任务'
       setSelectedTaskId(savedTask.id)
@@ -1932,6 +2032,7 @@ function App() {
       setDraftParentLinkType(savedTask.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of')
       setDraftParentLinkReason(savedTask.parentLink?.reason || '')
       setDraftAffectsParentCompletion(savedTask.parentLink?.affectsParentCompletion !== false)
+      setPendingTopologyTaskCreate(null)
       setDraft(buildDraftFromTask(savedTask))
       setAttachedImages(savedTask.imagePaths ?? [])
       setAiState(message)
@@ -2070,6 +2171,7 @@ function App() {
     setDraftParentLinkType('subtask_of')
     setDraftParentLinkReason('')
     setDraftAffectsParentCompletion(true)
+    setPendingTopologyTaskCreate(null)
     setDraft({
       ...emptyTaskDraft,
       title: titleLine.trim(),
@@ -3433,7 +3535,7 @@ function App() {
   }
 
   return (
-    <main className={`app-shell mode-${data.settings.appMode}`}>
+    <main className={`app-shell mode-${data.settings.appMode} ${mainView === 'topology' && pendingTopologyTaskCreate ? 'topology-composer-open' : ''}`}>
       <header className="titlebar">
         <div className="brand">
           <div className="brand-mark">TD</div>
@@ -3597,6 +3699,7 @@ function App() {
             onLinkTasks={linkTopologyTasks}
             onLinkTasksBatch={linkTopologyTasksBatch}
             onCreateParentTask={createTopologyParentTask}
+            onCreateTask={startCreateFromTopology}
             onSetRelationshipState={setTaskRelationshipState}
             onUnlinkTask={(taskId) => linkParentTask(taskId, '')}
             onChangeStatus={moveTask}
@@ -3659,6 +3762,7 @@ function App() {
       )}
 
       <section
+        ref={composerRef}
         className={`composer ${composerExpanded ? 'composer-expanded' : 'composer-compact'} ${composerCollapsed ? 'composer-collapsed' : ''}`}
       >
         <button
