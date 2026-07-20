@@ -1866,7 +1866,7 @@ function App() {
     setAiState(request.direction === 'parent'
       ? `正在为「${anchorTask?.title}」创建父任务`
       : request.direction === 'child'
-        ? `正在为「${anchorTask?.title}」创建${parentLinkTypeConfig[relationType].label}`
+        ? `正在为「${anchorTask?.title}」创建子任务`
         : '正在从拓扑画布创建独立任务')
     setSubmitState('')
     if (data.settings.addMode !== 'detail') {
@@ -1961,7 +1961,24 @@ function App() {
     setSubmitState('正在保存...')
     setAiState('正在保存任务...')
     try {
-      const nextTask = buildTaskFromDraft(existing)
+      let nextTask = buildTaskFromDraft(existing)
+      if (topologyCreate?.direction === 'child' && topologyCreate.anchorTaskId) {
+        // 拖线创建的父子关系以拓扑上下文为准，不能只依赖表单状态；React Flow 的
+        // pointer 结束与表单展开可能在同一批状态更新中发生，显式覆盖可避免关系丢失。
+        nextTask = {
+          ...nextTask,
+          parentTaskId: topologyCreate.anchorTaskId,
+          parentLink: {
+            type: 'subtask_of',
+            reason: '从拓扑图右侧连接点创建',
+            affectsParentCompletion: true,
+            createdBy: 'human',
+            createdAt: nextTask.updatedAt,
+            confidence: 'explicit',
+          },
+          relationshipState: 'linked',
+        }
+      }
       let nextTasks = existing
         ? currentData.tasks.map((task) => (task.id === existing.id ? nextTask : task))
         : [nextTask, ...currentData.tasks]
@@ -3845,47 +3862,51 @@ function App() {
                 <span>上级任务</span>
                 <strong title={draftParentTask.title}>{draftParentTask.title}</strong>
               </div>
-              <div className="draft-parent-relation" role="group" aria-label="任务关系类型">
-                {(Object.entries(parentLinkTypeConfig) as Array<[TaskParentLinkType, { label: string; shortLabel: string }]>).map(([value, config]) => (
+              {!pendingTopologyTaskCreate && (
+                <>
+                  <div className="draft-parent-relation" role="group" aria-label="任务关系类型">
+                    {(Object.entries(parentLinkTypeConfig) as Array<[TaskParentLinkType, { label: string; shortLabel: string }]>).map(([value, config]) => (
+                      <button
+                        className={draftParentLinkType === value ? 'active' : ''}
+                        type="button"
+                        key={value}
+                        title={config.label}
+                        onClick={() => setDraftParentLinkType(value)}
+                      >
+                        {config.shortLabel}
+                      </button>
+                    ))}
+                  </div>
                   <button
-                    className={draftParentLinkType === value ? 'active' : ''}
+                    className="draft-parent-cancel"
                     type="button"
-                    key={value}
-                    title={config.label}
-                    onClick={() => setDraftParentLinkType(value)}
+                    onClick={() => {
+                      setDraftParentTaskId('')
+                      setDraftParentLinkReason('')
+                    }}
                   >
-                    {config.shortLabel}
+                    取消
                   </button>
-                ))}
-              </div>
-              <button
-                className="draft-parent-cancel"
-                type="button"
-                onClick={() => {
-                  setDraftParentTaskId('')
-                  setDraftParentLinkReason('')
-                }}
-              >
-                取消
-              </button>
-              <div className="draft-parent-options">
-                {draftParentLinkType === 'discovered_from' && (
-                  <input
-                    value={draftParentLinkReason}
-                    onChange={(event) => setDraftParentLinkReason(event.target.value)}
-                    placeholder="简要说明这个问题是怎么引出的"
-                    maxLength={240}
-                  />
-                )}
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={draftAffectsParentCompletion}
-                    onChange={(event) => setDraftAffectsParentCompletion(event.target.checked)}
-                  />
-                  <span>影响上级任务完成</span>
-                </label>
-              </div>
+                  <div className="draft-parent-options">
+                    {draftParentLinkType === 'discovered_from' && (
+                      <input
+                        value={draftParentLinkReason}
+                        onChange={(event) => setDraftParentLinkReason(event.target.value)}
+                        placeholder="简要说明这个问题是怎么引出的"
+                        maxLength={240}
+                      />
+                    )}
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={draftAffectsParentCompletion}
+                        onChange={(event) => setDraftAffectsParentCompletion(event.target.checked)}
+                      />
+                      <span>影响上级任务完成</span>
+                    </label>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="draft-parent-picker">

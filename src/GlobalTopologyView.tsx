@@ -60,12 +60,6 @@ interface TaskNodeData extends Record<string, unknown> {
   onToggleCollapse: (taskId: string) => void
 }
 
-interface PendingCanvasTaskCreation {
-  anchorTaskId: string
-  direction: 'parent' | 'child'
-  position: TopologyPosition
-}
-
 type TaskFlowNode = Node<TaskNodeData, 'task'>
 type TaskFlowEdge = Edge<{ childTaskId: string; relationType: TopologyRelationType }>
 
@@ -341,8 +335,6 @@ export function GlobalTopologyView({
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const [selectedEdgeId, setSelectedEdgeId] = useState('')
-  const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
-  const [pendingCanvasTask, setPendingCanvasTask] = useState<PendingCanvasTaskCreation | null>(null)
   const [localPositions, setLocalPositions] = useState<Record<string, TopologyPosition>>(positions)
   const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>({})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
@@ -593,11 +585,10 @@ export function GlobalTopologyView({
     commitPositions(createAutomaticLayout(tasks))
   }
 
-  async function confirmConnection(relationType: TopologyRelationType) {
-    const connection = pendingConnection
-    setPendingConnection(null)
+  async function connectTasks(connection: Connection) {
     if (!connection?.source || !connection.target) return
-    await onLinkTasks(connection.source, connection.target, relationType)
+    // 人工画线只表达明确的父子层级；派生关系由 Agent 在执行过程中写入。
+    await onLinkTasks(connection.source, connection.target, 'subtask_of')
     selectSingleTask(connection.target)
   }
 
@@ -619,19 +610,12 @@ export function GlobalTopologyView({
     const position = getFlowPosition(event)
     if (!position) return
 
-    setPendingConnection(null)
-    setPendingCanvasTask({
+    onCreateTask({
       anchorTaskId: connectionState.fromNode.id,
       direction: connectionState.fromHandle.type === 'target' ? 'parent' : 'child',
       position,
+      relationType: 'subtask_of',
     })
-  }
-
-  function confirmCanvasTaskCreation(relationType: TopologyRelationType) {
-    const request = pendingCanvasTask
-    setPendingCanvasTask(null)
-    if (!request) return
-    onCreateTask({ ...request, relationType })
   }
 
   async function unlinkSelectedEdge() {
@@ -862,7 +846,7 @@ export function GlobalTopologyView({
               }
             }}
             onNodeDragStop={handleNodeDragStop}
-            onConnect={(connection) => setPendingConnection(connection)}
+            onConnect={(connection) => void connectTasks(connection)}
             onConnectEnd={handleConnectEnd}
             minZoom={minTopologyZoom}
             maxZoom={maxTopologyZoom}
@@ -898,28 +882,6 @@ export function GlobalTopologyView({
             <span><i className="derived" />派生</span>
             <span><i className="follow-up" />不阻塞父任务</span>
           </div>
-          {pendingConnection && (
-            <div className="topology-relation-menu" role="dialog" aria-label="选择任务关系">
-              <strong>建立关系</strong>
-              <p>连线方向：父任务 → 子任务</p>
-              <button type="button" onClick={() => void confirmConnection('subtask_of')}>设为子任务</button>
-              <button type="button" onClick={() => void confirmConnection('discovered_from')}>标记为派生</button>
-              <button className="cancel" type="button" onClick={() => setPendingConnection(null)}>取消</button>
-            </div>
-          )}
-          {pendingCanvasTask && (
-            <div className="topology-relation-menu" role="dialog" aria-label="选择新任务关系">
-              <strong>{pendingCanvasTask.direction === 'parent' ? '创建父任务' : '创建子任务'}</strong>
-              <p>
-                {pendingCanvasTask.direction === 'parent'
-                  ? '左侧连接点：新任务将成为当前任务的父任务'
-                  : '右侧连接点：新任务将成为当前任务的子任务'}
-              </p>
-              <button type="button" onClick={() => confirmCanvasTaskCreation('subtask_of')}>计划内子任务</button>
-              <button type="button" onClick={() => confirmCanvasTaskCreation('discovered_from')}>执行中派生</button>
-              <button className="cancel" type="button" onClick={() => setPendingCanvasTask(null)}>取消</button>
-            </div>
-          )}
           {visibleTasks.length === 0 && <div className="global-topology-empty">当前筛选条件下没有任务</div>}
         </div>
 
