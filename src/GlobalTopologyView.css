@@ -769,9 +769,18 @@
   bottom: 14px;
   width: 116px;
   height: 76px;
+  overflow: hidden;
   border: 1px solid #dedbd4;
   border-radius: 6px;
   background: #f7f5f0;
+}
+
+.global-topology-canvas .react-flow__minimap-svg {
+  /* React Flow 会给 SVG 写入默认 200x150 属性。外层缩小时必须同步覆盖实际尺寸，
+     否则节点图形会溢出小地图背景，并在画布右侧和底部形成残缺色块。 */
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .global-topology-legend {
