@@ -4230,7 +4230,8 @@ function App() {
           tasks={data.tasks}
           currentTaskId={topologyTaskId}
           onClose={closeTaskTopology}
-          onOpenTask={openTaskInGlobalTopology}
+          onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
+          onOpenTaskInTopology={openTaskInGlobalTopology}
           layout="normal"
         />
       )}
@@ -5126,6 +5127,7 @@ interface TaskTopologyDialogProps {
   currentTaskId: string
   onClose: () => void
   onOpenTask: (taskId: string) => void
+  onOpenTaskInTopology?: (taskId: string) => void
   layout?: 'compact' | 'normal'
 }
 
@@ -5268,7 +5270,7 @@ function TaskTopologyNode({
   )
 }
 
-function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask, layout = 'compact' }: TaskTopologyDialogProps) {
+function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask, onOpenTaskInTopology, layout = 'compact' }: TaskTopologyDialogProps) {
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const childTasksByParentId = useMemo(() => {
     const grouped = new Map<string, Task[]>()
@@ -5339,6 +5341,7 @@ function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask, layout 
                 rootTaskId={rootTask.id}
                 currentTaskId={currentTaskId}
                 onOpenTask={onOpenTask}
+                onOpenTaskInTopology={onOpenTaskInTopology}
               />
             </Suspense>
           ) : (

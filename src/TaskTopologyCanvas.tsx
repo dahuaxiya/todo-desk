@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import dagre from '@dagrejs/dagre'
-import { ArrowUpRight, X } from 'lucide-react'
+import { ArrowUpRight, ListTodo, X } from 'lucide-react'
 import {
   Background,
   BackgroundVariant,
@@ -23,6 +23,7 @@ interface TaskTopologyCanvasProps {
   rootTaskId: string
   currentTaskId: string
   onOpenTask: (taskId: string) => void
+  onOpenTaskInTopology?: (taskId: string) => void
 }
 
 interface TaskTopologyNodeData extends Record<string, unknown> {
@@ -194,7 +195,7 @@ function TaskTopologyFlowNode({ data, selected }: NodeProps<TaskTopologyFlowNode
 
 const nodeTypes = { 'task-topology': TaskTopologyFlowNode }
 
-export function TaskTopologyCanvas({ tasks, rootTaskId, currentTaskId, onOpenTask }: TaskTopologyCanvasProps) {
+export function TaskTopologyCanvas({ tasks, rootTaskId, currentTaskId, onOpenTask, onOpenTaskInTopology }: TaskTopologyCanvasProps) {
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const topologyTasks = useMemo(() => collectTopologyTasks(tasks, rootTaskId), [rootTaskId, tasks])
   const { nodes: baseNodes, edges } = useMemo(
@@ -276,9 +277,14 @@ export function TaskTopologyCanvas({ tasks, rootTaskId, currentTaskId, onOpenTas
             </section>
           </div>
           <footer>
-            <button type="button" onClick={() => onOpenTask(selectedTask.id)}>
-              在拓扑中打开 <ArrowUpRight aria-hidden="true" size={14} />
+            <button className="secondary" type="button" onClick={() => onOpenTask(selectedTask.id)}>
+              在正常模式打开 <ListTodo aria-hidden="true" size={14} />
             </button>
+            {onOpenTaskInTopology && (
+              <button type="button" onClick={() => onOpenTaskInTopology(selectedTask.id)}>
+                在拓扑中打开 <ArrowUpRight aria-hidden="true" size={14} />
+              </button>
+            )}
           </footer>
         </aside>
       )}
