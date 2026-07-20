@@ -15,7 +15,7 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
-import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
+import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
 const TaskTopologyCanvas = lazy(() => import('./TaskTopologyCanvas').then((module) => ({ default: module.TaskTopologyCanvas })))
@@ -1313,6 +1313,9 @@ function App() {
   const [multiSelectedTaskIds, setMultiSelectedTaskIds] = useState<string[]>([])
   const [openSortColumn, setOpenSortColumn] = useState<TaskColumnStatus | ''>('')
   const [mainView, setMainView] = useState<MainView>('board')
+  const [globalTopologyFocusRequest, setGlobalTopologyFocusRequest] = useState<TopologyFocusRequest | null>(null)
+  const [globalTopologyContextTaskId, setGlobalTopologyContextTaskId] = useState('')
+  const globalTopologyFocusRequestIdRef = useRef(0)
   const [calendarMonth, setCalendarMonth] = useState(() => new Date())
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => toCalendarDateKey(new Date()))
 
@@ -1383,6 +1386,15 @@ function App() {
     () => new Map(data.tasks.map((task) => [task.id, task])),
     [data.tasks],
   )
+  const globalTopologyIncludedTaskIds = useMemo(() => {
+    const includedIds = new Set(filteredTasks.map((task) => task.id))
+    // A direct navigation request must not be blocked by the board search/origin filter.
+    // GlobalTopologyView still expands the complete relationship network around this seed.
+    if (globalTopologyContextTaskId && taskLookup.has(globalTopologyContextTaskId)) {
+      includedIds.add(globalTopologyContextTaskId)
+    }
+    return [...includedIds]
+  }, [filteredTasks, globalTopologyContextTaskId, taskLookup])
   const draftParentTask = draftParentTaskId ? taskLookup.get(draftParentTaskId) : undefined
   useEffect(() => {
     if (draftParentTaskId && !taskLookup.has(draftParentTaskId)) {
@@ -1450,6 +1462,7 @@ function App() {
 
   function updateOriginFilter(nextFilter: TaskOriginFilter) {
     setOriginFilter(nextFilter)
+    setGlobalTopologyContextTaskId('')
     setSelectedTaskId('')
     setMultiSelectedTaskIds([])
     closeDockDetailWindow()
@@ -1561,6 +1574,17 @@ function App() {
       await window.todoDesk?.setDockTopologyOpen?.(false)
     }
     await openRelatedTask(taskId)
+  }
+
+  function openTaskInGlobalTopology(taskId: string) {
+    globalTopologyFocusRequestIdRef.current += 1
+    setGlobalTopologyFocusRequest({
+      taskId,
+      requestId: globalTopologyFocusRequestIdRef.current,
+    })
+    setGlobalTopologyContextTaskId(taskId)
+    setTopologyTaskId('')
+    setMainView('topology')
   }
 
   useEffect(() => {
@@ -3496,7 +3520,10 @@ function App() {
           <input
             id="search"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value)
+              setGlobalTopologyContextTaskId('')
+            }}
             placeholder="模糊搜索标题、详情、标签"
           />
         </label>
@@ -3591,7 +3618,11 @@ function App() {
         <Suspense fallback={<div className="global-topology-loading">正在加载任务拓扑...</div>}>
           <GlobalTopologyView
             tasks={data.tasks}
-            includedTaskIds={filteredTasks.map((task) => task.id)}
+            includedTaskIds={globalTopologyIncludedTaskIds}
+            focusRequest={globalTopologyFocusRequest}
+            onFocusRequestHandled={(requestId) => {
+              setGlobalTopologyFocusRequest((current) => current?.requestId === requestId ? null : current)
+            }}
             positions={data.settings.topologyPositions}
             onSavePositions={saveTopologyPositions}
             onLinkTasks={linkTopologyTasks}
@@ -4199,7 +4230,7 @@ function App() {
           tasks={data.tasks}
           currentTaskId={topologyTaskId}
           onClose={closeTaskTopology}
-          onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
+          onOpenTask={openTaskInGlobalTopology}
           layout="normal"
         />
       )}

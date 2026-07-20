@@ -17,11 +17,12 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
 import { collectRelationshipNetworkIds, normalizeTopologyProject } from './topologyNetwork'
-import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyPosition } from './types'
+import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyFocusRequest, TopologyPosition } from './types'
 
 type TopologyRelationType = TaskParentLink['type']
 type TopologyStatusFilter = 'all' | TaskColumnStatus
@@ -30,6 +31,8 @@ type TopologyRelationshipFilter = 'managed' | 'all' | 'unresolved' | 'independen
 interface GlobalTopologyViewProps {
   tasks: Task[]
   includedTaskIds: string[]
+  focusRequest: TopologyFocusRequest | null
+  onFocusRequestHandled: (requestId: number) => void
   positions: Record<string, TopologyPosition>
   onSavePositions: (positions: Record<string, TopologyPosition>) => Promise<void> | void
   onLinkTasks: (parentTaskId: string, childTaskId: string, relationType: TopologyRelationType) => Promise<void> | void
@@ -301,6 +304,8 @@ const nodeTypes = { task: TaskNode }
 export function GlobalTopologyView({
   tasks,
   includedTaskIds,
+  focusRequest,
+  onFocusRequestHandled,
   positions,
   onSavePositions,
   onLinkTasks,
@@ -339,6 +344,9 @@ export function GlobalTopologyView({
   const selectedTaskIdsRef = useRef<Set<string>>(new Set())
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
+  const preparedFocusRequestIdRef = useRef(0)
+  const handledFocusRequestIdRef = useRef(0)
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
@@ -455,6 +463,60 @@ export function GlobalTopologyView({
     }
     if (selectedTaskId && (!taskLookup.has(selectedTaskId) || !visibleTaskIds.has(selectedTaskId))) setSelectedTaskId('')
   }, [selectedTaskId, taskLookup, visibleTaskIds])
+
+  useEffect(() => {
+    if (!focusRequest || preparedFocusRequestIdRef.current >= focusRequest.requestId) return
+    preparedFocusRequestIdRef.current = focusRequest.requestId
+
+    const targetTask = taskLookup.get(focusRequest.taskId)
+    if (!targetTask) {
+      handledFocusRequestIdRef.current = focusRequest.requestId
+      onFocusRequestHandled(focusRequest.requestId)
+      return
+    }
+
+    // Explicit cross-view navigation is the one action allowed to override filters and collapsed
+    // ancestors. Without this preparation a valid target could remain hidden even after switching
+    // to topology. Normal view switching never runs this path, so the user's viewport stays intact.
+    setStatusFilter('all')
+    setProjectFilter('all')
+    setRelationshipFilter('all')
+    const targetPathIds = new Set(buildTaskPath(targetTask, taskLookup).map((task) => task.id))
+    setCollapsedTaskIds((current) => {
+      const next = new Set([...current].filter((taskId) => !targetPathIds.has(taskId)))
+      return setsEqual(current, next) ? current : next
+    })
+  }, [focusRequest, onFocusRequestHandled, taskLookup])
+
+  useEffect(() => {
+    if (!focusRequest
+      || handledFocusRequestIdRef.current >= focusRequest.requestId
+      || preparedFocusRequestIdRef.current < focusRequest.requestId
+      || statusFilter !== 'all'
+      || projectFilter !== 'all'
+      || relationshipFilter !== 'all'
+      || !visibleTaskIds.has(focusRequest.taskId)) return undefined
+
+    const targetNode = nodes.find((node) => node.id === focusRequest.taskId)
+    if (!targetNode || !flowInstance) return undefined
+
+    selectSingleTask(focusRequest.taskId)
+    const frame = requestAnimationFrame(() => {
+      const liveNode = flowInstance.getNode(focusRequest.taskId)
+      if (!liveNode) return
+
+      const position = liveNode.position
+      const currentZoom = flowInstance.getViewport().zoom
+      void flowInstance.setCenter(
+        position.x + nodeWidth / 2,
+        position.y + nodeHeight / 2,
+        { zoom: Math.max(currentZoom, 0.9), duration: 0 },
+      )
+      handledFocusRequestIdRef.current = focusRequest.requestId
+      onFocusRequestHandled(focusRequest.requestId)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [flowInstance, focusRequest, nodes, onFocusRequestHandled, projectFilter, relationshipFilter, statusFilter, visibleTaskIds])
 
   const edges = useMemo<TaskFlowEdge[]>(() => visibleTasks.flatMap((task) => {
     if (!task.parentTaskId || !visibleTaskIds.has(task.parentTaskId)) return []
@@ -784,6 +846,7 @@ export function GlobalTopologyView({
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            onInit={setFlowInstance}
             onNodesChange={onNodesChange}
             onNodeClick={(event, node) => {
               if (!event.shiftKey && !event.metaKey && !event.ctrlKey) selectSingleTask(node.id)

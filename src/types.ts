@@ -182,6 +182,11 @@ export interface AppData {
   syncLog: SyncLogItem[]
 }
 
+export interface TopologyFocusRequest {
+  taskId: string
+  requestId: number
+}
+
 export interface TodoDeskBridge {
   loadData: () => Promise<AppData>
   saveData: (data: AppData) => Promise<AppData>

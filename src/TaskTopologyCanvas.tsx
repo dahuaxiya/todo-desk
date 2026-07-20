@@ -277,7 +277,7 @@ export function TaskTopologyCanvas({ tasks, rootTaskId, currentTaskId, onOpenTas
           </div>
           <footer>
             <button type="button" onClick={() => onOpenTask(selectedTask.id)}>
-              打开任务 <ArrowUpRight aria-hidden="true" size={14} />
+              在拓扑中打开 <ArrowUpRight aria-hidden="true" size={14} />
             </button>
           </footer>
         </aside>
