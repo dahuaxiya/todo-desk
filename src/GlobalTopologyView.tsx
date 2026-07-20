@@ -17,6 +17,7 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type Viewport,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
@@ -26,6 +27,25 @@ import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, Tas
 type TopologyRelationType = TaskParentLink['type']
 type TopologyStatusFilter = 'all' | TaskColumnStatus
 type TopologyRelationshipFilter = 'managed' | 'all' | 'unresolved' | 'independent_root'
+
+export interface GlobalTopologyViewMemory {
+  statusFilter: TopologyStatusFilter
+  projectFilter: string
+  relationshipFilter: TopologyRelationshipFilter
+  inboxOpen: boolean
+  selectedOrphanIds: string[]
+  relationType: TopologyRelationType
+  parentSearch: string
+  selectedParentId: string
+  parentPickerOpen: boolean
+  newParentTitle: string
+  collapsedTaskIds: string[]
+  selectedTaskId: string
+  selectedTaskIds: string[]
+  selectedEdgeId: string
+  filteredPositionOverrides: Record<string, TopologyPosition>
+  viewport: Viewport
+}
 
 interface GlobalTopologyViewProps {
   tasks: Task[]
@@ -45,6 +65,8 @@ interface GlobalTopologyViewProps {
   onOpenCalendar: (task: Task) => Promise<void> | void
   onEditTask: (task: Task) => void
   onDeleteTask: (taskId: string) => Promise<void> | void
+  initialMemory?: GlobalTopologyViewMemory
+  onMemoryChange: (memory: GlobalTopologyViewMemory) => void
 }
 
 interface TaskNodeData extends Record<string, unknown> {
@@ -316,29 +338,61 @@ export function GlobalTopologyView({
   onOpenCalendar,
   onEditTask,
   onDeleteTask,
+  initialMemory,
+  onMemoryChange,
 }: GlobalTopologyViewProps) {
-  const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>('all')
-  const [projectFilter, setProjectFilter] = useState('all')
-  const [relationshipFilter, setRelationshipFilter] = useState<TopologyRelationshipFilter>('managed')
-  const [inboxOpen, setInboxOpen] = useState(false)
-  const [selectedOrphanIds, setSelectedOrphanIds] = useState<Set<string>>(() => new Set())
-  const [relationType, setRelationType] = useState<TopologyRelationType>('subtask_of')
-  const [parentSearch, setParentSearch] = useState('')
-  const [selectedParentId, setSelectedParentId] = useState('')
-  const [parentPickerOpen, setParentPickerOpen] = useState(false)
-  const [newParentTitle, setNewParentTitle] = useState('')
-  const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(() => new Set())
-  const [selectedTaskId, setSelectedTaskId] = useState('')
-  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
-  const [selectedEdgeId, setSelectedEdgeId] = useState('')
+  const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>(initialMemory?.statusFilter ?? 'all')
+  const [projectFilter, setProjectFilter] = useState(initialMemory?.projectFilter ?? 'all')
+  const [relationshipFilter, setRelationshipFilter] = useState<TopologyRelationshipFilter>(initialMemory?.relationshipFilter ?? 'managed')
+  const [inboxOpen, setInboxOpen] = useState(initialMemory?.inboxOpen ?? false)
+  const [selectedOrphanIds, setSelectedOrphanIds] = useState<Set<string>>(() => new Set(initialMemory?.selectedOrphanIds))
+  const [relationType, setRelationType] = useState<TopologyRelationType>(initialMemory?.relationType ?? 'subtask_of')
+  const [parentSearch, setParentSearch] = useState(initialMemory?.parentSearch ?? '')
+  const [selectedParentId, setSelectedParentId] = useState(initialMemory?.selectedParentId ?? '')
+  const [parentPickerOpen, setParentPickerOpen] = useState(initialMemory?.parentPickerOpen ?? false)
+  const [newParentTitle, setNewParentTitle] = useState(initialMemory?.newParentTitle ?? '')
+  const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(() => new Set(initialMemory?.collapsedTaskIds))
+  const [selectedTaskId, setSelectedTaskId] = useState(initialMemory?.selectedTaskId ?? '')
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set(initialMemory?.selectedTaskIds))
+  const [selectedEdgeId, setSelectedEdgeId] = useState(initialMemory?.selectedEdgeId ?? '')
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
   const [localPositions, setLocalPositions] = useState<Record<string, TopologyPosition>>(positions)
-  const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>({})
+  const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>(initialMemory?.filteredPositionOverrides ?? {})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
   const [historyVersion, setHistoryVersion] = useState(0)
-  const selectedTaskIdsRef = useRef<Set<string>>(new Set())
+  const selectedTaskIdsRef = useRef<Set<string>>(new Set(initialMemory?.selectedTaskIds))
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
+  const viewportRef = useRef<Viewport>(initialMemory?.viewport ?? { x: 0, y: 0, zoom: 1 })
+  const memoryRef = useRef<GlobalTopologyViewMemory | undefined>(undefined)
+  const onMemoryChangeRef = useRef(onMemoryChange)
+  const filterResetReadyRef = useRef(false)
+
+  onMemoryChangeRef.current = onMemoryChange
+  memoryRef.current = {
+    statusFilter,
+    projectFilter,
+    relationshipFilter,
+    inboxOpen,
+    selectedOrphanIds: [...selectedOrphanIds],
+    relationType,
+    parentSearch,
+    selectedParentId,
+    parentPickerOpen,
+    newParentTitle,
+    collapsedTaskIds: [...collapsedTaskIds],
+    selectedTaskId,
+    selectedTaskIds: [...selectedTaskIds],
+    selectedEdgeId,
+    filteredPositionOverrides,
+    viewport: viewportRef.current,
+  }
+
+  useEffect(() => () => {
+    // 主视图使用条件渲染，切到看板或日历会卸载整个拓扑组件。卸载前把纯 UI 状态
+    // 提升到 App 层，下一次挂载时恢复；正在拖线属于半完成操作，故意不进入快照。
+    if (memoryRef.current) onMemoryChangeRef.current(memoryRef.current)
+  }, [])
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
@@ -409,8 +463,13 @@ export function GlobalTopologyView({
   useEffect(() => {
     // 筛选变化需要重新采用对应任务集合的紧凑坐标，但不能自动缩放或平移画布。
     // 视口只允许由用户拖动、缩放或点击 React Flow 的恢复视口按钮来改变。
+    // 首次挂载可能正在恢复筛选视图，不能把快照中的临时节点位置立即清空。
+    if (!filterResetReadyRef.current) {
+      filterResetReadyRef.current = true
+      return
+    }
     setFilteredPositionOverrides({})
-  }, [filteredAutomaticPositions, relationshipFilter, statusFilter])
+  }, [filteredAutomaticPositions, projectFilter, relationshipFilter, statusFilter])
 
   useEffect(() => {
     const unresolvedIds = new Set(unresolvedAgentTasks.map((task) => task.id))
@@ -810,6 +869,13 @@ export function GlobalTopologyView({
             }}
             onNodeDragStop={handleNodeDragStop}
             onConnect={(connection) => setPendingConnection(connection)}
+            defaultViewport={initialMemory?.viewport}
+            onMoveEnd={(_, viewport) => {
+              viewportRef.current = viewport
+              // 平移或缩放本身不会触发 React render。同步写入快照引用，确保用户操作后
+              // 立刻切换视图时也能保存最后一帧，而不是上一次 render 时的旧视口。
+              if (memoryRef.current) memoryRef.current.viewport = viewport
+            }}
             minZoom={minTopologyZoom}
             maxZoom={maxTopologyZoom}
             deleteKeyCode={null}
