@@ -15,9 +15,10 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
-import type { AddMode, AppData, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
+import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
+const TaskTopologyCanvas = lazy(() => import('./TaskTopologyCanvas').then((module) => ({ default: module.TaskTopologyCanvas })))
 
 const storageKey = 'todo-desk-data'
 const compactQuickTextareaBaseHeight = 124
@@ -34,6 +35,41 @@ const priorityConfig: Record<TaskPriority, { label: string }> = {
   high: { label: '高' },
   medium: { label: '中' },
   low: { label: '低' },
+}
+
+const fontSizeOptions: Array<{ value: AppFontSize; label: string; scale: number }> = [
+  { value: 'small', label: '小', scale: 0.9 },
+  { value: 'standard', label: '标准', scale: 1 },
+  { value: 'large', label: '大', scale: 1.15 },
+]
+
+const fontSizeScale = Object.fromEntries(
+  fontSizeOptions.map((option) => [option.value, option.scale]),
+) as Record<AppFontSize, number>
+
+function normalizeFontSize(value: unknown): AppFontSize {
+  return fontSizeOptions.some((option) => option.value === value) ? value as AppFontSize : 'standard'
+}
+
+function FontSizeSetting({ value, onChange }: { value: AppFontSize; onChange: (value: AppFontSize) => void }) {
+  return (
+    <div className="font-size-setting">
+      <span>界面字号</span>
+      <div className="font-size-options" role="group" aria-label="界面字号">
+        {fontSizeOptions.map((option) => (
+          <button
+            className={value === option.value ? 'active' : ''}
+            key={option.value}
+            type="button"
+            aria-pressed={value === option.value}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 const taskStatuses = ['doing', 'todo', 'done'] as const satisfies readonly TaskColumnStatus[]
@@ -625,6 +661,7 @@ function createDefaultData(): AppData {
       aiBaseUrl: 'https://api.openai.com/v1',
       aiModel: 'gpt-4o-mini',
       aiApiKey: '',
+      fontSize: 'standard',
       appMode: 'normal',
       miniColumn: 'doing',
       addMode: 'quick',
@@ -685,6 +722,7 @@ function mergeWithDefaults(value: AppData): AppData {
         ...value.settings?.columnSorts,
       },
       globalShortcuts: normalizeGlobalShortcuts(value.settings?.globalShortcuts),
+      fontSize: normalizeFontSize(value.settings?.fontSize),
       edgeDocked: false,
       topologyPositions: value.settings?.topologyPositions || {},
     },
@@ -1281,6 +1319,12 @@ function App() {
   useEffect(() => {
     dataRef.current = data
   }, [data])
+
+  useEffect(() => {
+    // 所有界面共用根级字号比例，包含挂到 body 的弹窗和懒加载拓扑视图。
+    // 只改组件内字号会让不同模式出现大小不一致，因此统一从 documentElement 继承。
+    document.documentElement.style.setProperty('--app-font-scale', String(fontSizeScale[data.settings.fontSize]))
+  }, [data.settings.fontSize])
 
   useEffect(() => {
     if (!settingsOpen && recordingShortcutAction) {
@@ -2546,11 +2590,6 @@ function App() {
     startEdit(task)
   }
 
-  function addTaskFromGlobalTopology() {
-    setMainView('board')
-    startCreate('todo')
-  }
-
   useEffect(() => {
     function handleKeyDown(event: globalThis.KeyboardEvent) {
       const isCommand = event.metaKey || event.ctrlKey
@@ -3346,6 +3385,7 @@ function App() {
                   <AppIcon name="close" />
                 </button>
               </header>
+              <FontSizeSetting value={data.settings.fontSize} onChange={(fontSize) => void updateSettings({ fontSize })} />
               <button type="button" onClick={() => updateSettings({ appMode: 'normal' })}>
                 返回正常模式
               </button>
@@ -3552,7 +3592,6 @@ function App() {
           <GlobalTopologyView
             tasks={data.tasks}
             includedTaskIds={filteredTasks.map((task) => task.id)}
-            expandRelatedTasks={Boolean(search.trim())}
             positions={data.settings.topologyPositions}
             onSavePositions={saveTopologyPositions}
             onLinkTasks={linkTopologyTasks}
@@ -3568,7 +3607,6 @@ function App() {
             onOpenCalendar={openCalendar}
             onEditTask={editTaskFromGlobalTopology}
             onDeleteTask={deleteTask}
-            onAddTask={addTaskFromGlobalTopology}
           />
         </Suspense>
       ) : (
@@ -3904,6 +3942,8 @@ function App() {
               </button>
             </header>
 
+            <FontSizeSetting value={data.settings.fontSize} onChange={(fontSize) => void updateSettings({ fontSize })} />
+
             <label className="settings-field">
               <span>飞书文档 URL / Token</span>
               <input
@@ -4160,6 +4200,7 @@ function App() {
           currentTaskId={topologyTaskId}
           onClose={closeTaskTopology}
           onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
+          layout="normal"
         />
       )}
     </main>
@@ -5054,6 +5095,7 @@ interface TaskTopologyDialogProps {
   currentTaskId: string
   onClose: () => void
   onOpenTask: (taskId: string) => void
+  layout?: 'compact' | 'normal'
 }
 
 function collectTaskTopologyStats(rootTaskId: string, childTasksByParentId: Map<string, Task[]>) {
@@ -5195,7 +5237,7 @@ function TaskTopologyNode({
   )
 }
 
-function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskTopologyDialogProps) {
+function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask, layout = 'compact' }: TaskTopologyDialogProps) {
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const childTasksByParentId = useMemo(() => {
     const grouped = new Map<string, Task[]>()
@@ -5230,7 +5272,7 @@ function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskT
   return (
     <div className="task-topology-backdrop" role="presentation" onMouseDown={onClose}>
       <section
-        className="task-topology-dialog"
+        className={`task-topology-dialog ${layout === 'normal' ? 'normal-layout' : 'compact-layout'}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="task-topology-title"
@@ -5247,25 +5289,40 @@ function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskT
             <AppIcon name="close" />
           </button>
         </header>
-        <div className="task-topology-legend" aria-label="拓扑图例">
-          <span className="task-topology-origin human-task"><i />人工任务</span>
-          <span className="task-topology-origin agent-task"><i />AI 任务</span>
-          <span><i className="status-doing" />正在做</span>
-          <span><i className="status-todo" />Todo</span>
-          <span><i className="status-done" />已完成</span>
-          <span className="task-link-type task-link-type-subtask_of">子任务</span>
-          <span className="task-link-type task-link-type-discovered_from">派生</span>
+        <div className="task-topology-toolbar">
+          <div className="task-topology-legend" aria-label="拓扑图例">
+            <span className="task-topology-origin human-task"><i />人工任务</span>
+            <span className="task-topology-origin agent-task"><i />AI 任务</span>
+            <span><i className="status-doing" />正在做</span>
+            <span><i className="status-todo" />Todo</span>
+            <span><i className="status-done" />已完成</span>
+            <span className="task-link-type task-link-type-subtask_of">子任务</span>
+            <span className="task-link-type task-link-type-discovered_from">派生</span>
+          </div>
         </div>
         <div className="task-topology-stage">
-          <div className="task-topology-tree" role="tree" aria-label={`${rootTask.title} 的任务拓扑`}>
-            <TaskTopologyNode
-              task={rootTask}
-              currentTaskId={currentTaskId}
-              childTasksByParentId={childTasksByParentId}
-              onOpenTask={onOpenTask}
-              visited={new Set()}
-            />
-          </div>
+          {layout === 'normal' ? (
+            <Suspense fallback={<div className="task-topology-canvas-loading">正在整理任务关系...</div>}>
+              <TaskTopologyCanvas
+                tasks={tasks}
+                rootTaskId={rootTask.id}
+                currentTaskId={currentTaskId}
+                onOpenTask={onOpenTask}
+              />
+            </Suspense>
+          ) : (
+            <div className="task-topology-viewport">
+              <div className="task-topology-tree" role="tree" aria-label={`${rootTask.title} 的任务拓扑`}>
+                <TaskTopologyNode
+                  task={rootTask}
+                  currentTaskId={currentTaskId}
+                  childTasksByParentId={childTasksByParentId}
+                  onOpenTask={onOpenTask}
+                  visited={new Set()}
+                />
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>

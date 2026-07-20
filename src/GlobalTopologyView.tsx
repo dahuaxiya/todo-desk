@@ -10,6 +10,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  SelectionMode,
   applyNodeChanges,
   type Connection,
   type Edge,
@@ -19,17 +20,16 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
+import { collectRelationshipNetworkIds, normalizeTopologyProject } from './topologyNetwork'
 import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyPosition } from './types'
 
 type TopologyRelationType = TaskParentLink['type']
 type TopologyStatusFilter = 'all' | TaskColumnStatus
-type TopologyMode = 'select' | 'connect'
 type TopologyRelationshipFilter = 'managed' | 'all' | 'unresolved' | 'independent_root'
 
 interface GlobalTopologyViewProps {
   tasks: Task[]
   includedTaskIds: string[]
-  expandRelatedTasks: boolean
   positions: Record<string, TopologyPosition>
   onSavePositions: (positions: Record<string, TopologyPosition>) => Promise<void> | void
   onLinkTasks: (parentTaskId: string, childTaskId: string, relationType: TopologyRelationType) => Promise<void> | void
@@ -45,7 +45,6 @@ interface GlobalTopologyViewProps {
   onOpenCalendar: (task: Task) => Promise<void> | void
   onEditTask: (task: Task) => void
   onDeleteTask: (taskId: string) => Promise<void> | void
-  onAddTask: () => void
 }
 
 interface TaskNodeData extends Record<string, unknown> {
@@ -53,7 +52,6 @@ interface TaskNodeData extends Record<string, unknown> {
   childCount: number
   collapsed: boolean
   hiddenDescendantCount: number
-  connectMode: boolean
   onChangeStatus: GlobalTopologyViewProps['onChangeStatus']
   onToggleDone: GlobalTopologyViewProps['onToggleDone']
   onToggleCollapse: (taskId: string) => void
@@ -66,6 +64,7 @@ const nodeWidth = 236
 const nodeHeight = 112
 const minTopologyZoom = 0.08
 const maxTopologyZoom = 1.8
+const ungroupedProjectFilter = '__ungrouped__'
 
 const statusLabels: Record<TaskStatus, string> = {
   doing: '正在做',
@@ -90,6 +89,10 @@ function isAgentTask(task: Task) {
   return task.origin?.kind === 'agent' || Boolean(task.agent || task.agentSessionId)
 }
 
+function setsEqual(left: Set<string>, right: Set<string>) {
+  return left.size === right.size && [...left].every((value) => right.has(value))
+}
+
 function getColumnStatus(status: TaskStatus): TaskColumnStatus {
   return status === 'pending_acceptance' ? 'doing' : status
 }
@@ -107,7 +110,12 @@ function hasActiveParentCompletionReview(task: Task) {
 }
 
 function isUnresolvedAgentTask(task: Task) {
-  return isAgentTask(task) && !task.parentTaskId && task.relationshipState !== 'independent_root'
+  // 关系收件箱只处理当前仍在执行的 AI 任务。Todo、待确认和已完成任务继续保留在
+  // 拓扑中，但不占用待归类入口，避免历史任务淹没用户眼下需要整理的工作。
+  return task.status === 'doing'
+    && isAgentTask(task)
+    && !task.parentTaskId
+    && task.relationshipState !== 'independent_root'
 }
 
 function TaskReviewDots({ task }: { task: Task }) {
@@ -222,13 +230,13 @@ function collectDescendantIds(parentTaskId: string, childrenByParentId: Map<stri
 }
 
 function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
-  const { task, childCount, collapsed, hiddenDescendantCount, connectMode, onChangeStatus, onToggleDone, onToggleCollapse } = data
+  const { task, childCount, collapsed, hiddenDescendantCount, onChangeStatus, onToggleDone, onToggleCollapse } = data
   const agentTask = isAgentTask(task)
   const columnStatus = getColumnStatus(task.status)
 
   return (
     <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} relationship-${task.relationshipState || 'root'} ${selected ? 'selected' : ''}`}>
-      <Handle className={connectMode ? 'visible' : ''} type="target" position={Position.Left} />
+      <Handle type="target" position={Position.Left} />
       <header>
         <button
           className={`global-task-check ${task.status === 'done' ? 'checked' : ''}`}
@@ -283,7 +291,7 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
           <span>{task.tags[0] ? `#${task.tags[0]}` : '无标签'}</span>
         )}
       </footer>
-      <Handle className={connectMode ? 'visible' : ''} type="source" position={Position.Right} />
+      <Handle type="source" position={Position.Right} />
     </article>
   )
 }
@@ -293,7 +301,6 @@ const nodeTypes = { task: TaskNode }
 export function GlobalTopologyView({
   tasks,
   includedTaskIds,
-  expandRelatedTasks,
   positions,
   onSavePositions,
   onLinkTasks,
@@ -309,10 +316,9 @@ export function GlobalTopologyView({
   onOpenCalendar,
   onEditTask,
   onDeleteTask,
-  onAddTask,
 }: GlobalTopologyViewProps) {
-  const [mode, setMode] = useState<TopologyMode>('select')
   const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>('all')
+  const [projectFilter, setProjectFilter] = useState('all')
   const [relationshipFilter, setRelationshipFilter] = useState<TopologyRelationshipFilter>('managed')
   const [inboxOpen, setInboxOpen] = useState(false)
   const [selectedOrphanIds, setSelectedOrphanIds] = useState<Set<string>>(() => new Set())
@@ -323,56 +329,46 @@ export function GlobalTopologyView({
   const [newParentTitle, setNewParentTitle] = useState('')
   const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(() => new Set())
   const [selectedTaskId, setSelectedTaskId] = useState('')
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set())
   const [selectedEdgeId, setSelectedEdgeId] = useState('')
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
   const [localPositions, setLocalPositions] = useState<Record<string, TopologyPosition>>(positions)
   const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>({})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
   const [historyVersion, setHistoryVersion] = useState(0)
+  const selectedTaskIdsRef = useRef<Set<string>>(new Set())
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
-  const externallyVisibleTaskIds = useMemo(() => {
-    const visibleIds = new Set(includedTaskIds)
-    if (!expandRelatedTasks) return visibleIds
-
-    const childrenByParentId = new Map<string, string[]>()
-    for (const task of tasks) {
-      if (!task.parentTaskId) continue
-      childrenByParentId.set(task.parentTaskId, [...(childrenByParentId.get(task.parentTaskId) ?? []), task.id])
-    }
-
-    // 搜索命中只是入口。这里同时向父级和子级递归补齐整条关系链，
-    // 避免用户只看到孤立命中节点，却无法判断它在任务树中的上下文。
-    const queue = [...visibleIds]
-    while (queue.length > 0) {
-      const taskId = queue.shift()
-      if (!taskId) continue
-      const parentTaskId = taskLookup.get(taskId)?.parentTaskId
-      const relatedIds = [parentTaskId, ...(childrenByParentId.get(taskId) ?? [])].filter(Boolean) as string[]
-      for (const relatedId of relatedIds) {
-        if (visibleIds.has(relatedId)) continue
-        visibleIds.add(relatedId)
-        queue.push(relatedId)
-      }
-    }
-    return visibleIds
-  }, [expandRelatedTasks, includedTaskIds, taskLookup, tasks])
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
   const unresolvedAgentTasks = useMemo(() => tasks.filter(isUnresolvedAgentTask), [tasks])
   const unresolvedTaskIds = useMemo(() => new Set(unresolvedAgentTasks.map((task) => task.id)), [unresolvedAgentTasks])
-  const filteredTasks = useMemo(
-    () => tasks.filter((task) => {
-      if (!externallyVisibleTaskIds.has(task.id)) return false
+  const projectOptions = useMemo(() => [...new Set(tasks.map((task) => normalizeTopologyProject(task.project, ungroupedProjectFilter)))]
+    .sort((left, right) => {
+      if (left === ungroupedProjectFilter) return 1
+      if (right === ungroupedProjectFilter) return -1
+      return left.localeCompare(right, 'zh-CN')
+    }), [tasks])
+  useEffect(() => {
+    if (projectFilter !== 'all' && !projectOptions.includes(projectFilter)) setProjectFilter('all')
+  }, [projectFilter, projectOptions])
+  const directlyMatchedTaskIds = useMemo(() => {
+    const includedIds = new Set(includedTaskIds)
+    return new Set(tasks.filter((task) => {
+      if (!includedIds.has(task.id)) return false
+      if (projectFilter !== 'all' && normalizeTopologyProject(task.project, ungroupedProjectFilter) !== projectFilter) return false
       if (statusFilter !== 'all' && getColumnStatus(task.status) !== statusFilter) return false
-      if (relationshipFilter === 'managed') return expandRelatedTasks || !unresolvedTaskIds.has(task.id)
+      if (relationshipFilter === 'managed') return !unresolvedTaskIds.has(task.id)
       if (relationshipFilter === 'unresolved') return unresolvedTaskIds.has(task.id)
       if (relationshipFilter === 'independent_root') return task.relationshipState === 'independent_root'
       return true
-    }),
-    [expandRelatedTasks, externallyVisibleTaskIds, relationshipFilter, statusFilter, tasks, unresolvedTaskIds],
-  )
+    }).map((task) => task.id))
+  }, [includedTaskIds, projectFilter, relationshipFilter, statusFilter, tasks, unresolvedTaskIds])
+  const filteredTasks = useMemo(() => {
+    const completeNetworkIds = collectRelationshipNetworkIds(tasks, directlyMatchedTaskIds)
+    return tasks.filter((task) => completeNetworkIds.has(task.id))
+  }, [directlyMatchedTaskIds, tasks])
   const filteredChildrenByParentId = useMemo(() => {
     const filteredTaskIds = new Set(filteredTasks.map((task) => task.id))
     const grouped = new Map<string, Task[]>()
@@ -401,6 +397,7 @@ export function GlobalTopologyView({
   const externalFilterActive = includedTaskIds.length !== tasks.length
   const filteredView = statusFilter !== 'all'
     || externalFilterActive
+    || projectFilter !== 'all'
     || relationshipFilter === 'unresolved'
     || relationshipFilter === 'independent_root'
   const allParentsCollapsed = collapsibleTaskIds.size > 0 && [...collapsibleTaskIds].every((taskId) => collapsedTaskIds.has(taskId))
@@ -432,7 +429,6 @@ export function GlobalTopologyView({
         childCount: filteredChildrenByParentId.get(task.id)?.length ?? 0,
         collapsed: collapsedTaskIds.has(task.id),
         hiddenDescendantCount: hiddenDescendantCountByTaskId.get(task.id) ?? 0,
-        connectMode: mode === 'connect',
         onChangeStatus,
         onToggleDone,
         onToggleCollapse: (taskId: string) => {
@@ -444,13 +440,19 @@ export function GlobalTopologyView({
           })
         },
       },
-      selected: task.id === selectedTaskId,
-      draggable: mode === 'select',
-      connectable: mode === 'connect',
+      selected: selectedTaskIdsRef.current.has(task.id),
+      draggable: true,
+      connectable: true,
     })))
-  }, [automaticPositions, collapsedTaskIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, mode, onChangeStatus, onToggleDone, selectedTaskId, visibleTasks])
+  }, [automaticPositions, collapsedTaskIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, onChangeStatus, onToggleDone, visibleTasks])
 
   useEffect(() => {
+    const current = selectedTaskIdsRef.current
+    const next = new Set([...current].filter((taskId) => visibleTaskIds.has(taskId)))
+    if (!setsEqual(current, next)) {
+      selectedTaskIdsRef.current = next
+      setSelectedTaskIds(next)
+    }
     if (selectedTaskId && (!taskLookup.has(selectedTaskId) || !visibleTaskIds.has(selectedTaskId))) setSelectedTaskId('')
   }, [selectedTaskId, taskLookup, visibleTaskIds])
 
@@ -526,12 +528,31 @@ export function GlobalTopologyView({
     void onSavePositions(nextPositions)
   }
 
-  function handleNodeDragStop(_: unknown, node: TaskFlowNode) {
+  function handleNodeDragStop(_: unknown, node: TaskFlowNode, draggedNodes: TaskFlowNode[]) {
+    const movedNodes = draggedNodes.length > 0 ? draggedNodes : [node]
+    const movedPositions = Object.fromEntries(movedNodes.map((movedNode) => [movedNode.id, movedNode.position]))
     if (filteredView) {
-      setFilteredPositionOverrides((current) => ({ ...current, [node.id]: node.position }))
+      setFilteredPositionOverrides((current) => ({ ...current, ...movedPositions }))
       return
     }
-    commitPositions({ ...localPositions, [node.id]: node.position })
+    // React Flow 会一起移动圈选节点；保存时必须提交整组坐标，否则刷新后只有最后一个节点保留新位置。
+    commitPositions({ ...localPositions, ...movedPositions })
+  }
+
+  function selectSingleTask(taskId: string) {
+    replaceSelectedTaskIds([taskId])
+    setNodes((current) => current.map((node) => {
+      const selected = node.id === taskId
+      return node.selected === selected ? node : { ...node, selected }
+    }))
+    setSelectedTaskId(taskId)
+  }
+
+  function replaceSelectedTaskIds(taskIds: Iterable<string>) {
+    const next = new Set(taskIds)
+    if (setsEqual(selectedTaskIdsRef.current, next)) return
+    selectedTaskIdsRef.current = next
+    setSelectedTaskIds(next)
   }
 
   function undoLayout() {
@@ -565,7 +586,7 @@ export function GlobalTopologyView({
     setPendingConnection(null)
     if (!connection?.source || !connection.target) return
     await onLinkTasks(connection.source, connection.target, relationType)
-    setSelectedTaskId(connection.target)
+    selectSingleTask(connection.target)
   }
 
   async function unlinkSelectedEdge() {
@@ -611,11 +632,6 @@ export function GlobalTopologyView({
   return (
     <section className="global-topology-view">
       <div className="global-topology-toolbar">
-        <div className="global-topology-mode" role="group" aria-label="拓扑编辑模式">
-          <button className={mode === 'select' ? 'active' : ''} type="button" onClick={() => setMode('select')}>选择</button>
-          <button className={mode === 'connect' ? 'active' : ''} type="button" onClick={() => setMode('connect')}>连线</button>
-        </div>
-        <button className="topology-add-task" type="button" onClick={onAddTask}>＋ 新增任务</button>
         <button className="topology-toolbar-icon" type="button" title="撤销布局" aria-label="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>
           <Undo2 aria-hidden="true" size={16} strokeWidth={1.8} />
         </button>
@@ -645,7 +661,14 @@ export function GlobalTopologyView({
         </button>
         {selectedEdgeId && <button className="danger-action" type="button" onClick={() => void unlinkSelectedEdge()}>解除关系</button>}
         <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
+        {selectedTaskIds.size > 1 && <span className="global-topology-selection-count">已选 {selectedTaskIds.size}</span>}
         <div className="global-topology-filters">
+          <select className="project-filter" value={projectFilter} aria-label="按项目筛选" onChange={(event) => setProjectFilter(event.target.value)}>
+            <option value="all">全部项目</option>
+            {projectOptions.map((project) => (
+              <option key={project} value={project}>{project === ungroupedProjectFilter ? '未分组' : project}</option>
+            ))}
+          </select>
           <select value={statusFilter} aria-label="按状态筛选" onChange={(event) => setStatusFilter(event.target.value as TopologyStatusFilter)}>
             <option value="all">全部状态</option>
             <option value="doing">正在做</option>
@@ -756,23 +779,34 @@ export function GlobalTopologyView({
       )}
 
       <div className={`global-topology-body ${selectedTask ? 'has-selection' : ''}`}>
-        <div className={`global-topology-canvas mode-${mode}`}>
+        <div className="global-topology-canvas" title="按住 Shift、Command 或 Control 拖动可圈选任务">
           <ReactFlow<TaskFlowNode, TaskFlowEdge>
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
-            onNodeClick={(_, node) => {
-              setSelectedTaskId(node.id)
+            onNodeClick={(event, node) => {
+              if (!event.shiftKey && !event.metaKey && !event.ctrlKey) selectSingleTask(node.id)
               setSelectedEdgeId('')
             }}
             onEdgeClick={(_, edge) => {
               setSelectedEdgeId(edge.id)
-              setSelectedTaskId(edge.target)
+              selectSingleTask(edge.target)
             }}
             onPaneClick={() => {
               setSelectedTaskId('')
+              replaceSelectedTaskIds([])
               setSelectedEdgeId('')
+            }}
+            onSelectionChange={({ nodes: selectedNodes, edges: selectedEdges }) => {
+              // 圈选过程中 React Flow 会在每次指针移动时上报临时选择集。这里只同步业务所需的
+              // id 集合，不再据此重建全部节点或展开详情，避免大拓扑持续重排导致窗口假死。
+              if (selectedNodes.length > 0) {
+                replaceSelectedTaskIds(selectedNodes.map((node) => node.id))
+                setSelectedEdgeId('')
+              } else if (selectedEdges.length === 0) {
+                replaceSelectedTaskIds([])
+              }
             }}
             onNodeDragStop={handleNodeDragStop}
             onConnect={(connection) => setPendingConnection(connection)}
@@ -780,9 +814,12 @@ export function GlobalTopologyView({
             maxZoom={maxTopologyZoom}
             deleteKeyCode={null}
             proOptions={{ hideAttribution: true }}
-            nodesConnectable={mode === 'connect'}
-            nodesDraggable={mode === 'select'}
-            selectionOnDrag={mode === 'select'}
+            nodesConnectable
+            nodesDraggable
+            selectionKeyCode={['Shift', 'Meta', 'Control']}
+            multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
+            selectionMode={SelectionMode.Partial}
+            selectionOnDrag={false}
             panOnDrag
             panOnScroll
             panOnScrollSpeed={0.8}

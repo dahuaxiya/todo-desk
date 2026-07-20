@@ -16,6 +16,7 @@
     "lint": "oxlint",
     "test:ai": "node scripts/test-ai-assistant.mjs",
     "test:task-search": "node scripts/test-task-search.mjs",
+    "test:topology-network": "node --test tests/topologyNetwork.test.ts",
     "agent:install": "node scripts/install-agent-integration.mjs",
     "preview": "vite preview"
   },
