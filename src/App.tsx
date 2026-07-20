@@ -18,6 +18,7 @@ import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, 
 import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyPosition } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
+const TaskTopologyCanvas = lazy(() => import('./TaskTopologyCanvas').then((module) => ({ default: module.TaskTopologyCanvas })))
 
 const storageKey = 'todo-desk-data'
 const compactQuickTextareaBaseHeight = 124
@@ -4199,6 +4200,7 @@ function App() {
           currentTaskId={topologyTaskId}
           onClose={closeTaskTopology}
           onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
+          layout="normal"
         />
       )}
     </main>
@@ -5093,6 +5095,7 @@ interface TaskTopologyDialogProps {
   currentTaskId: string
   onClose: () => void
   onOpenTask: (taskId: string) => void
+  layout?: 'compact' | 'normal'
 }
 
 function collectTaskTopologyStats(rootTaskId: string, childTasksByParentId: Map<string, Task[]>) {
@@ -5234,7 +5237,7 @@ function TaskTopologyNode({
   )
 }
 
-function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskTopologyDialogProps) {
+function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask, layout = 'compact' }: TaskTopologyDialogProps) {
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
   const childTasksByParentId = useMemo(() => {
     const grouped = new Map<string, Task[]>()
@@ -5269,7 +5272,7 @@ function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskT
   return (
     <div className="task-topology-backdrop" role="presentation" onMouseDown={onClose}>
       <section
-        className="task-topology-dialog"
+        className={`task-topology-dialog ${layout === 'normal' ? 'normal-layout' : 'compact-layout'}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="task-topology-title"
@@ -5286,25 +5289,40 @@ function TaskTopologyDialog({ tasks, currentTaskId, onClose, onOpenTask }: TaskT
             <AppIcon name="close" />
           </button>
         </header>
-        <div className="task-topology-legend" aria-label="拓扑图例">
-          <span className="task-topology-origin human-task"><i />人工任务</span>
-          <span className="task-topology-origin agent-task"><i />AI 任务</span>
-          <span><i className="status-doing" />正在做</span>
-          <span><i className="status-todo" />Todo</span>
-          <span><i className="status-done" />已完成</span>
-          <span className="task-link-type task-link-type-subtask_of">子任务</span>
-          <span className="task-link-type task-link-type-discovered_from">派生</span>
+        <div className="task-topology-toolbar">
+          <div className="task-topology-legend" aria-label="拓扑图例">
+            <span className="task-topology-origin human-task"><i />人工任务</span>
+            <span className="task-topology-origin agent-task"><i />AI 任务</span>
+            <span><i className="status-doing" />正在做</span>
+            <span><i className="status-todo" />Todo</span>
+            <span><i className="status-done" />已完成</span>
+            <span className="task-link-type task-link-type-subtask_of">子任务</span>
+            <span className="task-link-type task-link-type-discovered_from">派生</span>
+          </div>
         </div>
         <div className="task-topology-stage">
-          <div className="task-topology-tree" role="tree" aria-label={`${rootTask.title} 的任务拓扑`}>
-            <TaskTopologyNode
-              task={rootTask}
-              currentTaskId={currentTaskId}
-              childTasksByParentId={childTasksByParentId}
-              onOpenTask={onOpenTask}
-              visited={new Set()}
-            />
-          </div>
+          {layout === 'normal' ? (
+            <Suspense fallback={<div className="task-topology-canvas-loading">正在整理任务关系...</div>}>
+              <TaskTopologyCanvas
+                tasks={tasks}
+                rootTaskId={rootTask.id}
+                currentTaskId={currentTaskId}
+                onOpenTask={onOpenTask}
+              />
+            </Suspense>
+          ) : (
+            <div className="task-topology-viewport">
+              <div className="task-topology-tree" role="tree" aria-label={`${rootTask.title} 的任务拓扑`}>
+                <TaskTopologyNode
+                  task={rootTask}
+                  currentTaskId={currentTaskId}
+                  childTasksByParentId={childTasksByParentId}
+                  onOpenTask={onOpenTask}
+                  visited={new Set()}
+                />
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>

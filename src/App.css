@@ -2499,6 +2499,12 @@ select:focus-visible {
   box-shadow: 0 24px 70px rgba(48, 43, 35, 0.24);
 }
 
+.task-topology-dialog.normal-layout {
+  width: min(1180px, calc(100vw - 32px));
+  height: min(780px, calc(100vh - 32px));
+  background: #fffdf8;
+}
+
 .task-topology-head {
   display: flex;
   align-items: center;
@@ -2534,6 +2540,14 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.task-topology-toolbar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid rgba(48, 43, 35, 0.08);
+  background: rgba(255, 250, 240, 0.82);
+}
+
 .task-topology-legend {
   display: flex;
   align-items: center;
@@ -2541,8 +2555,6 @@ select:focus-visible {
   min-width: 0;
   padding: 8px 16px;
   overflow-x: auto;
-  border-bottom: 1px solid rgba(48, 43, 35, 0.08);
-  background: rgba(255, 250, 240, 0.82);
   scrollbar-width: thin;
 }
 
@@ -2608,12 +2620,36 @@ select:focus-visible {
   scrollbar-width: thin;
 }
 
+.task-topology-viewport {
+  position: relative;
+  min-width: max-content;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+}
+
 .task-topology-tree {
   display: inline-flex;
   min-width: max-content;
   min-height: 100%;
   align-items: center;
   padding: 4px;
+}
+
+.task-topology-dialog.normal-layout .task-topology-stage {
+  padding: 0;
+  overflow: hidden;
+  background: #fbfaf6;
+}
+
+.task-topology-canvas-loading {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--ink-muted);
+  font-size: calc(12px * var(--app-font-scale));
+  font-weight: 750;
 }
 
 .task-topology-branch {

@@ -1,0 +1,315 @@
+.task-topology-flow-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #fbfaf6;
+}
+
+.task-topology-flow-shell .react-flow__pane {
+  cursor: grab;
+}
+
+.task-topology-flow-shell .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.task-topology-flow-node {
+  width: 238px;
+  min-height: 112px;
+  display: grid;
+  gap: 10px;
+  padding: 12px 13px 10px;
+  border: 1px solid #dfbd5b;
+  border-radius: 7px;
+  background: #fff8df;
+  box-shadow: 0 5px 14px rgba(61, 55, 43, 0.11);
+  color: #292824;
+}
+
+.task-topology-flow-node.agent-task {
+  border-color: #c7b8f4;
+  background: #f5f1ff;
+}
+
+.task-topology-flow-node.status-done {
+  border-color: #a9cdb7;
+  background: #f1f8f4;
+}
+
+.task-topology-flow-node.current {
+  border-color: #246cf0;
+  box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.14), 0 6px 16px rgba(39, 70, 122, 0.14);
+}
+
+.task-topology-flow-node.selected {
+  border-color: #246cf0;
+  box-shadow: 0 0 0 3px rgba(36, 108, 240, 0.16), 0 8px 20px rgba(39, 70, 122, 0.16);
+}
+
+.task-topology-flow-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #8a94a0;
+  background: #fff;
+  opacity: 0.72;
+}
+
+.task-topology-flow-node.agent-task .react-flow__handle {
+  border-color: #7860d9;
+}
+
+.task-topology-flow-node.current .react-flow__handle,
+.task-topology-flow-node.selected .react-flow__handle {
+  border-color: #246cf0;
+  opacity: 1;
+}
+
+.task-topology-flow-node header {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.task-topology-flow-node header strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: calc(13px * var(--app-font-scale));
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.task-topology-flow-status {
+  width: 7px;
+  height: 7px;
+  display: inline-block;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.task-topology-flow-status.status-doing {
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.task-topology-flow-status.status-todo {
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.1);
+}
+
+.task-topology-flow-status.status-done {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1);
+}
+
+.task-topology-flow-notices {
+  display: inline-flex;
+  gap: 4px;
+  padding-top: 3px;
+}
+
+.task-topology-flow-notices i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.task-topology-flow-notices .completion,
+.task-topology-flow-notices .parent {
+  background: #dc3b32;
+}
+
+.task-topology-flow-notices .session {
+  background: #2e7de9;
+}
+
+.task-topology-flow-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.task-topology-flow-meta span {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(48, 43, 35, 0.055);
+  color: #64748b;
+  font-size: calc(9px * var(--app-font-scale));
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.task-topology-flow-meta .relation.subtask {
+  background: #e8f0ff;
+  color: #245ec8;
+}
+
+.task-topology-flow-meta .relation.derived,
+.task-topology-flow-meta .origin {
+  background: #eee9ff;
+  color: #6f4bd8;
+}
+
+.task-topology-flow-node footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #77736c;
+  font-size: calc(9.5px * var(--app-font-scale));
+}
+
+.task-topology-flow-node footer span {
+  max-width: 54%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-topology-flow-shell .react-flow__controls {
+  right: 136px;
+  bottom: 14px;
+  overflow: hidden;
+  border: 1px solid #dedbd4;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.task-topology-flow-shell .react-flow__controls-button {
+  border-bottom-color: #e6e2db;
+  background: #fff;
+}
+
+.task-topology-flow-shell .react-flow__minimap {
+  right: 14px;
+  bottom: 14px;
+  width: 108px;
+  height: 72px;
+  border: 1px solid #dedbd4;
+  border-radius: 6px;
+  background: #f7f5f0;
+}
+
+.task-topology-flow-inspector {
+  position: absolute;
+  z-index: 8;
+  top: 14px;
+  right: 14px;
+  width: min(324px, calc(100% - 28px));
+  max-height: calc(100% - 112px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #d9d4ca;
+  border-radius: 7px;
+  background: rgba(255, 254, 250, 0.98);
+  box-shadow: 0 14px 34px rgba(48, 43, 35, 0.18);
+}
+
+.task-topology-flow-inspector > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 13px 11px;
+  border-bottom: 1px solid #e8e4dc;
+}
+
+.task-topology-flow-inspector > header > div {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.task-topology-flow-inspector > header strong {
+  font-size: calc(13px * var(--app-font-scale));
+  line-height: 1.4;
+}
+
+.task-topology-flow-inspector > header button {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 26px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.task-topology-flow-inspector-scroll {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 13px;
+  padding: 13px;
+  overflow-y: auto;
+}
+
+.task-topology-flow-inspector-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.task-topology-flow-inspector-badges span {
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #f0eee9;
+  color: #625e56;
+  font-size: calc(9px * var(--app-font-scale));
+  font-weight: 750;
+}
+
+.task-topology-flow-inspector section {
+  display: grid;
+  gap: 5px;
+}
+
+.task-topology-flow-inspector h3,
+.task-topology-flow-inspector p {
+  margin: 0;
+}
+
+.task-topology-flow-inspector h3 {
+  color: #8a857c;
+  font-size: calc(9px * var(--app-font-scale));
+}
+
+.task-topology-flow-inspector p {
+  color: #3f3a32;
+  font-size: calc(11px * var(--app-font-scale));
+  font-weight: 620;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-topology-flow-inspector > footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 13px;
+  border-top: 1px solid #e8e4dc;
+  background: #fffdf8;
+}
+
+.task-topology-flow-inspector > footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-color: #c8d8f6;
+  background: #edf4ff;
+  color: #1d5fc2;
+  font-size: calc(10px * var(--app-font-scale));
+  font-weight: 800;
+  box-shadow: none;
+}
