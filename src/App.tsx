@@ -2589,11 +2589,6 @@ function App() {
     startEdit(task)
   }
 
-  function addTaskFromGlobalTopology() {
-    setMainView('board')
-    startCreate('todo')
-  }
-
   useEffect(() => {
     function handleKeyDown(event: globalThis.KeyboardEvent) {
       const isCommand = event.metaKey || event.ctrlKey
@@ -3611,7 +3606,6 @@ function App() {
             onOpenCalendar={openCalendar}
             onEditTask={editTaskFromGlobalTopology}
             onDeleteTask={deleteTask}
-            onAddTask={addTaskFromGlobalTopology}
           />
         </Suspense>
       ) : (

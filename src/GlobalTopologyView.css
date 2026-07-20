@@ -51,13 +51,6 @@
   cursor: default;
 }
 
-.global-topology-toolbar .topology-add-task {
-  border-color: #e0b744;
-  background: #f5c84d;
-  color: #302817;
-  font-weight: 650;
-}
-
 .global-topology-toolbar .topology-toolbar-icon {
   width: 32px;
   flex: 0 0 32px;

@@ -45,7 +45,6 @@ interface GlobalTopologyViewProps {
   onOpenCalendar: (task: Task) => Promise<void> | void
   onEditTask: (task: Task) => void
   onDeleteTask: (taskId: string) => Promise<void> | void
-  onAddTask: () => void
 }
 
 interface TaskNodeData extends Record<string, unknown> {
@@ -317,7 +316,6 @@ export function GlobalTopologyView({
   onOpenCalendar,
   onEditTask,
   onDeleteTask,
-  onAddTask,
 }: GlobalTopologyViewProps) {
   const [statusFilter, setStatusFilter] = useState<TopologyStatusFilter>('all')
   const [projectFilter, setProjectFilter] = useState('all')
@@ -338,6 +336,7 @@ export function GlobalTopologyView({
   const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>({})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
   const [historyVersion, setHistoryVersion] = useState(0)
+  const selectedTaskIdsRef = useRef<Set<string>>(new Set())
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
 
@@ -441,17 +440,19 @@ export function GlobalTopologyView({
           })
         },
       },
-      selected: selectedTaskIds.has(task.id),
+      selected: selectedTaskIdsRef.current.has(task.id),
       draggable: true,
       connectable: true,
     })))
-  }, [automaticPositions, collapsedTaskIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, onChangeStatus, onToggleDone, selectedTaskIds, visibleTasks])
+  }, [automaticPositions, collapsedTaskIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, onChangeStatus, onToggleDone, visibleTasks])
 
   useEffect(() => {
-    setSelectedTaskIds((current) => {
-      const next = new Set([...current].filter((taskId) => visibleTaskIds.has(taskId)))
-      return setsEqual(current, next) ? current : next
-    })
+    const current = selectedTaskIdsRef.current
+    const next = new Set([...current].filter((taskId) => visibleTaskIds.has(taskId)))
+    if (!setsEqual(current, next)) {
+      selectedTaskIdsRef.current = next
+      setSelectedTaskIds(next)
+    }
     if (selectedTaskId && (!taskLookup.has(selectedTaskId) || !visibleTaskIds.has(selectedTaskId))) setSelectedTaskId('')
   }, [selectedTaskId, taskLookup, visibleTaskIds])
 
@@ -539,16 +540,19 @@ export function GlobalTopologyView({
   }
 
   function selectSingleTask(taskId: string) {
-    setSelectedTaskIds((current) => {
-      const next = new Set([taskId])
-      return setsEqual(current, next) ? current : next
-    })
+    replaceSelectedTaskIds([taskId])
+    setNodes((current) => current.map((node) => {
+      const selected = node.id === taskId
+      return node.selected === selected ? node : { ...node, selected }
+    }))
     setSelectedTaskId(taskId)
   }
 
   function replaceSelectedTaskIds(taskIds: Iterable<string>) {
     const next = new Set(taskIds)
-    setSelectedTaskIds((current) => setsEqual(current, next) ? current : next)
+    if (setsEqual(selectedTaskIdsRef.current, next)) return
+    selectedTaskIdsRef.current = next
+    setSelectedTaskIds(next)
   }
 
   function undoLayout() {
@@ -628,7 +632,6 @@ export function GlobalTopologyView({
   return (
     <section className="global-topology-view">
       <div className="global-topology-toolbar">
-        <button className="topology-add-task" type="button" onClick={onAddTask}>＋ 新增任务</button>
         <button className="topology-toolbar-icon" type="button" title="撤销布局" aria-label="撤销布局" disabled={undoStackRef.current.length === 0} onClick={undoLayout}>
           <Undo2 aria-hidden="true" size={16} strokeWidth={1.8} />
         </button>
@@ -796,13 +799,13 @@ export function GlobalTopologyView({
               setSelectedEdgeId('')
             }}
             onSelectionChange={({ nodes: selectedNodes, edges: selectedEdges }) => {
+              // 圈选过程中 React Flow 会在每次指针移动时上报临时选择集。这里只同步业务所需的
+              // id 集合，不再据此重建全部节点或展开详情，避免大拓扑持续重排导致窗口假死。
               if (selectedNodes.length > 0) {
                 replaceSelectedTaskIds(selectedNodes.map((node) => node.id))
-                setSelectedTaskId(selectedNodes.length === 1 ? selectedNodes[0].id : '')
                 setSelectedEdgeId('')
               } else if (selectedEdges.length === 0) {
                 replaceSelectedTaskIds([])
-                setSelectedTaskId('')
               }
             }}
             onNodeDragStop={handleNodeDragStop}
