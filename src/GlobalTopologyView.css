@@ -145,6 +145,44 @@
   white-space: nowrap;
 }
 
+.global-topology-batch-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px;
+  border: 1px solid #d9e4f6;
+  border-radius: 7px;
+  background: #f7faff;
+}
+
+.global-topology-batch-actions button {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  min-width: 27px;
+  height: 27px;
+  min-height: 27px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #4d617b;
+}
+
+.global-topology-batch-actions button:hover {
+  border-color: #cbd9ee;
+  background: #edf4ff;
+}
+
+.global-topology-batch-actions button.danger {
+  color: #a43d32;
+}
+
+.global-topology-batch-actions svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.9;
+}
+
 .global-topology-filters {
   min-width: 0;
   display: flex;

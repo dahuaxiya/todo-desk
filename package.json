@@ -17,6 +17,7 @@
     "test:ai": "node scripts/test-ai-assistant.mjs",
     "test:task-search": "node scripts/test-task-search.mjs",
     "test:topology-network": "node --test tests/topologyNetwork.test.ts",
+    "test:batch-actions": "node --test tests/taskBatchActions.test.ts",
     "test:backup": "node --test tests/backupManager.test.js",
     "agent:install": "node scripts/install-agent-integration.mjs",
     "preview": "vite preview"
