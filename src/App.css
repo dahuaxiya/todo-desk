@@ -4428,6 +4428,7 @@ select:focus-visible {
 .cloud-backup-heading,
 .cloud-backup-actions,
 .cloud-recovery-key-row,
+.cloud-backup-repository,
 .cloud-backup-list > div {
   display: flex;
   align-items: center;
@@ -4441,6 +4442,24 @@ select:focus-visible {
 
 .cloud-backup-switch {
   flex: 0 0 auto;
+}
+
+.cloud-backup-repository {
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid rgba(48, 43, 35, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.cloud-backup-repository span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.cloud-backup-repository small {
+  color: var(--ink-muted);
 }
 
 .cloud-backup-metrics {

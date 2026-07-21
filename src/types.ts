@@ -158,8 +158,9 @@ export interface AppSettings {
   topologyPositions: Record<string, TopologyPosition>
   larkCloudBackupEnabled: boolean
   larkCloudBackupFolderToken: string
-  cloudBackupIntervalHours: number
-  cloudBackupRetentionCount: number
+  cloudBackupIntervalMinutes: number
+  cloudBackupRecentCount: number
+  cloudBackupDailyCount: number
 }
 
 export interface TaskCalendarSyncTarget {
@@ -209,9 +210,11 @@ export interface TodoDeskBridge {
   revealStorage: () => Promise<unknown>
   revealLogs: () => Promise<unknown>
   getBackupStatus: () => Promise<CloudBackupStatus>
-  createCloudBackup: (options?: { folderToken?: string; retentionCount?: number }) => Promise<{ ok: boolean; message?: string; status?: CloudBackupStatus }>
+  createCloudBackup: (options?: { folderToken?: string; recentCount?: number; dailyCount?: number; force?: boolean }) => Promise<{ ok: boolean; skipped?: boolean; message?: string; cleanupPendingCount?: number; status?: CloudBackupStatus }>
   restoreCloudBackup: (backupId: string) => Promise<{ ok: boolean; message?: string; data?: AppData; status?: CloudBackupStatus }>
   restoreCloudBackupFromManifest: (manifestToken: string) => Promise<{ ok: boolean; message?: string; data?: AppData; status?: CloudBackupStatus }>
+  connectCloudBackupRepository: (recoveryCode: string) => Promise<{ ok: boolean; message?: string; status?: CloudBackupStatus }>
+  verifyCloudBackup: (backupId?: string) => Promise<{ ok: boolean; skipped?: boolean; message?: string; verifiedAt?: string; backupId?: string; status?: CloudBackupStatus }>
   exportBackupRecoveryKey: () => Promise<{ ok: boolean; recoveryKey?: string }>
   importBackupRecoveryKey: (recoveryKey: string) => Promise<{ ok: boolean; message?: string }>
   openTaskInCalendar: (task: Task) => Promise<{ ok: boolean; message?: string; filePath?: string; eventId?: string }>
@@ -278,14 +281,30 @@ export interface CloudBackupRecord {
   manifestToken?: string
 }
 
+export interface CloudBackupRepository {
+  folderToken: string
+  folderUrl?: string
+  indexDocToken: string
+  indexDocUrl?: string
+  createdAt: string
+}
+
 export interface CloudBackupStatus {
   lastSuccessfulAt: string
+  lastCheckedAt: string
   sourceBytes: number
   attachmentBytes: number
   attachmentCount: number
   cloudBytes: number
   backups: CloudBackupRecord[]
   hasRecoveryKey: boolean
+  repository: CloudBackupRepository | null
+  recoveryCode: string
+  lastVerificationAttemptAt: string
+  lastVerifiedAt: string
+  lastVerificationMessage: string
+  pendingCleanupCount: number
+  lastCleanupMessage: string
 }
 
 declare global {

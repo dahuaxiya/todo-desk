@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('todoDesk', {
   createCloudBackup: (options) => ipcRenderer.invoke('backup:create', options),
   restoreCloudBackup: (backupId) => ipcRenderer.invoke('backup:restore', backupId),
   restoreCloudBackupFromManifest: (manifestToken) => ipcRenderer.invoke('backup:restore-manifest', manifestToken),
+  connectCloudBackupRepository: (recoveryCode) => ipcRenderer.invoke('backup:connect-repository', recoveryCode),
+  verifyCloudBackup: (backupId) => ipcRenderer.invoke('backup:verify', backupId),
   exportBackupRecoveryKey: () => ipcRenderer.invoke('backup:export-key'),
   importBackupRecoveryKey: (recoveryKey) => ipcRenderer.invoke('backup:import-key', recoveryKey),
   openTaskInCalendar: (task) => ipcRenderer.invoke('calendar:open-task', task),

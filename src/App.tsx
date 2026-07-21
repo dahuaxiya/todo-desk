@@ -670,9 +670,10 @@ function createDefaultData(): AppData {
       edgeDocked: false,
       topologyPositions: {},
       larkCloudBackupEnabled: false,
-      larkCloudBackupFolderToken: 'root',
-      cloudBackupIntervalHours: 3,
-      cloudBackupRetentionCount: 8,
+      larkCloudBackupFolderToken: '',
+      cloudBackupIntervalMinutes: 30,
+      cloudBackupRecentCount: 4,
+      cloudBackupDailyCount: 2,
     },
     tasks: [
       {
@@ -715,6 +716,10 @@ function createDefaultData(): AppData {
 
 function mergeWithDefaults(value: AppData): AppData {
   const defaults = createDefaultData()
+  const legacySettings = value.settings as AppSettings & {
+    cloudBackupIntervalHours?: number
+    cloudBackupRetentionCount?: number
+  }
   return {
     ...defaults,
     ...value,
@@ -729,6 +734,12 @@ function mergeWithDefaults(value: AppData): AppData {
       fontSize: normalizeFontSize(value.settings?.fontSize),
       edgeDocked: false,
       topologyPositions: value.settings?.topologyPositions || {},
+      // 旧版本使用小时和单一保留数量；升级后固定迁移到新的分层保留默认值。
+      cloudBackupIntervalMinutes: value.settings?.cloudBackupIntervalMinutes
+        || (legacySettings.cloudBackupIntervalHours ? legacySettings.cloudBackupIntervalHours * 60 : 30),
+      cloudBackupRecentCount: value.settings?.cloudBackupRecentCount || Math.min(legacySettings.cloudBackupRetentionCount || 4, 4),
+      cloudBackupDailyCount: value.settings?.cloudBackupDailyCount || 2,
+      larkCloudBackupFolderToken: value.settings?.larkCloudBackupFolderToken === 'root' ? '' : (value.settings?.larkCloudBackupFolderToken || ''),
     },
     tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTaskOrigin) : [],
     trash: Array.isArray(value.trash) ? value.trash.map(normalizeTaskOrigin) : [],
@@ -3105,10 +3116,17 @@ function App() {
     setBackupBusy(true)
     setBackupMessage('正在压缩、加密并上传飞书云盘...')
     try {
-      const result = await window.todoDesk.createCloudBackup({ folderToken: data.settings.larkCloudBackupFolderToken, retentionCount: data.settings.cloudBackupRetentionCount })
+      const result = await window.todoDesk.createCloudBackup({
+        folderToken: data.settings.larkCloudBackupFolderToken,
+        recentCount: data.settings.cloudBackupRecentCount,
+        dailyCount: data.settings.cloudBackupDailyCount,
+        force: true,
+      })
       if (!result.ok) throw new Error(result.message || '云备份失败')
       if (result.status) setBackupStatus(result.status)
-      setBackupMessage('云备份完成')
+      setBackupMessage(result.skipped
+        ? (result.message || '数据没有变化，已跳过重复备份')
+        : (result.cleanupPendingCount ? `云备份完成；${result.cleanupPendingCount} 个过期文件等待飞书授权后清理` : '云备份完成'))
     } catch (error) {
       setBackupMessage(error instanceof Error ? error.message : '云备份失败')
     } finally {
@@ -3149,20 +3167,34 @@ function App() {
     await refreshBackupStatus()
   }
 
-  async function restoreFromCloudCode() {
-    if (!window.todoDesk?.restoreCloudBackupFromManifest || !cloudRestoreToken.trim()) return
-    if (!window.confirm('将使用恢复码从飞书下载完整备份，并替换当前数据。恢复前会生成本地安全快照，继续吗？')) return
+  async function connectCloudRepository() {
+    if (!window.todoDesk?.connectCloudBackupRepository || !cloudRestoreToken.trim()) return
     setBackupBusy(true)
-    setBackupMessage('正在从飞书恢复完整备份...')
+    setBackupMessage('正在连接飞书备份仓库...')
     try {
-      const result = await window.todoDesk.restoreCloudBackupFromManifest(cloudRestoreToken.trim())
-      if (!result.ok) throw new Error(result.message || '云端恢复失败')
-      if (result.data) setData(mergeWithDefaults(result.data))
+      const result = await window.todoDesk.connectCloudBackupRepository(cloudRestoreToken.trim())
+      if (!result.ok) throw new Error(result.message || '连接备份仓库失败')
       if (result.status) setBackupStatus(result.status)
       setCloudRestoreToken('')
-      setBackupMessage('云端恢复完成')
+      setBackupMessage('备份仓库已连接，请从版本列表选择要恢复的版本')
     } catch (error) {
-      setBackupMessage(error instanceof Error ? error.message : '云端恢复失败')
+      setBackupMessage(error instanceof Error ? error.message : '连接备份仓库失败')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function verifyLatestCloudBackup() {
+    if (!window.todoDesk?.verifyCloudBackup) return setBackupMessage('云备份校验需要桌面 App 运行')
+    setBackupBusy(true)
+    setBackupMessage('正在从飞书完整下载、解密并校验最新备份...')
+    try {
+      const result = await window.todoDesk.verifyCloudBackup()
+      if (!result.ok) throw new Error(result.message || '云端备份校验失败')
+      if (result.status) setBackupStatus(result.status)
+      setBackupMessage(result.skipped ? (result.message || '还没有可校验的云备份') : '最新云端备份校验通过')
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? error.message : '云端备份校验失败')
     } finally {
       setBackupBusy(false)
     }
@@ -4381,17 +4413,17 @@ function App() {
               <div className="cloud-backup-heading">
                 <div>
                   <h3>飞书云备份</h3>
-                  <p>完整数据和附件先加密再上传；每 3 小时检查一次，保留最近 8 份。</p>
+                  <p>每 30 分钟检查，数据无变化时跳过；保留 4 个近期版本和前 2 天的每日版本。</p>
                 </div>
                 <label className="cloud-backup-switch">
                   <input type="checkbox" checked={data.settings.larkCloudBackupEnabled} onChange={(event) => updateSettings({ larkCloudBackupEnabled: event.target.checked })} />
                   自动备份
                 </label>
               </div>
-              <label className="settings-field">
-                <span>飞书文件夹 token</span>
-                <input value={data.settings.larkCloudBackupFolderToken} onChange={(event) => updateSettings({ larkCloudBackupFolderToken: event.target.value || 'root' })} placeholder="root" />
-              </label>
+              <div className="cloud-backup-repository">
+                <span><strong>Todo Desk Backups</strong><small>{backupStatus?.repository ? '专用备份目录已连接' : '首次备份时自动创建专用目录'}</small></span>
+                {backupStatus?.recoveryCode && <button type="button" onClick={() => copyTextToClipboard(backupStatus.recoveryCode).then(() => setBackupMessage('备份仓库恢复码已复制'))}>复制恢复码</button>}
+              </div>
               <div className="cloud-backup-metrics">
                 <span><strong>{formatBytes(backupStatus?.sourceBytes || 0)}</strong>当前数据</span>
                 <span><strong>{formatBytes(backupStatus?.cloudBytes || 0)}</strong>云端占用</span>
@@ -4401,6 +4433,7 @@ function App() {
               <div className="cloud-backup-actions">
                 <button type="button" disabled={backupBusy} onClick={createCloudBackup}>{backupBusy ? '处理中...' : '立即备份'}</button>
                 <button type="button" disabled={backupBusy} onClick={refreshBackupStatus}>刷新</button>
+                <button type="button" disabled={backupBusy || !backupStatus?.backups.length} onClick={verifyLatestCloudBackup}>校验最新备份</button>
                 <button type="button" onClick={copyRecoveryKey}>复制恢复密钥</button>
               </div>
               <div className="cloud-recovery-key-row">
@@ -4408,22 +4441,21 @@ function App() {
                 <button type="button" disabled={!recoveryKeyInput.trim()} onClick={importRecoveryKey}>导入</button>
               </div>
               <div className="cloud-recovery-key-row">
-                <input value={cloudRestoreToken} onChange={(event) => setCloudRestoreToken(event.target.value)} placeholder="粘贴飞书备份恢复码" />
-                <button type="button" disabled={backupBusy || !cloudRestoreToken.trim()} onClick={restoreFromCloudCode}>恢复</button>
+                <input value={cloudRestoreToken} onChange={(event) => setCloudRestoreToken(event.target.value)} placeholder="新设备粘贴备份仓库恢复码" />
+                <button type="button" disabled={backupBusy || !cloudRestoreToken.trim()} onClick={connectCloudRepository}>连接仓库</button>
               </div>
               <div className="cloud-backup-list">
                 {(backupStatus?.backups || []).map((backup) => (
                   <div key={backup.id}>
                     <span><strong>{new Date(backup.createdAt).toLocaleString('zh-CN')}</strong><small>{formatBytes(backup.sizeBytes)} · {backup.taskCount} 个任务 · {backup.attachmentCount} 个附件</small></span>
                     <div className="cloud-backup-item-actions">
-                      {backup.manifestToken && <button type="button" onClick={() => copyTextToClipboard(backup.manifestToken || '').then(() => setBackupMessage('飞书备份恢复码已复制'))}>复制恢复码</button>}
                       <button type="button" disabled={backupBusy} onClick={() => restoreCloudBackup(backup.id)}>恢复</button>
                     </div>
                   </div>
                 ))}
                 {backupStatus && backupStatus.backups.length === 0 && <p className="cloud-backup-empty">还没有云端备份</p>}
               </div>
-              <p className="settings-status">{backupMessage || (backupStatus?.lastSuccessfulAt ? `上次成功：${new Date(backupStatus.lastSuccessfulAt).toLocaleString('zh-CN')}` : '尚未备份')}</p>
+              <p className="settings-status">{backupMessage || (backupStatus?.lastSuccessfulAt ? `上次成功：${new Date(backupStatus.lastSuccessfulAt).toLocaleString('zh-CN')}${backupStatus.lastVerificationMessage ? `；校验：${backupStatus.lastVerificationMessage}` : ''}${backupStatus.lastCleanupMessage ? `；清理：${backupStatus.lastCleanupMessage}` : ''}` : '尚未备份')}</p>
             </div>
 
             <div className="settings-section">

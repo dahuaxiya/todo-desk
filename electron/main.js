@@ -608,9 +608,10 @@ function getDefaultData() {
       edgeDocked: false,
       topologyPositions: {},
       larkCloudBackupEnabled: false,
-      larkCloudBackupFolderToken: 'root',
-      cloudBackupIntervalHours: 3,
-      cloudBackupRetentionCount: 8,
+      larkCloudBackupFolderToken: '',
+      cloudBackupIntervalMinutes: 30,
+      cloudBackupRecentCount: 4,
+      cloudBackupDailyCount: 2,
     },
     tasks: [
       {
@@ -691,14 +692,26 @@ async function runScheduledCloudBackup() {
     const data = await readData()
     if (!data.settings.larkCloudBackupEnabled) return
     const status = await getCloudBackupManager().getStatus()
-    const intervalMs = Math.max(1, Number(data.settings.cloudBackupIntervalHours) || 3) * 60 * 60_000
-    const lastAt = status.lastSuccessfulAt ? new Date(status.lastSuccessfulAt).getTime() : 0
-    if (lastAt && Date.now() - lastAt < intervalMs) return
-    await getCloudBackupManager().createBackup({
-      folderToken: data.settings.larkCloudBackupFolderToken || 'root',
-      retentionCount: data.settings.cloudBackupRetentionCount || 8,
-    })
-    await writeLog('info', 'Scheduled Lark cloud backup completed')
+    const intervalMs = Math.max(5, Number(data.settings.cloudBackupIntervalMinutes) || 30) * 60_000
+    // 无变化的检查也要计入间隔，否则到期后会被 5 分钟调度器反复压缩和计算哈希。
+    const lastAt = status.lastCheckedAt ? new Date(status.lastCheckedAt).getTime() : 0
+    if (!lastAt || Date.now() - lastAt >= intervalMs) {
+      const result = await getCloudBackupManager().createBackup({
+        folderToken: data.settings.larkCloudBackupFolderToken || '',
+        recentCount: data.settings.cloudBackupRecentCount || 4,
+        dailyCount: data.settings.cloudBackupDailyCount || 2,
+      })
+      await writeLog('info', result.skipped ? 'Scheduled Lark cloud backup skipped without changes' : 'Scheduled Lark cloud backup completed')
+    }
+
+    const latestStatus = await getCloudBackupManager().getStatus()
+    // 校验失败也只在当天执行一次，避免网络或密钥异常时每 5 分钟重复下载完整备份。
+    const verifiedDay = latestStatus.lastVerificationAttemptAt ? new Date(latestStatus.lastVerificationAttemptAt).toLocaleDateString('en-CA') : ''
+    const currentDay = new Date().toLocaleDateString('en-CA')
+    if (latestStatus.backups.length > 0 && verifiedDay !== currentDay) {
+      await getCloudBackupManager().verifyBackup()
+      await writeLog('info', 'Daily Lark cloud backup verification completed')
+    }
   } catch (error) {
     await writeLog('warn', 'Scheduled Lark cloud backup failed', { message: error instanceof Error ? error.message : 'unknown error' })
   }
@@ -706,8 +719,8 @@ async function runScheduledCloudBackup() {
 
 function startCloudBackupScheduler() {
   if (cloudBackupTimer) clearInterval(cloudBackupTimer)
-  // 每 15 分钟只检查是否到期，实际备份仍由用户设置的小时级间隔控制。
-  cloudBackupTimer = setInterval(() => void runScheduledCloudBackup(), 15 * 60_000)
+  // 每 5 分钟检查一次到期状态；内容签名相同会跳过，不产生重复版本。
+  cloudBackupTimer = setInterval(() => void runScheduledCloudBackup(), 5 * 60_000)
   setTimeout(() => void runScheduledCloudBackup(), 15_000)
 }
 
@@ -2638,8 +2651,10 @@ ipcMain.handle('backup:create', async (_event, options = {}) => {
   try {
     const data = await readData()
     return await getCloudBackupManager().createBackup({
-      folderToken: options.folderToken || data.settings.larkCloudBackupFolderToken || 'root',
-      retentionCount: options.retentionCount || data.settings.cloudBackupRetentionCount || 8,
+      folderToken: options.folderToken || data.settings.larkCloudBackupFolderToken || '',
+      recentCount: options.recentCount || data.settings.cloudBackupRecentCount || 4,
+      dailyCount: options.dailyCount || data.settings.cloudBackupDailyCount || 2,
+      force: options.force !== false,
     })
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : '云备份失败' }
@@ -2659,6 +2674,22 @@ ipcMain.handle('backup:restore-manifest', async (_event, manifestToken) => {
     return await getCloudBackupManager().restoreFromManifestToken(manifestToken)
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : '从飞书恢复备份失败' }
+  }
+})
+
+ipcMain.handle('backup:connect-repository', async (_event, recoveryCode) => {
+  try {
+    return await getCloudBackupManager().connectRepository(recoveryCode)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '连接飞书备份仓库失败' }
+  }
+})
+
+ipcMain.handle('backup:verify', async (_event, backupId) => {
+  try {
+    return await getCloudBackupManager().verifyBackup(backupId)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '云端备份校验失败' }
   }
 })
 
