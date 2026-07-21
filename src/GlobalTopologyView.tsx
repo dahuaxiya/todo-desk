@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import dagre from '@dagrejs/dagre'
-import { Redo2, Undo2 } from 'lucide-react'
+import { Link2, MousePointer2, Redo2, Search, Undo2, X } from 'lucide-react'
 import {
   Background,
   BackgroundVariant,
@@ -23,6 +23,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './GlobalTopologyView.css'
+import { collectInvalidTopologyParentIds, getTopologyParentCandidates } from './topologyParentBinding'
 import { collectRelationshipNetworkIds, normalizeTopologyProject } from './topologyNetwork'
 import type { Task, TaskColumnStatus, TaskParentLink, TaskRelationshipState, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
@@ -79,6 +80,7 @@ interface TaskNodeData extends Record<string, unknown> {
   childCount: number
   collapsed: boolean
   hiddenDescendantCount: number
+  parentPickState: '' | 'child' | 'eligible' | 'invalid' | 'target'
   onChangeStatus: GlobalTopologyViewProps['onChangeStatus']
   onToggleDone: GlobalTopologyViewProps['onToggleDone']
   onToggleCollapse: (taskId: string) => void
@@ -86,6 +88,30 @@ interface TaskNodeData extends Record<string, unknown> {
 
 type TaskFlowNode = Node<TaskNodeData, 'task'>
 type TaskFlowEdge = Edge<{ childTaskId: string; relationType: TopologyRelationType }>
+
+interface ParentBindingSnapshot {
+  childTaskId: string
+  parentTaskId: string
+  relationType: TopologyRelationType
+}
+
+interface ParentBindingNotice {
+  message: string
+  previousBindings?: ParentBindingSnapshot[]
+}
+
+interface TopologyParentPickerProps {
+  tasks: Task[]
+  childTaskIds: string[]
+  searchValue: string
+  relationType: TopologyRelationType
+  onSearchChange: (value: string) => void
+  onRelationTypeChange: (value: TopologyRelationType) => void
+  onSelectParent: (parentTaskId: string) => void
+  onSelectFromCanvas: () => void
+  onUnlink: () => void
+  onClose: () => void
+}
 
 const nodeWidth = 236
 const nodeHeight = 112
@@ -257,13 +283,18 @@ function collectDescendantIds(parentTaskId: string, childrenByParentId: Map<stri
 }
 
 function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
-  const { task, childCount, collapsed, hiddenDescendantCount, onChangeStatus, onToggleDone, onToggleCollapse } = data
+  const { task, childCount, collapsed, hiddenDescendantCount, parentPickState, onChangeStatus, onToggleDone, onToggleCollapse } = data
   const agentTask = isAgentTask(task)
   const columnStatus = getColumnStatus(task.status)
 
   return (
-    <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} relationship-${task.relationshipState || 'root'} ${selected ? 'selected' : ''}`}>
+    <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} relationship-${task.relationshipState || 'root'} ${selected ? 'selected' : ''} ${parentPickState ? `parent-pick-${parentPickState}` : ''}`}>
       <Handle id="parent" type="target" position={Position.Left} title="拖到空白处创建父任务" />
+      {(parentPickState === 'eligible' || parentPickState === 'target') && (
+        <span className="parent-pick-candidate-icon" title="设为父任务">
+          <Link2 aria-hidden="true" size={13} strokeWidth={2} />
+        </span>
+      )}
       <header>
         <button
           className={`global-task-check ${task.status === 'done' ? 'checked' : ''}`}
@@ -323,6 +354,88 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
   )
 }
 
+function TopologyParentPicker({
+  tasks,
+  childTaskIds,
+  searchValue,
+  relationType,
+  onSearchChange,
+  onRelationTypeChange,
+  onSelectParent,
+  onSelectFromCanvas,
+  onUnlink,
+  onClose,
+}: TopologyParentPickerProps) {
+  const childTaskIdSet = useMemo(() => new Set(childTaskIds), [childTaskIds])
+  const childTasks = useMemo(() => tasks.filter((task) => childTaskIdSet.has(task.id)), [childTaskIdSet, tasks])
+  const candidates = useMemo(
+    () => getTopologyParentCandidates(tasks, childTaskIds, searchValue),
+    [childTaskIds, searchValue, tasks],
+  )
+  const hasParent = childTasks.some((task) => Boolean(task.parentTaskId))
+
+  return (
+    <div className="topology-parent-picker" role="dialog" aria-label="选择父任务" onPointerDown={(event) => event.stopPropagation()}>
+      <header>
+        <div>
+          <strong>{childTaskIds.length > 1 ? `为 ${childTaskIds.length} 个任务选择父任务` : '选择父任务'}</strong>
+          <span>点击候选后立即保存</span>
+        </div>
+        <button className="icon-button" type="button" title="关闭" aria-label="关闭父任务选择器" onClick={onClose}>
+          <X aria-hidden="true" size={15} />
+        </button>
+      </header>
+      <div className="topology-parent-picker-tools">
+        <label>
+          <Search aria-hidden="true" size={14} />
+          <input
+            autoFocus
+            aria-label="搜索父任务"
+            value={searchValue}
+            placeholder="搜索标题、项目、标签"
+            onChange={(event) => onSearchChange(event.target.value)}
+          />
+        </label>
+        <div className="topology-parent-relation-type" role="group" aria-label="关系类型">
+          <button className={relationType === 'subtask_of' ? 'active' : ''} type="button" onClick={() => onRelationTypeChange('subtask_of')}>子任务</button>
+          <button className={relationType === 'discovered_from' ? 'active' : ''} type="button" onClick={() => onRelationTypeChange('discovered_from')}>派生</button>
+        </div>
+        <button className="topology-parent-canvas-action" type="button" onClick={onSelectFromCanvas}>
+          <MousePointer2 aria-hidden="true" size={14} />
+          从画布中选择
+        </button>
+      </div>
+      <div className="topology-parent-candidate-list" role="listbox" aria-label="父任务候选">
+        {candidates.map((candidate) => {
+          const currentCount = childTasks.filter((task) => task.parentTaskId === candidate.id).length
+          return (
+            <button
+              className={currentCount === childTasks.length ? 'current' : ''}
+              type="button"
+              role="option"
+              aria-selected={currentCount === childTasks.length}
+              key={candidate.id}
+              onClick={() => onSelectParent(candidate.id)}
+            >
+              <span>
+                <strong>{candidate.title}</strong>
+                <small>{statusLabels[candidate.status]} · {candidate.project || '未分组'}{isAgentTask(candidate) ? ` · ${candidate.agent || 'AI'}` : ''}</small>
+              </span>
+              {currentCount > 0 && <em>{currentCount === childTasks.length ? '当前' : `${currentCount} 个已绑定`}</em>}
+            </button>
+          )
+        })}
+        {candidates.length === 0 && <p>没有匹配的父任务</p>}
+      </div>
+      {hasParent && (
+        <footer>
+          <button type="button" onClick={onUnlink}>移除父任务</button>
+        </footer>
+      )}
+    </div>
+  )
+}
+
 const nodeTypes = { task: TaskNode }
 
 export function GlobalTopologyView({
@@ -363,6 +476,13 @@ export function GlobalTopologyView({
   const [selectedTaskId, setSelectedTaskId] = useState(initialMemory?.selectedTaskId ?? '')
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(() => new Set(initialMemory?.selectedTaskIds))
   const [selectedEdgeId, setSelectedEdgeId] = useState(initialMemory?.selectedEdgeId ?? '')
+  const [parentBindingTaskIds, setParentBindingTaskIds] = useState<string[]>([])
+  const [quickParentPickerOpen, setQuickParentPickerOpen] = useState(false)
+  const [quickParentSearch, setQuickParentSearch] = useState('')
+  const [canvasParentPickActive, setCanvasParentPickActive] = useState(false)
+  const [hoveredParentCandidateId, setHoveredParentCandidateId] = useState('')
+  const [parentBindingNotice, setParentBindingNotice] = useState<ParentBindingNotice | null>(null)
+  const [parentBindingBusy, setParentBindingBusy] = useState(false)
   const [localPositions, setLocalPositions] = useState<Record<string, TopologyPosition>>(positions)
   const [filteredPositionOverrides, setFilteredPositionOverrides] = useState<Record<string, TopologyPosition>>(initialMemory?.filteredPositionOverrides ?? {})
   const [nodes, setNodes] = useState<TaskFlowNode[]>([])
@@ -370,6 +490,7 @@ export function GlobalTopologyView({
   const selectedTaskIdsRef = useRef<Set<string>>(new Set(initialMemory?.selectedTaskIds))
   const undoStackRef = useRef<Record<string, TopologyPosition>[]>([])
   const redoStackRef = useRef<Record<string, TopologyPosition>[]>([])
+  const parentBindingBusyRef = useRef(false)
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<TaskFlowNode, TaskFlowEdge> | null>(null)
   const preparedFocusRequestIdRef = useRef(0)
   const handledFocusRequestIdRef = useRef(0)
@@ -406,6 +527,15 @@ export function GlobalTopologyView({
   }, [])
 
   const taskLookup = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
+  const parentBindingTaskIdSet = useMemo(() => new Set(parentBindingTaskIds), [parentBindingTaskIds])
+  const invalidParentCandidateIds = useMemo(
+    () => collectInvalidTopologyParentIds(tasks, parentBindingTaskIds),
+    [parentBindingTaskIds, tasks],
+  )
+  const eligibleParentCandidateIds = useMemo(
+    () => new Set(tasks.filter((task) => !invalidParentCandidateIds.has(task.id)).map((task) => task.id)),
+    [invalidParentCandidateIds, tasks],
+  )
   const automaticPositions = useMemo(() => createAutomaticLayout(tasks), [tasks])
   const unresolvedAgentTasks = useMemo(() => tasks.filter(isUnresolvedAgentTask), [tasks])
   const unresolvedTaskIds = useMemo(() => new Set(unresolvedAgentTasks.map((task) => task.id)), [unresolvedAgentTasks])
@@ -488,6 +618,36 @@ export function GlobalTopologyView({
   }, [unresolvedAgentTasks])
 
   useEffect(() => {
+    if (!parentBindingNotice) return undefined
+    const timeout = window.setTimeout(() => setParentBindingNotice(null), parentBindingNotice.previousBindings ? 7000 : 3500)
+    return () => window.clearTimeout(timeout)
+  }, [parentBindingNotice])
+
+  useEffect(() => {
+    if (!quickParentPickerOpen && !canvasParentPickActive) return undefined
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setQuickParentPickerOpen(false)
+      setCanvasParentPickActive(false)
+      setHoveredParentCandidateId('')
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [canvasParentPickActive, quickParentPickerOpen])
+
+  useEffect(() => {
+    const existingTaskIds = new Set(tasks.map((task) => task.id))
+    const nextTaskIds = parentBindingTaskIds.filter((taskId) => existingTaskIds.has(taskId))
+    if (nextTaskIds.length !== parentBindingTaskIds.length) setParentBindingTaskIds(nextTaskIds)
+    if (nextTaskIds.length === 0) {
+      setQuickParentPickerOpen(false)
+      setCanvasParentPickActive(false)
+      setHoveredParentCandidateId('')
+    }
+  }, [parentBindingTaskIds, tasks])
+
+  useEffect(() => {
     setNodes(visibleTasks.map((task) => ({
       id: task.id,
       type: 'task',
@@ -499,6 +659,15 @@ export function GlobalTopologyView({
         childCount: filteredChildrenByParentId.get(task.id)?.length ?? 0,
         collapsed: collapsedTaskIds.has(task.id),
         hiddenDescendantCount: hiddenDescendantCountByTaskId.get(task.id) ?? 0,
+        parentPickState: !canvasParentPickActive
+          ? ''
+          : parentBindingTaskIdSet.has(task.id)
+            ? 'child'
+            : !eligibleParentCandidateIds.has(task.id)
+              ? 'invalid'
+              : hoveredParentCandidateId === task.id
+                ? 'target'
+                : 'eligible',
         onChangeStatus,
         onToggleDone,
         onToggleCollapse: (taskId: string) => {
@@ -511,10 +680,10 @@ export function GlobalTopologyView({
         },
       },
       selected: selectedTaskIdsRef.current.has(task.id),
-      draggable: true,
-      connectable: true,
+      draggable: !canvasParentPickActive,
+      connectable: !canvasParentPickActive,
     })))
-  }, [automaticPositions, collapsedTaskIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, onChangeStatus, onToggleDone, visibleTasks])
+  }, [automaticPositions, canvasParentPickActive, collapsedTaskIds, eligibleParentCandidateIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, hoveredParentCandidateId, localPositions, onChangeStatus, onToggleDone, parentBindingTaskIdSet, visibleTasks])
 
   useEffect(() => {
     const current = selectedTaskIdsRef.current
@@ -597,8 +766,29 @@ export function GlobalTopologyView({
       data: { childTaskId: task.id, relationType },
     }]
   }), [selectedEdgeId, visibleTaskIds, visibleTasks])
+  const parentPreviewEdges = useMemo<TaskFlowEdge[]>(() => {
+    if (!canvasParentPickActive || !hoveredParentCandidateId || !eligibleParentCandidateIds.has(hoveredParentCandidateId)) return []
+    return parentBindingTaskIds.flatMap((childTaskId) => {
+      const childTask = taskLookup.get(childTaskId)
+      if (!childTask || !visibleTaskIds.has(childTaskId) || childTask.parentTaskId === hoveredParentCandidateId) return []
+      return [{
+        id: `parent-preview-${hoveredParentCandidateId}->${childTaskId}`,
+        source: hoveredParentCandidateId,
+        target: childTaskId,
+        type: 'smoothstep',
+        selectable: false,
+        focusable: false,
+        animated: false,
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#246cf0' },
+        style: { stroke: '#246cf0', strokeWidth: 2, strokeDasharray: '6 5' },
+        data: { childTaskId, relationType },
+      }]
+    })
+  }, [canvasParentPickActive, eligibleParentCandidateIds, hoveredParentCandidateId, parentBindingTaskIds, relationType, taskLookup, visibleTaskIds])
+  const renderedEdges = useMemo(() => [...edges, ...parentPreviewEdges], [edges, parentPreviewEdges])
 
   const selectedTask = selectedTaskId ? taskLookup.get(selectedTaskId) : undefined
+  const selectedTaskParent = selectedTask?.parentTaskId ? taskLookup.get(selectedTask.parentTaskId) : undefined
   const selectedTaskChildren = useMemo(
     () => selectedTask ? tasks.filter((task) => task.parentTaskId === selectedTask.id) : [],
     [selectedTask, tasks],
@@ -677,6 +867,124 @@ export function GlobalTopologyView({
     if (setsEqual(selectedTaskIdsRef.current, next)) return
     selectedTaskIdsRef.current = next
     setSelectedTaskIds(next)
+  }
+
+  function openQuickParentPicker(taskIds: Iterable<string>) {
+    const existingIds = [...new Set(taskIds)].filter((taskId) => taskLookup.has(taskId))
+    if (existingIds.length === 0) return
+    // 进入点选后点击父卡会改变 React Flow 的节点选择事件，因此必须先冻结待改绑任务集合。
+    // 后续所有候选过滤、批量提交和撤销都使用这份快照，不能依赖实时 selection。
+    setParentBindingTaskIds(existingIds)
+    setQuickParentSearch('')
+    setQuickParentPickerOpen(true)
+    setCanvasParentPickActive(false)
+    setHoveredParentCandidateId('')
+  }
+
+  function closeQuickParentPicker() {
+    setQuickParentPickerOpen(false)
+    setHoveredParentCandidateId('')
+  }
+
+  function startCanvasParentPick() {
+    if (parentBindingTaskIds.length === 0) return
+    setQuickParentPickerOpen(false)
+    setCanvasParentPickActive(true)
+    setHoveredParentCandidateId('')
+  }
+
+  function cancelCanvasParentPick() {
+    setCanvasParentPickActive(false)
+    setHoveredParentCandidateId('')
+  }
+
+  function captureParentBindingSnapshots(taskIds: string[]) {
+    return taskIds.flatMap((taskId): ParentBindingSnapshot[] => {
+      const task = taskLookup.get(taskId)
+      if (!task) return []
+      return [{
+        childTaskId: task.id,
+        parentTaskId: task.parentTaskId || '',
+        relationType: task.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of',
+      }]
+    })
+  }
+
+  async function bindTasksToParent(parentTaskId: string) {
+    if (parentBindingBusyRef.current || !eligibleParentCandidateIds.has(parentTaskId)) return
+    const parentTask = taskLookup.get(parentTaskId)
+    const changedTaskIds = parentBindingTaskIds.filter((taskId) => {
+      const task = taskLookup.get(taskId)
+      const currentRelationType = task?.parentLink?.type === 'discovered_from' ? 'discovered_from' : 'subtask_of'
+      return task && (task.parentTaskId !== parentTaskId || currentRelationType !== relationType)
+    })
+    if (!parentTask || changedTaskIds.length === 0) {
+      setQuickParentPickerOpen(false)
+      setCanvasParentPickActive(false)
+      setHoveredParentCandidateId('')
+      setParentBindingNotice({ message: '所选任务已经挂在这个父任务下' })
+      return
+    }
+
+    const previousBindings = captureParentBindingSnapshots(changedTaskIds)
+    // React state 不能同步阻止同一帧里的连续点击，用 ref 锁住持久化入口，避免重复绑定和重复撤销提示。
+    parentBindingBusyRef.current = true
+    setParentBindingBusy(true)
+    try {
+      if (changedTaskIds.length === 1) await onLinkTasks(parentTaskId, changedTaskIds[0], relationType)
+      else await onLinkTasksBatch(parentTaskId, changedTaskIds, relationType)
+      setParentBindingNotice({
+        message: changedTaskIds.length === 1
+          ? `已挂到「${parentTask.title}」`
+          : `已将 ${changedTaskIds.length} 个任务挂到「${parentTask.title}」`,
+        previousBindings,
+      })
+      setQuickParentPickerOpen(false)
+      setCanvasParentPickActive(false)
+      setHoveredParentCandidateId('')
+    } finally {
+      parentBindingBusyRef.current = false
+      setParentBindingBusy(false)
+    }
+  }
+
+  async function unlinkParentBindings() {
+    if (parentBindingBusyRef.current) return
+    const taskIdsWithParent = parentBindingTaskIds.filter((taskId) => Boolean(taskLookup.get(taskId)?.parentTaskId))
+    if (taskIdsWithParent.length === 0) return
+    const previousBindings = captureParentBindingSnapshots(taskIdsWithParent)
+    parentBindingBusyRef.current = true
+    setParentBindingBusy(true)
+    try {
+      // App 层每次保存都基于最新 dataRef；串行解除可避免并发持久化互相覆盖。
+      for (const taskId of taskIdsWithParent) await onUnlinkTask(taskId)
+      setParentBindingNotice({
+        message: taskIdsWithParent.length === 1 ? '已移除父任务' : `已移除 ${taskIdsWithParent.length} 个任务的父任务`,
+        previousBindings,
+      })
+      setQuickParentPickerOpen(false)
+    } finally {
+      parentBindingBusyRef.current = false
+      setParentBindingBusy(false)
+    }
+  }
+
+  async function undoParentBinding() {
+    const previousBindings = parentBindingNotice?.previousBindings
+    if (parentBindingBusyRef.current || !previousBindings?.length) return
+    parentBindingBusyRef.current = true
+    setParentBindingBusy(true)
+    try {
+      // 撤销可能需要把每个子任务放回不同父级，现有批量接口无法表达这种映射，因此按快照串行恢复。
+      for (const binding of previousBindings) {
+        if (binding.parentTaskId) await onLinkTasks(binding.parentTaskId, binding.childTaskId, binding.relationType)
+        else await onUnlinkTask(binding.childTaskId)
+      }
+      setParentBindingNotice({ message: '已撤销父任务变更' })
+    } finally {
+      parentBindingBusyRef.current = false
+      setParentBindingBusy(false)
+    }
   }
 
   function undoLayout() {
@@ -811,6 +1119,12 @@ export function GlobalTopologyView({
         {selectedEdgeId && <button className="danger-action" type="button" onClick={() => void unlinkSelectedEdge()}>解除关系</button>}
         <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
         {selectedTaskIds.size > 1 && <span className="global-topology-selection-count">已选 {selectedTaskIds.size}</span>}
+        {selectedTaskIds.size > 1 && (
+          <button className="topology-bind-parent-action" type="button" onClick={() => openQuickParentPicker(selectedTaskIds)}>
+            <Link2 aria-hidden="true" size={14} strokeWidth={2} />
+            挂到父任务
+          </button>
+        )}
         <div className="global-topology-filters">
           <select className="project-filter" value={projectFilter} aria-label="按项目筛选" onChange={(event) => setProjectFilter(event.target.value)}>
             <option value="all">全部项目</option>
@@ -832,6 +1146,23 @@ export function GlobalTopologyView({
           </select>
         </div>
       </div>
+
+      {quickParentPickerOpen && (
+        <div className={`topology-parent-picker-layer ${parentBindingTaskIds.length === 1 && selectedTask ? 'single-selection-picker' : 'multi-selection-picker'}`}>
+          <TopologyParentPicker
+            tasks={tasks}
+            childTaskIds={parentBindingTaskIds}
+            searchValue={quickParentSearch}
+            relationType={relationType}
+            onSearchChange={setQuickParentSearch}
+            onRelationTypeChange={setRelationType}
+            onSelectParent={(parentTaskId) => void bindTasksToParent(parentTaskId)}
+            onSelectFromCanvas={startCanvasParentPick}
+            onUnlink={() => void unlinkParentBindings()}
+            onClose={closeQuickParentPicker}
+          />
+        </div>
+      )}
 
       {inboxOpen && (
         <aside className="relationship-inbox" aria-label="AI 任务关系收件箱">
@@ -931,7 +1262,7 @@ export function GlobalTopologyView({
         <div className="global-topology-canvas" title="双击空白处新建任务；按住 Shift、Command 或 Control 拖动可圈选任务">
           <ReactFlow<TaskFlowNode, TaskFlowEdge>
             nodes={nodes}
-            edges={edges}
+            edges={renderedEdges}
             nodeTypes={nodeTypes}
             onInit={(instance) => {
               // Focus navigation reacts to state, while blank-drop creation needs the latest
@@ -941,14 +1272,28 @@ export function GlobalTopologyView({
             }}
             onNodesChange={onNodesChange}
             onNodeClick={(event, node) => {
+              if (canvasParentPickActive) {
+                if (eligibleParentCandidateIds.has(node.id)) void bindTasksToParent(node.id)
+                return
+              }
               if (!event.shiftKey && !event.metaKey && !event.ctrlKey) selectSingleTask(node.id)
               setSelectedEdgeId('')
+            }}
+            onNodeMouseEnter={(_, node) => {
+              if (canvasParentPickActive && eligibleParentCandidateIds.has(node.id)) setHoveredParentCandidateId(node.id)
+            }}
+            onNodeMouseLeave={(_, node) => {
+              if (hoveredParentCandidateId === node.id) setHoveredParentCandidateId('')
             }}
             onEdgeClick={(_, edge) => {
               setSelectedEdgeId(edge.id)
               selectSingleTask(edge.target)
             }}
             onPaneClick={(event) => {
+              if (canvasParentPickActive) {
+                cancelCanvasParentPick()
+                return
+              }
               if (event.detail >= 2) {
                 const position = getFlowPosition(event)
                 if (position) onCreateTask({ direction: 'independent', position })
@@ -959,6 +1304,7 @@ export function GlobalTopologyView({
               setSelectedEdgeId('')
             }}
             onSelectionChange={({ nodes: selectedNodes, edges: selectedEdges }) => {
+              if (canvasParentPickActive) return
               // 圈选过程中 React Flow 会在每次指针移动时上报临时选择集。这里只同步业务所需的
               // id 集合，不再据此重建全部节点或展开详情，避免大拓扑持续重排导致窗口假死。
               if (selectedNodes.length > 0) {
@@ -982,8 +1328,8 @@ export function GlobalTopologyView({
             maxZoom={maxTopologyZoom}
             deleteKeyCode={null}
             proOptions={{ hideAttribution: true }}
-            nodesConnectable
-            nodesDraggable
+            nodesConnectable={!canvasParentPickActive}
+            nodesDraggable={!canvasParentPickActive}
             selectionKeyCode={['Shift', 'Meta', 'Control']}
             multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
             selectionMode={SelectionMode.Partial}
@@ -1005,6 +1351,19 @@ export function GlobalTopologyView({
               maskColor="rgba(248, 247, 242, 0.72)"
             />
           </ReactFlow>
+          {canvasParentPickActive && (
+            <div className="topology-parent-pick-banner" role="status">
+              <Link2 aria-hidden="true" size={15} strokeWidth={2} />
+              <strong>{parentBindingTaskIds.length > 1 ? `为 ${parentBindingTaskIds.length} 个任务选择父任务` : '选择父任务'}</strong>
+              <div className="topology-parent-relation-type" role="group" aria-label="关系类型">
+                <button className={relationType === 'subtask_of' ? 'active' : ''} type="button" onClick={() => setRelationType('subtask_of')}>子任务</button>
+                <button className={relationType === 'discovered_from' ? 'active' : ''} type="button" onClick={() => setRelationType('discovered_from')}>派生</button>
+              </div>
+              <button className="icon-button" type="button" title="取消" aria-label="取消选择父任务" onClick={cancelCanvasParentPick}>
+                <X aria-hidden="true" size={15} />
+              </button>
+            </div>
+          )}
           <div className="global-topology-legend">
             <span><i className="human" />人工任务</span>
             <span><i className="agent" />AI 任务</span>
@@ -1038,7 +1397,20 @@ export function GlobalTopologyView({
                 </section>
                 <section>
                   <h3>关系与进度</h3>
-                  <p>{selectedTaskPath.map((task) => task.title).join(' › ')}</p>
+                  <div className="inspector-parent-row">
+                    <span>父任务</span>
+                    <button
+                      type="button"
+                      title={selectedTaskParent?.title || '挂到父任务'}
+                      aria-expanded={quickParentPickerOpen && parentBindingTaskIds.length === 1}
+                      onClick={() => openQuickParentPicker([selectedTask.id])}
+                    >
+                      <Link2 aria-hidden="true" size={14} strokeWidth={2} />
+                      <strong>{selectedTaskParent?.title || '挂到父任务'}</strong>
+                      <small>{selectedTaskParent ? '更换' : '选择'}</small>
+                    </button>
+                  </div>
+                  {selectedTaskPath.length > 1 && <p className="inspector-task-path">{selectedTaskPath.map((task) => task.title).join(' › ')}</p>}
                   <div className="inspector-progress">
                     <span style={{ width: `${selectedTaskChildren.length === 0 ? 0 : (selectedTaskChildren.filter((task) => task.status === 'done').length / selectedTaskChildren.length) * 100}%` }} />
                   </div>
@@ -1076,6 +1448,20 @@ export function GlobalTopologyView({
           </aside>
         )}
       </div>
+      {parentBindingNotice && (
+        <div className="topology-parent-binding-notice" role="status">
+          <span>{parentBindingNotice.message}</span>
+          {parentBindingNotice.previousBindings && (
+            <button type="button" disabled={parentBindingBusy} onClick={() => void undoParentBinding()}>
+              <Undo2 aria-hidden="true" size={14} />
+              撤销
+            </button>
+          )}
+          <button className="icon-button" type="button" title="关闭" aria-label="关闭提示" onClick={() => setParentBindingNotice(null)}>
+            <X aria-hidden="true" size={14} />
+          </button>
+        </div>
+      )}
     </section>
   )
 }

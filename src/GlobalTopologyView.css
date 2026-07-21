@@ -145,6 +145,22 @@
   white-space: nowrap;
 }
 
+.global-topology-toolbar .topology-bind-parent-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: #b9cff5;
+  background: #f1f6ff;
+  color: #1f60be;
+  font-weight: 650;
+}
+
+.global-topology-toolbar .topology-bind-parent-action:hover:not(:disabled) {
+  border-color: #8eb2ec;
+  background: #e8f1ff;
+}
+
 .global-topology-filters {
   min-width: 0;
   display: flex;
@@ -182,7 +198,35 @@
   background: #faf9f5;
 }
 
+.topology-parent-pick-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  min-height: 42px;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px 5px 12px;
+  border: 1px solid #abc5ee;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 22px rgba(42, 72, 120, 0.2);
+  color: #244f8e;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.topology-parent-pick-banner > strong {
+  font-size: calc(11px * var(--app-font-scale));
+}
+
+.topology-parent-pick-banner .topology-parent-relation-type {
+  margin-left: 2px;
+}
+
 .global-task-node {
+  position: relative;
   width: 236px;
   min-height: 112px;
   padding: 12px 13px 10px;
@@ -212,6 +256,63 @@
 .global-task-node.selected {
   border-color: #246cf0;
   box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.13), 0 5px 14px rgba(39, 70, 122, 0.14);
+}
+
+.global-task-node.parent-pick-invalid {
+  opacity: 0.38;
+  filter: saturate(0.55);
+}
+
+.global-task-node.parent-pick-child {
+  border-color: #246cf0;
+  box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.14), 0 5px 14px rgba(39, 70, 122, 0.14);
+  cursor: not-allowed;
+}
+
+.global-task-node.parent-pick-eligible,
+.global-task-node.parent-pick-target {
+  border-color: #77a7e9;
+  cursor: copy;
+}
+
+.global-task-node.parent-pick-eligible {
+  box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.08), 0 4px 12px rgba(39, 70, 122, 0.12);
+}
+
+.global-task-node.parent-pick-target {
+  border-color: #1769ee;
+  background: #f2f7ff;
+  box-shadow: 0 0 0 3px rgba(36, 108, 240, 0.18), 0 7px 18px rgba(39, 70, 122, 0.18);
+}
+
+.global-task-node.parent-pick-eligible .react-flow__handle,
+.global-task-node.parent-pick-target .react-flow__handle,
+.global-task-node.parent-pick-invalid .react-flow__handle,
+.global-task-node.parent-pick-child .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.parent-pick-candidate-icon {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 24px;
+  height: 24px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1px solid #8eb2ec;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 3px 9px rgba(38, 76, 134, 0.18);
+  color: #1d64ce;
+}
+
+.global-task-node.parent-pick-target .parent-pick-candidate-icon {
+  border-color: #1769ee;
+  background: #1769ee;
+  color: #fff;
 }
 
 .global-task-node header {
@@ -694,6 +795,261 @@
   font-size: calc(10px * var(--app-font-scale));
 }
 
+.topology-parent-picker-layer {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  width: min(370px, calc(100% - 24px));
+  z-index: 45;
+}
+
+.topology-parent-picker-layer.single-selection-picker {
+  right: 330px;
+}
+
+.topology-parent-picker {
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  border: 1px solid #d9d5cd;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 15px 36px rgba(51, 47, 39, 0.2);
+}
+
+.global-topology-inspector .topology-parent-picker {
+  margin-top: 10px;
+}
+
+.topology-parent-picker > header {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 11px 9px 13px;
+  border-bottom: 1px solid #ebe8e2;
+  background: #fbfaf7;
+}
+
+.topology-parent-picker > header > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.topology-parent-picker > header strong {
+  overflow: hidden;
+  color: #302f2b;
+  font-size: calc(12px * var(--app-font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-parent-picker > header span {
+  color: #817d76;
+  font-size: calc(9px * var(--app-font-scale));
+}
+
+.topology-parent-picker .icon-button,
+.topology-parent-pick-banner .icon-button,
+.topology-parent-binding-notice .icon-button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b6862;
+  cursor: pointer;
+}
+
+.topology-parent-picker .icon-button:hover,
+.topology-parent-pick-banner .icon-button:hover,
+.topology-parent-binding-notice .icon-button:hover {
+  background: #efede8;
+  color: #2f2e2a;
+}
+
+.topology-parent-picker-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #ebe8e2;
+}
+
+.topology-parent-picker-tools > label {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid #dcd8d0;
+  border-radius: 6px;
+  background: #fff;
+  color: #77736c;
+}
+
+.topology-parent-picker-tools > label:focus-within {
+  border-color: #8eb2ec;
+  box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.1);
+}
+
+.topology-parent-picker-tools input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #292824;
+  font: inherit;
+  font-size: calc(11px * var(--app-font-scale));
+}
+
+.topology-parent-relation-type {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 6px;
+  background: #efede8;
+}
+
+.topology-parent-relation-type button {
+  min-width: 46px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #706d67;
+  font: inherit;
+  font-size: calc(10px * var(--app-font-scale));
+  cursor: pointer;
+}
+
+.topology-parent-relation-type button.active {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(56, 52, 45, 0.13);
+  color: #1d62c8;
+  font-weight: 650;
+}
+
+.topology-parent-canvas-action {
+  grid-column: 1 / -1;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #b9cff5;
+  border-radius: 6px;
+  background: #f1f6ff;
+  color: #1f60be;
+  font: inherit;
+  font-size: calc(11px * var(--app-font-scale));
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.topology-parent-canvas-action:hover {
+  border-color: #8eb2ec;
+  background: #e8f1ff;
+}
+
+.topology-parent-candidate-list {
+  max-height: 238px;
+  overflow-y: auto;
+  padding: 5px;
+  overscroll-behavior: contain;
+}
+
+.topology-parent-candidate-list > button {
+  width: 100%;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #34332f;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topology-parent-candidate-list > button:hover,
+.topology-parent-candidate-list > button.current {
+  border-color: #c7d8f5;
+  background: #f1f6ff;
+}
+
+.topology-parent-candidate-list > button > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.topology-parent-candidate-list strong,
+.topology-parent-candidate-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-parent-candidate-list strong {
+  font-size: calc(11px * var(--app-font-scale));
+}
+
+.topology-parent-candidate-list small {
+  color: #817d76;
+  font-size: calc(9px * var(--app-font-scale));
+}
+
+.topology-parent-candidate-list em {
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: #dce9ff;
+  color: #1d62c8;
+  font-size: calc(9px * var(--app-font-scale));
+  font-style: normal;
+}
+
+.topology-parent-candidate-list > p {
+  margin: 0;
+  padding: 22px 12px;
+  color: #87837b;
+  font-size: calc(10px * var(--app-font-scale));
+  text-align: center;
+}
+
+.topology-parent-picker > footer {
+  padding: 7px 10px 9px;
+  border-top: 1px solid #ebe8e2;
+}
+
+.topology-parent-picker > footer button {
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #a33e36;
+  font: inherit;
+  font-size: calc(10px * var(--app-font-scale));
+  cursor: pointer;
+}
+
+.topology-parent-picker > footer button:hover {
+  background: #fff0ee;
+}
+
 .global-task-node footer span {
   max-width: 50%;
   overflow: hidden;
@@ -987,6 +1343,62 @@
   white-space: pre-wrap;
 }
 
+.inspector-parent-row {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.inspector-parent-row > span {
+  color: #7b7770;
+  font-size: calc(9px * var(--app-font-scale));
+}
+
+.inspector-parent-row > button {
+  min-width: 0;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border: 1px solid #d7d3cb;
+  border-radius: 6px;
+  background: #faf9f6;
+  color: #3c3a36;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inspector-parent-row > button:hover,
+.inspector-parent-row > button[aria-expanded='true'] {
+  border-color: #9dbbea;
+  background: #f1f6ff;
+  color: #1f5fb9;
+}
+
+.inspector-parent-row > button strong {
+  overflow: hidden;
+  font-size: calc(10px * var(--app-font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-parent-row > button small {
+  color: #77736c;
+  font-size: calc(9px * var(--app-font-scale));
+}
+
+.global-topology-inspector section .inspector-task-path {
+  margin: 0 0 8px;
+  padding: 7px 8px;
+  border-radius: 5px;
+  background: #f5f4f1;
+  color: #716d66;
+  font-size: calc(9px * var(--app-font-scale));
+  line-height: 1.5;
+}
+
 .global-topology-inspector .inspector-code {
   padding: 6px 8px;
   border-radius: 5px;
@@ -1064,6 +1476,55 @@
   line-height: 1.65;
 }
 
+.topology-parent-binding-notice {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  min-height: 40px;
+  max-width: min(520px, calc(100% - 32px));
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 12px;
+  border: 1px solid #d5d1c8;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 28px rgba(48, 44, 37, 0.2);
+  color: #3d3b36;
+  font-size: calc(11px * var(--app-font-scale));
+  transform: translateX(-50%);
+}
+
+.topology-parent-binding-notice > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topology-parent-binding-notice > button:not(.icon-button) {
+  height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: #edf4ff;
+  color: #1d62c8;
+  font: inherit;
+  font-size: calc(10px * var(--app-font-scale));
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.topology-parent-binding-notice > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .app-shell:has(.global-topology-view):not(.topology-composer-open) .composer {
   display: none;
 }
@@ -1076,6 +1537,10 @@
   .global-topology-legend {
     max-width: 420px;
     flex-wrap: wrap;
+  }
+
+  .topology-parent-picker-layer.single-selection-picker {
+    right: 292px;
   }
 }
 
