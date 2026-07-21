@@ -1388,7 +1388,11 @@ function App() {
   useEffect(() => {
     if (!window.todoDesk?.onDataUpdated) return undefined
     return window.todoDesk.onDataUpdated((nextData) => {
-      setData(mergeWithDefaults(nextData))
+      const mergedData = mergeWithDefaults(nextData)
+      // API/主进程推送后，用户可能在 React 提交下一帧前继续操作。同步刷新 ref，
+      // 避免紧接着的父任务改绑仍基于推送前的任务快照保存。
+      dataRef.current = mergedData
+      setData(mergedData)
       setSyncState(nextData.settings.larkDoc ? '飞书同步已配置' : '先配置飞书文档')
     })
   }, [])
@@ -1646,6 +1650,9 @@ function App() {
 
   const persist = useCallback(async (nextData: AppData) => {
     const saved = await saveData(nextData)
+    // 批量撤销会串行执行多次关系保存；setData 要到下一次渲染才更新 ref，
+    // 因此这里先同步推进最新快照，防止后一次保存覆盖前一次结果。
+    dataRef.current = saved
     setData(saved)
     return saved
   }, [])
@@ -2682,7 +2689,7 @@ function App() {
           relationshipState: 'linked' as const,
           parentLink: {
             type: relationType,
-            reason: relationType === 'discovered_from' ? '通过关系收件箱批量建立的派生关系' : undefined,
+            reason: relationType === 'discovered_from' ? '通过全局拓扑批量建立的派生关系' : undefined,
             affectsParentCompletion: true,
             createdBy: 'human' as const,
             createdAt: now,
@@ -2692,7 +2699,7 @@ function App() {
         }
       : task)
     await persist({ ...currentData, tasks: nextTasks })
-    setSyncState(`已将 ${childIds.length} 个 AI 任务绑定到「${parentTask.title}」`)
+    setSyncState(`已将 ${childIds.length} 个任务绑定到「${parentTask.title}」`)
   }
 
   async function createTopologyParentTask(childTaskIds: string[], title: string, relationType: TaskParentLinkType) {
