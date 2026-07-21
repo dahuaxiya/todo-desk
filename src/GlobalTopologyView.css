@@ -269,24 +269,19 @@
   cursor: not-allowed;
 }
 
-.global-task-node.parent-pick-eligible,
-.global-task-node.parent-pick-target {
+.global-task-node.parent-pick-eligible {
   border-color: #77a7e9;
   cursor: copy;
-}
-
-.global-task-node.parent-pick-eligible {
   box-shadow: 0 0 0 2px rgba(36, 108, 240, 0.08), 0 4px 12px rgba(39, 70, 122, 0.12);
 }
 
-.global-task-node.parent-pick-target {
+.global-task-node.parent-pick-eligible:hover {
   border-color: #1769ee;
   background: #f2f7ff;
   box-shadow: 0 0 0 3px rgba(36, 108, 240, 0.18), 0 7px 18px rgba(39, 70, 122, 0.18);
 }
 
 .global-task-node.parent-pick-eligible .react-flow__handle,
-.global-task-node.parent-pick-target .react-flow__handle,
 .global-task-node.parent-pick-invalid .react-flow__handle,
 .global-task-node.parent-pick-child .react-flow__handle {
   opacity: 0;
@@ -309,10 +304,16 @@
   color: #1d64ce;
 }
 
-.global-task-node.parent-pick-target .parent-pick-candidate-icon {
+.global-task-node.parent-pick-eligible:hover .parent-pick-candidate-icon {
   border-color: #1769ee;
   background: #1769ee;
   color: #fff;
+}
+
+/* 预览边只表达即将建立的关系，不能抢走卡片上的指针事件，否则会在 hover/leave 间振荡。 */
+.react-flow__edge.parent-preview-edge,
+.react-flow__edge.parent-preview-edge path {
+  pointer-events: none;
 }
 
 .global-task-node header {

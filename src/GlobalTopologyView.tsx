@@ -80,7 +80,7 @@ interface TaskNodeData extends Record<string, unknown> {
   childCount: number
   collapsed: boolean
   hiddenDescendantCount: number
-  parentPickState: '' | 'child' | 'eligible' | 'invalid' | 'target'
+  parentPickState: '' | 'child' | 'eligible' | 'invalid'
   onChangeStatus: GlobalTopologyViewProps['onChangeStatus']
   onToggleDone: GlobalTopologyViewProps['onToggleDone']
   onToggleCollapse: (taskId: string) => void
@@ -290,7 +290,7 @@ function TaskNode({ data, selected }: NodeProps<TaskFlowNode>) {
   return (
     <article className={`global-task-node ${agentTask ? 'agent-task' : 'human-task'} status-${columnStatus} relationship-${task.relationshipState || 'root'} ${selected ? 'selected' : ''} ${parentPickState ? `parent-pick-${parentPickState}` : ''}`}>
       <Handle id="parent" type="target" position={Position.Left} title="拖到空白处创建父任务" />
-      {(parentPickState === 'eligible' || parentPickState === 'target') && (
+      {parentPickState === 'eligible' && (
         <span className="parent-pick-candidate-icon" title="设为父任务">
           <Link2 aria-hidden="true" size={13} strokeWidth={2} />
         </span>
@@ -665,9 +665,7 @@ export function GlobalTopologyView({
             ? 'child'
             : !eligibleParentCandidateIds.has(task.id)
               ? 'invalid'
-              : hoveredParentCandidateId === task.id
-                ? 'target'
-                : 'eligible',
+              : 'eligible',
         onChangeStatus,
         onToggleDone,
         onToggleCollapse: (taskId: string) => {
@@ -683,7 +681,7 @@ export function GlobalTopologyView({
       draggable: !canvasParentPickActive,
       connectable: !canvasParentPickActive,
     })))
-  }, [automaticPositions, canvasParentPickActive, collapsedTaskIds, eligibleParentCandidateIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, hoveredParentCandidateId, localPositions, onChangeStatus, onToggleDone, parentBindingTaskIdSet, visibleTasks])
+  }, [automaticPositions, canvasParentPickActive, collapsedTaskIds, eligibleParentCandidateIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, onChangeStatus, onToggleDone, parentBindingTaskIdSet, visibleTasks])
 
   useEffect(() => {
     const current = selectedTaskIdsRef.current
@@ -776,6 +774,8 @@ export function GlobalTopologyView({
         source: hoveredParentCandidateId,
         target: childTaskId,
         type: 'smoothstep',
+        className: 'parent-preview-edge',
+        interactionWidth: 0,
         selectable: false,
         focusable: false,
         animated: false,
@@ -1283,7 +1283,7 @@ export function GlobalTopologyView({
               if (canvasParentPickActive && eligibleParentCandidateIds.has(node.id)) setHoveredParentCandidateId(node.id)
             }}
             onNodeMouseLeave={(_, node) => {
-              if (hoveredParentCandidateId === node.id) setHoveredParentCandidateId('')
+              setHoveredParentCandidateId((current) => current === node.id ? '' : current)
             }}
             onEdgeClick={(_, edge) => {
               setSelectedEdgeId(edge.id)
