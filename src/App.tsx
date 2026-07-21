@@ -2543,22 +2543,6 @@ function App() {
     setSelectedTaskId(taskId)
   }
 
-  async function dismissCompletionRequest(taskId: string) {
-    const currentTask = data.tasks.find((task) => task.id === taskId)
-    if (!currentTask) return
-    const resolvedAt = new Date().toISOString()
-    await updateTask(taskId, {
-      completionAcceptance: {
-        requestedAt: currentTask.completionAcceptance?.requestedAt || resolvedAt,
-        requestedBy: currentTask.completionAcceptance?.requestedBy || 'agent',
-        message: currentTask.completionAcceptance?.message || completionAcceptanceMessage,
-        resolution: 'dismissed',
-        resolvedAt,
-      },
-    })
-    setSelectedTaskId(taskId)
-  }
-
   async function keepParentTaskOpen(taskId: string) {
     const currentTask = data.tasks.find((task) => task.id === taskId)
     if (!currentTask?.parentCompletionReview) return
@@ -3395,7 +3379,6 @@ function App() {
                 task={expandedDockTask}
                 onConfirm={completeTask}
                 onContinue={continueCompletionRequest}
-                onDismiss={dismissCompletionRequest}
                 onOpenSession={openAgentSession}
               />
               <SessionReviewNotice task={expandedDockTask} onResolve={resolveSessionReview} onOpenSession={openAgentSession} />
@@ -3616,7 +3599,6 @@ function App() {
                 }}
                 onOpenTopology={openTaskTopology}
                 onContinueCompletionRequest={continueCompletionRequest}
-                onDismissCompletionRequest={dismissCompletionRequest}
                 onResolveSessionReview={resolveSessionReview}
                 onDelete={deleteTask}
                 onPreviewImages={openImagePreview}
@@ -3924,7 +3906,6 @@ function App() {
               }}
               onOpenTopology={openTaskTopology}
               onContinueCompletionRequest={continueCompletionRequest}
-              onDismissCompletionRequest={dismissCompletionRequest}
               onResolveSessionReview={resolveSessionReview}
               draggingTaskId={draggingTaskId}
               onDragStart={setDraggingTaskId}
@@ -4568,7 +4549,6 @@ interface TaskColumnProps {
   onOpenRelatedTask: (taskId: string) => void
   onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
-  onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
   draggingTaskId: string
   onDragStart: (taskId: string) => void
@@ -4759,7 +4739,6 @@ interface MiniTaskRowProps {
   onOpenRelatedTask: (taskId: string) => void
   onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
-  onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
   onDelete: (taskId: string) => void
   onPreviewImages: (images: TaskImage[], index: number, title: string) => void
@@ -4797,11 +4776,10 @@ interface CompletionGateNoticeProps {
   task: Task
   onConfirm: (taskId: string) => void
   onContinue: (taskId: string) => void
-  onDismiss: (taskId: string) => void
   onOpenSession?: (task: Task) => Promise<boolean> | boolean
 }
 
-function CompletionGateNotice({ task, onConfirm, onContinue, onDismiss, onOpenSession }: CompletionGateNoticeProps) {
+function CompletionGateNotice({ task, onConfirm, onContinue, onOpenSession }: CompletionGateNoticeProps) {
   if (task.status !== 'pending_acceptance') return null
 
   const active = hasActiveCompletionGate(task)
@@ -4832,11 +4810,6 @@ function CompletionGateNotice({ task, onConfirm, onContinue, onDismiss, onOpenSe
         <button type="button" onClick={() => onContinue(task.id)}>
           继续修改
         </button>
-        {active && (
-          <button type="button" onClick={() => onDismiss(task.id)}>
-            暂不处理
-          </button>
-        )}
       </div>
     </section>
   )
@@ -5278,7 +5251,7 @@ function TaskChildList({
   )
 }
 
-function MiniTaskRow({ task, selected, multiSelected, taskPath, parentTask, childTasks, parentTaskCandidates, onSelect, onToggleExpand, onEdit, onToggleDone, onMove, onKeepParentTaskOpen, onChangeParentTask, onOpenRelatedTask, onOpenTopology, onContinueCompletionRequest, onDismissCompletionRequest, onResolveSessionReview, onDelete, onPreviewImages, onCopy, onOpenCalendar, onOpenAgentSession }: MiniTaskRowProps) {
+function MiniTaskRow({ task, selected, multiSelected, taskPath, parentTask, childTasks, parentTaskCandidates, onSelect, onToggleExpand, onEdit, onToggleDone, onMove, onKeepParentTaskOpen, onChangeParentTask, onOpenRelatedTask, onOpenTopology, onContinueCompletionRequest, onResolveSessionReview, onDelete, onPreviewImages, onCopy, onOpenCalendar, onOpenAgentSession }: MiniTaskRowProps) {
   const isDone = task.status === 'done'
   const hasCompletionNotice = hasActiveCompletionGate(task)
   const hasSessionReviewNotice = hasActiveSessionReview(task)
@@ -5329,7 +5302,6 @@ function MiniTaskRow({ task, selected, multiSelected, taskPath, parentTask, chil
               task={task}
               onConfirm={onToggleDone}
               onContinue={onContinueCompletionRequest}
-              onDismiss={onDismissCompletionRequest}
               onOpenSession={onOpenAgentSession}
             />
             <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
@@ -5810,7 +5782,6 @@ function TaskColumn({
   onOpenRelatedTask,
   onOpenTopology,
   onContinueCompletionRequest,
-  onDismissCompletionRequest,
   onResolveSessionReview,
   draggingTaskId,
   onDragStart,
@@ -5923,7 +5894,6 @@ function TaskColumn({
             onOpenRelatedTask={onOpenRelatedTask}
             onOpenTopology={onOpenTopology}
             onContinueCompletionRequest={onContinueCompletionRequest}
-            onDismissCompletionRequest={onDismissCompletionRequest}
             onResolveSessionReview={onResolveSessionReview}
             onDragStart={onDragStart}
             onMove={onMove}
@@ -5960,7 +5930,6 @@ interface TaskCardProps {
   onOpenRelatedTask: (taskId: string) => void
   onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
-  onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
   onDragStart: (taskId: string) => void
   onMove: (taskId: string, status: TaskColumnStatus) => void
@@ -5991,7 +5960,6 @@ interface NormalTaskDetailPopoverProps {
   onOpenRelatedTask: (taskId: string) => void
   onOpenTopology: (taskId: string) => void
   onContinueCompletionRequest: (taskId: string) => void
-  onDismissCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
   onMove: (taskId: string, status: TaskColumnStatus) => void
   onDelete: (taskId: string) => void
@@ -6017,7 +5985,6 @@ function NormalTaskDetailPopover({
   onOpenRelatedTask,
   onOpenTopology,
   onContinueCompletionRequest,
-  onDismissCompletionRequest,
   onResolveSessionReview,
   onMove,
   onDelete,
@@ -6139,7 +6106,6 @@ function NormalTaskDetailPopover({
             task={task}
             onConfirm={onComplete}
             onContinue={onContinueCompletionRequest}
-            onDismiss={onDismissCompletionRequest}
             onOpenSession={onOpenAgentSession}
           />
           <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
@@ -6220,7 +6186,6 @@ function TaskCard({
   onOpenRelatedTask,
   onOpenTopology,
   onContinueCompletionRequest,
-  onDismissCompletionRequest,
   onResolveSessionReview,
   onDragStart,
   onMove,
@@ -6314,7 +6279,6 @@ function TaskCard({
           onOpenRelatedTask={onOpenRelatedTask}
           onOpenTopology={onOpenTopology}
           onContinueCompletionRequest={onContinueCompletionRequest}
-          onDismissCompletionRequest={onDismissCompletionRequest}
           onResolveSessionReview={onResolveSessionReview}
           onMove={onMove}
           onDelete={onDelete}
