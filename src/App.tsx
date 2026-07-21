@@ -15,6 +15,7 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import type { GlobalTopologyViewMemory } from './GlobalTopologyView'
 import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, CloudBackupStatus, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
@@ -1345,6 +1346,7 @@ function App() {
   const [globalTopologyFocusRequest, setGlobalTopologyFocusRequest] = useState<TopologyFocusRequest | null>(null)
   const [globalTopologyContextTaskId, setGlobalTopologyContextTaskId] = useState('')
   const globalTopologyFocusRequestIdRef = useRef(0)
+  const [topologyViewMemory, setTopologyViewMemory] = useState<GlobalTopologyViewMemory>()
   const [calendarMonth, setCalendarMonth] = useState(() => new Date())
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => toCalendarDateKey(new Date()))
 
@@ -3884,6 +3886,8 @@ function App() {
             onOpenCalendar={openCalendar}
             onEditTask={editTaskFromGlobalTopology}
             onDeleteTask={deleteTask}
+            initialMemory={topologyViewMemory}
+            onMemoryChange={setTopologyViewMemory}
           />
         </Suspense>
       ) : (
