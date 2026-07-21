@@ -3384,6 +3384,7 @@ function App() {
     <DescendantCompletionDialog
       prompt={descendantCompletionPrompt}
       busy={descendantCompletionBusy}
+      onCancel={() => setDescendantCompletionPrompt(null)}
       onResolve={(includeDescendants) => void resolveDescendantCompletion(includeDescendants)}
     />
   )
@@ -4929,11 +4930,24 @@ function SelectionMergeBar({ count, compact = false, onComplete, onMoveDoing, on
 interface DescendantCompletionDialogProps {
   prompt: DescendantCompletionPrompt
   busy: boolean
+  onCancel: () => void
   onResolve: (includeDescendants: boolean) => void
 }
 
-function DescendantCompletionDialog({ prompt, busy, onResolve }: DescendantCompletionDialogProps) {
+function DescendantCompletionDialog({ prompt, busy, onCancel, onResolve }: DescendantCompletionDialogProps) {
   const multipleRoots = prompt.rootTaskIds.length > 1
+
+  useEffect(() => {
+    if (busy) return undefined
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onCancel()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [busy, onCancel])
+
   return createPortal(
     <div className="descendant-completion-backdrop" role="presentation">
       <section className="descendant-completion-dialog" role="dialog" aria-modal="true" aria-labelledby="descendant-completion-title">
@@ -4947,6 +4961,9 @@ function DescendantCompletionDialog({ prompt, busy, onResolve }: DescendantCompl
           </p>
         </div>
         <footer>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            取消
+          </button>
           <button type="button" disabled={busy} onClick={() => onResolve(false)}>
             {busy ? '处理中...' : multipleRoots ? '仅完成已选任务' : '仅完成父任务'}
           </button>
