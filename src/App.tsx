@@ -15,7 +15,7 @@ import searchIcon from './assets/icons/search.png'
 import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
-import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
+import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, CloudBackupStatus, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
 const TaskTopologyCanvas = lazy(() => import('./TaskTopologyCanvas').then((module) => ({ default: module.TaskTopologyCanvas })))
@@ -669,6 +669,11 @@ function createDefaultData(): AppData {
       globalShortcuts: defaultGlobalShortcuts,
       edgeDocked: false,
       topologyPositions: {},
+      larkCloudBackupEnabled: false,
+      larkCloudBackupFolderToken: '',
+      cloudBackupIntervalMinutes: 30,
+      cloudBackupRecentCount: 4,
+      cloudBackupDailyCount: 2,
     },
     tasks: [
       {
@@ -711,6 +716,10 @@ function createDefaultData(): AppData {
 
 function mergeWithDefaults(value: AppData): AppData {
   const defaults = createDefaultData()
+  const legacySettings = value.settings as AppSettings & {
+    cloudBackupIntervalHours?: number
+    cloudBackupRetentionCount?: number
+  }
   return {
     ...defaults,
     ...value,
@@ -725,6 +734,12 @@ function mergeWithDefaults(value: AppData): AppData {
       fontSize: normalizeFontSize(value.settings?.fontSize),
       edgeDocked: false,
       topologyPositions: value.settings?.topologyPositions || {},
+      // 旧版本使用小时和单一保留数量；升级后固定迁移到新的分层保留默认值。
+      cloudBackupIntervalMinutes: value.settings?.cloudBackupIntervalMinutes
+        || (legacySettings.cloudBackupIntervalHours ? legacySettings.cloudBackupIntervalHours * 60 : 30),
+      cloudBackupRecentCount: value.settings?.cloudBackupRecentCount || Math.min(legacySettings.cloudBackupRetentionCount || 4, 4),
+      cloudBackupDailyCount: value.settings?.cloudBackupDailyCount || 2,
+      larkCloudBackupFolderToken: value.settings?.larkCloudBackupFolderToken === 'root' ? '' : (value.settings?.larkCloudBackupFolderToken || ''),
     },
     tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTaskOrigin) : [],
     trash: Array.isArray(value.trash) ? value.trash.map(normalizeTaskOrigin) : [],
@@ -1165,6 +1180,13 @@ function toDraftString(value: unknown) {
   return typeof value === 'string' ? value : ''
 }
 
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
+  return `${(value / 1024 / 1024).toFixed(2)} MiB`
+}
+
 function parseTags(value: string) {
   return toDraftString(value)
     .split(/[,\s，、]+/)
@@ -1293,6 +1315,11 @@ function App() {
   const [attachedImages, setAttachedImages] = useState<TaskImage[]>([])
   const [syncState, setSyncState] = useState('尚未同步')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [backupStatus, setBackupStatus] = useState<CloudBackupStatus | null>(null)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupMessage, setBackupMessage] = useState('')
+  const [recoveryKeyInput, setRecoveryKeyInput] = useState('')
+  const [cloudRestoreToken, setCloudRestoreToken] = useState('')
   const [recordingShortcutAction, setRecordingShortcutAction] = useState<ShortcutAction | ''>('')
   const [trashOpen, setTrashOpen] = useState(false)
   const [topologyTaskId, setTopologyTaskId] = useState('')
@@ -1336,6 +1363,11 @@ function App() {
       void stopShortcutRecording()
     }
   }, [recordingShortcutAction, settingsOpen])
+
+  useEffect(() => {
+    if (!settingsOpen || !window.todoDesk?.getBackupStatus) return
+    void window.todoDesk.getBackupStatus().then(setBackupStatus).catch(() => setBackupMessage('读取备份状态失败'))
+  }, [settingsOpen])
 
   useEffect(() => {
     loadData()
@@ -3074,6 +3106,100 @@ function App() {
     await window.todoDesk.revealStorage()
   }
 
+  async function refreshBackupStatus() {
+    if (!window.todoDesk?.getBackupStatus) return
+    setBackupStatus(await window.todoDesk.getBackupStatus())
+  }
+
+  async function createCloudBackup() {
+    if (!window.todoDesk?.createCloudBackup) return setBackupMessage('云备份需要桌面 App 运行')
+    setBackupBusy(true)
+    setBackupMessage('正在压缩、加密并上传飞书云盘...')
+    try {
+      const result = await window.todoDesk.createCloudBackup({
+        folderToken: data.settings.larkCloudBackupFolderToken,
+        recentCount: data.settings.cloudBackupRecentCount,
+        dailyCount: data.settings.cloudBackupDailyCount,
+        force: true,
+      })
+      if (!result.ok) throw new Error(result.message || '云备份失败')
+      if (result.status) setBackupStatus(result.status)
+      setBackupMessage(result.skipped
+        ? (result.message || '数据没有变化，已跳过重复备份')
+        : (result.cleanupPendingCount ? `云备份完成；${result.cleanupPendingCount} 个过期文件等待飞书授权后清理` : '云备份完成'))
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? error.message : '云备份失败')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function restoreCloudBackup(backupId: string) {
+    if (!window.todoDesk?.restoreCloudBackup || !window.confirm('恢复会完整替换当前任务、设置和附件。恢复前会自动保存本地安全快照，继续吗？')) return
+    setBackupBusy(true)
+    setBackupMessage('正在下载、校验并恢复...')
+    try {
+      const result = await window.todoDesk.restoreCloudBackup(backupId)
+      if (!result.ok) throw new Error(result.message || '恢复失败')
+      if (result.data) setData(mergeWithDefaults(result.data))
+      if (result.status) setBackupStatus(result.status)
+      setBackupMessage('恢复完成')
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? error.message : '恢复失败')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function copyRecoveryKey() {
+    const result = await window.todoDesk?.exportBackupRecoveryKey()
+    if (!result?.recoveryKey) return setBackupMessage('无法获取恢复密钥')
+    await copyTextToClipboard(result.recoveryKey)
+    setBackupMessage('恢复密钥已复制，请离线妥善保存')
+    await refreshBackupStatus()
+  }
+
+  async function importRecoveryKey() {
+    const result = await window.todoDesk?.importBackupRecoveryKey(recoveryKeyInput)
+    if (!result?.ok) return setBackupMessage(result?.message || '恢复密钥导入失败')
+    setRecoveryKeyInput('')
+    setBackupMessage('恢复密钥已导入')
+    await refreshBackupStatus()
+  }
+
+  async function connectCloudRepository() {
+    if (!window.todoDesk?.connectCloudBackupRepository || !cloudRestoreToken.trim()) return
+    setBackupBusy(true)
+    setBackupMessage('正在连接飞书备份仓库...')
+    try {
+      const result = await window.todoDesk.connectCloudBackupRepository(cloudRestoreToken.trim())
+      if (!result.ok) throw new Error(result.message || '连接备份仓库失败')
+      if (result.status) setBackupStatus(result.status)
+      setCloudRestoreToken('')
+      setBackupMessage('备份仓库已连接，请从版本列表选择要恢复的版本')
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? error.message : '连接备份仓库失败')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function verifyLatestCloudBackup() {
+    if (!window.todoDesk?.verifyCloudBackup) return setBackupMessage('云备份校验需要桌面 App 运行')
+    setBackupBusy(true)
+    setBackupMessage('正在从飞书完整下载、解密并校验最新备份...')
+    try {
+      const result = await window.todoDesk.verifyCloudBackup()
+      if (!result.ok) throw new Error(result.message || '云端备份校验失败')
+      if (result.status) setBackupStatus(result.status)
+      setBackupMessage(result.skipped ? (result.message || '还没有可校验的云备份') : '最新云端备份校验通过')
+    } catch (error) {
+      setBackupMessage(error instanceof Error ? error.message : '云端备份校验失败')
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
   async function revealLogs() {
     if (!window.todoDesk?.revealLogs) {
       setSyncState('日志文件需要桌面 App 运行')
@@ -4281,6 +4407,55 @@ function App() {
                   {aiTestResult.message}
                 </span>
               </div>
+            </div>
+
+            <div className="settings-section cloud-backup-section">
+              <div className="cloud-backup-heading">
+                <div>
+                  <h3>飞书云备份</h3>
+                  <p>每 30 分钟检查，数据无变化时跳过；保留 4 个近期版本和前 2 天的每日版本。</p>
+                </div>
+                <label className="cloud-backup-switch">
+                  <input type="checkbox" checked={data.settings.larkCloudBackupEnabled} onChange={(event) => updateSettings({ larkCloudBackupEnabled: event.target.checked })} />
+                  自动备份
+                </label>
+              </div>
+              <div className="cloud-backup-repository">
+                <span><strong>Todo Desk Backups</strong><small>{backupStatus?.repository ? '专用备份目录已连接' : '首次备份时自动创建专用目录'}</small></span>
+                {backupStatus?.recoveryCode && <button type="button" onClick={() => copyTextToClipboard(backupStatus.recoveryCode).then(() => setBackupMessage('备份仓库恢复码已复制'))}>复制恢复码</button>}
+              </div>
+              <div className="cloud-backup-metrics">
+                <span><strong>{formatBytes(backupStatus?.sourceBytes || 0)}</strong>当前数据</span>
+                <span><strong>{formatBytes(backupStatus?.cloudBytes || 0)}</strong>云端占用</span>
+                <span><strong>{backupStatus?.backups.length || 0}</strong>个版本</span>
+                <span><strong>{backupStatus?.attachmentCount || 0}</strong>个附件</span>
+              </div>
+              <div className="cloud-backup-actions">
+                <button type="button" disabled={backupBusy} onClick={createCloudBackup}>{backupBusy ? '处理中...' : '立即备份'}</button>
+                <button type="button" disabled={backupBusy} onClick={refreshBackupStatus}>刷新</button>
+                <button type="button" disabled={backupBusy || !backupStatus?.backups.length} onClick={verifyLatestCloudBackup}>校验最新备份</button>
+                <button type="button" onClick={copyRecoveryKey}>复制恢复密钥</button>
+              </div>
+              <div className="cloud-recovery-key-row">
+                <input value={recoveryKeyInput} onChange={(event) => setRecoveryKeyInput(event.target.value)} placeholder="在新设备上粘贴恢复密钥" />
+                <button type="button" disabled={!recoveryKeyInput.trim()} onClick={importRecoveryKey}>导入</button>
+              </div>
+              <div className="cloud-recovery-key-row">
+                <input value={cloudRestoreToken} onChange={(event) => setCloudRestoreToken(event.target.value)} placeholder="新设备粘贴备份仓库恢复码" />
+                <button type="button" disabled={backupBusy || !cloudRestoreToken.trim()} onClick={connectCloudRepository}>连接仓库</button>
+              </div>
+              <div className="cloud-backup-list">
+                {(backupStatus?.backups || []).map((backup) => (
+                  <div key={backup.id}>
+                    <span><strong>{new Date(backup.createdAt).toLocaleString('zh-CN')}</strong><small>{formatBytes(backup.sizeBytes)} · {backup.taskCount} 个任务 · {backup.attachmentCount} 个附件</small></span>
+                    <div className="cloud-backup-item-actions">
+                      <button type="button" disabled={backupBusy} onClick={() => restoreCloudBackup(backup.id)}>恢复</button>
+                    </div>
+                  </div>
+                ))}
+                {backupStatus && backupStatus.backups.length === 0 && <p className="cloud-backup-empty">还没有云端备份</p>}
+              </div>
+              <p className="settings-status">{backupMessage || (backupStatus?.lastSuccessfulAt ? `上次成功：${new Date(backupStatus.lastSuccessfulAt).toLocaleString('zh-CN')}${backupStatus.lastVerificationMessage ? `；校验：${backupStatus.lastVerificationMessage}` : ''}${backupStatus.lastCleanupMessage ? `；清理：${backupStatus.lastCleanupMessage}` : ''}` : '尚未备份')}</p>
             </div>
 
             <div className="settings-section">

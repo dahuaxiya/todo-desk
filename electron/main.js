@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, screen, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, safeStorage, screen, shell } from 'electron'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -8,6 +8,7 @@ import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, editTaskWithAiAndImages, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
 import { searchTasks } from './task-search.js'
+import { createBackupManager } from './backup-manager.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -30,6 +31,8 @@ let dockTransitioning = false
 let registeredShortcutAccelerators = new Set()
 let registeredShortcutSignature = ''
 let globalShortcutsSuspended = false
+let cloudBackupManager = null
+let cloudBackupTimer = null
 
 const dockCollapsedWidth = 152
 const dockDetailWidth = 260
@@ -604,6 +607,11 @@ function getDefaultData() {
       globalShortcuts: getDefaultGlobalShortcuts(),
       edgeDocked: false,
       topologyPositions: {},
+      larkCloudBackupEnabled: false,
+      larkCloudBackupFolderToken: '',
+      cloudBackupIntervalMinutes: 30,
+      cloudBackupRecentCount: 4,
+      cloudBackupDailyCount: 2,
     },
     tasks: [
       {
@@ -660,6 +668,60 @@ async function readJson(filePath) {
 
 async function writeJson(filePath, value) {
   await writeFile(filePath, JSON.stringify(value, null, 2), 'utf8')
+}
+
+function getCloudBackupManager() {
+  if (cloudBackupManager) return cloudBackupManager
+  cloudBackupManager = createBackupManager({
+    paths: getPaths(),
+    getData: readData,
+    saveData,
+    protectSecret: async (value) => safeStorage.isEncryptionAvailable()
+      ? { protected: true, value: safeStorage.encryptString(value).toString('base64') }
+      : { protected: false, value },
+    unprotectSecret: async (value, protectedValue) => protectedValue
+      ? safeStorage.decryptString(Buffer.from(value, 'base64'))
+      : value,
+    onDataRestored: (data) => mainWindow?.webContents.send('data:updated', data),
+  })
+  return cloudBackupManager
+}
+
+async function runScheduledCloudBackup() {
+  try {
+    const data = await readData()
+    if (!data.settings.larkCloudBackupEnabled) return
+    const status = await getCloudBackupManager().getStatus()
+    const intervalMs = Math.max(5, Number(data.settings.cloudBackupIntervalMinutes) || 30) * 60_000
+    // 无变化的检查也要计入间隔，否则到期后会被 5 分钟调度器反复压缩和计算哈希。
+    const lastAt = status.lastCheckedAt ? new Date(status.lastCheckedAt).getTime() : 0
+    if (!lastAt || Date.now() - lastAt >= intervalMs) {
+      const result = await getCloudBackupManager().createBackup({
+        folderToken: data.settings.larkCloudBackupFolderToken || '',
+        recentCount: data.settings.cloudBackupRecentCount || 4,
+        dailyCount: data.settings.cloudBackupDailyCount || 2,
+      })
+      await writeLog('info', result.skipped ? 'Scheduled Lark cloud backup skipped without changes' : 'Scheduled Lark cloud backup completed')
+    }
+
+    const latestStatus = await getCloudBackupManager().getStatus()
+    // 校验失败也只在当天执行一次，避免网络或密钥异常时每 5 分钟重复下载完整备份。
+    const verifiedDay = latestStatus.lastVerificationAttemptAt ? new Date(latestStatus.lastVerificationAttemptAt).toLocaleDateString('en-CA') : ''
+    const currentDay = new Date().toLocaleDateString('en-CA')
+    if (latestStatus.backups.length > 0 && verifiedDay !== currentDay) {
+      await getCloudBackupManager().verifyBackup()
+      await writeLog('info', 'Daily Lark cloud backup verification completed')
+    }
+  } catch (error) {
+    await writeLog('warn', 'Scheduled Lark cloud backup failed', { message: error instanceof Error ? error.message : 'unknown error' })
+  }
+}
+
+function startCloudBackupScheduler() {
+  if (cloudBackupTimer) clearInterval(cloudBackupTimer)
+  // 每 5 分钟检查一次到期状态；内容签名相同会跳过，不产生重复版本。
+  cloudBackupTimer = setInterval(() => void runScheduledCloudBackup(), 5 * 60_000)
+  setTimeout(() => void runScheduledCloudBackup(), 15_000)
 }
 
 function hashCalendarSyncValue(value) {
@@ -2543,7 +2605,10 @@ async function createMainWindow() {
   registerGlobalShortcuts(data.settings)
 }
 
-app.whenReady().then(createMainWindow)
+app.whenReady().then(async () => {
+  await createMainWindow()
+  startCloudBackupScheduler()
+})
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
@@ -2559,6 +2624,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  if (cloudBackupTimer) clearInterval(cloudBackupTimer)
   unregisterRegisteredGlobalShortcuts()
   registeredShortcutSignature = ''
 })
@@ -2577,6 +2643,64 @@ ipcMain.handle('data:save', async (_event, data) => {
   await startApiServer(saved.settings)
   registerGlobalShortcuts(saved.settings)
   return saved
+})
+
+ipcMain.handle('backup:status', async () => getCloudBackupManager().getStatus())
+
+ipcMain.handle('backup:create', async (_event, options = {}) => {
+  try {
+    const data = await readData()
+    return await getCloudBackupManager().createBackup({
+      folderToken: options.folderToken || data.settings.larkCloudBackupFolderToken || '',
+      recentCount: options.recentCount || data.settings.cloudBackupRecentCount || 4,
+      dailyCount: options.dailyCount || data.settings.cloudBackupDailyCount || 2,
+      force: options.force !== false,
+    })
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '云备份失败' }
+  }
+})
+
+ipcMain.handle('backup:restore', async (_event, backupId) => {
+  try {
+    return await getCloudBackupManager().restoreBackup(backupId)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '恢复备份失败' }
+  }
+})
+
+ipcMain.handle('backup:restore-manifest', async (_event, manifestToken) => {
+  try {
+    return await getCloudBackupManager().restoreFromManifestToken(manifestToken)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '从飞书恢复备份失败' }
+  }
+})
+
+ipcMain.handle('backup:connect-repository', async (_event, recoveryCode) => {
+  try {
+    return await getCloudBackupManager().connectRepository(recoveryCode)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '连接飞书备份仓库失败' }
+  }
+})
+
+ipcMain.handle('backup:verify', async (_event, backupId) => {
+  try {
+    return await getCloudBackupManager().verifyBackup(backupId)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '云端备份校验失败' }
+  }
+})
+
+ipcMain.handle('backup:export-key', async () => ({ ok: true, recoveryKey: await getCloudBackupManager().exportRecoveryKey() }))
+
+ipcMain.handle('backup:import-key', async (_event, recoveryKey) => {
+  try {
+    return await getCloudBackupManager().importRecoveryKey(recoveryKey)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : '恢复密钥无效' }
+  }
 })
 
 ipcMain.handle('attachment:import', async () => {

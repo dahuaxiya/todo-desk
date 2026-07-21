@@ -156,6 +156,11 @@ export interface AppSettings {
   globalShortcuts: ShortcutSettings
   edgeDocked: boolean
   topologyPositions: Record<string, TopologyPosition>
+  larkCloudBackupEnabled: boolean
+  larkCloudBackupFolderToken: string
+  cloudBackupIntervalMinutes: number
+  cloudBackupRecentCount: number
+  cloudBackupDailyCount: number
 }
 
 export interface TaskCalendarSyncTarget {
@@ -204,6 +209,14 @@ export interface TodoDeskBridge {
   savePastedImage: (payload: { name: string; dataUrl: string }) => Promise<TaskImage[]>
   revealStorage: () => Promise<unknown>
   revealLogs: () => Promise<unknown>
+  getBackupStatus: () => Promise<CloudBackupStatus>
+  createCloudBackup: (options?: { folderToken?: string; recentCount?: number; dailyCount?: number; force?: boolean }) => Promise<{ ok: boolean; skipped?: boolean; message?: string; cleanupPendingCount?: number; status?: CloudBackupStatus }>
+  restoreCloudBackup: (backupId: string) => Promise<{ ok: boolean; message?: string; data?: AppData; status?: CloudBackupStatus }>
+  restoreCloudBackupFromManifest: (manifestToken: string) => Promise<{ ok: boolean; message?: string; data?: AppData; status?: CloudBackupStatus }>
+  connectCloudBackupRepository: (recoveryCode: string) => Promise<{ ok: boolean; message?: string; status?: CloudBackupStatus }>
+  verifyCloudBackup: (backupId?: string) => Promise<{ ok: boolean; skipped?: boolean; message?: string; verifiedAt?: string; backupId?: string; status?: CloudBackupStatus }>
+  exportBackupRecoveryKey: () => Promise<{ ok: boolean; recoveryKey?: string }>
+  importBackupRecoveryKey: (recoveryKey: string) => Promise<{ ok: boolean; message?: string }>
   openTaskInCalendar: (task: Task) => Promise<{ ok: boolean; message?: string; filePath?: string; eventId?: string }>
   openAgentSession: (task: Task) => Promise<{ ok: boolean; message?: string; url?: string }>
   restoreDock: () => Promise<{ ok: boolean }>
@@ -255,6 +268,43 @@ export interface TodoDeskBridge {
   }>
   onDataUpdated: (callback: (data: AppData) => void) => () => void
   onDockStateChanged: (callback: (state: { docked: boolean; edge?: string }) => void) => () => void
+}
+
+export interface CloudBackupRecord {
+  id: string
+  createdAt: string
+  sizeBytes: number
+  cloudBytes?: number
+  rawBytes: number
+  attachmentCount: number
+  taskCount: number
+  manifestToken?: string
+}
+
+export interface CloudBackupRepository {
+  folderToken: string
+  folderUrl?: string
+  indexDocToken: string
+  indexDocUrl?: string
+  createdAt: string
+}
+
+export interface CloudBackupStatus {
+  lastSuccessfulAt: string
+  lastCheckedAt: string
+  sourceBytes: number
+  attachmentBytes: number
+  attachmentCount: number
+  cloudBytes: number
+  backups: CloudBackupRecord[]
+  hasRecoveryKey: boolean
+  repository: CloudBackupRepository | null
+  recoveryCode: string
+  lastVerificationAttemptAt: string
+  lastVerifiedAt: string
+  lastVerificationMessage: string
+  pendingCleanupCount: number
+  lastCleanupMessage: string
 }
 
 declare global {
