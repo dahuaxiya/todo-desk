@@ -3396,6 +3396,7 @@ function App() {
                 onConfirm={completeTask}
                 onContinue={continueCompletionRequest}
                 onDismiss={dismissCompletionRequest}
+                onOpenSession={openAgentSession}
               />
               <SessionReviewNotice task={expandedDockTask} onResolve={resolveSessionReview} onOpenSession={openAgentSession} />
               <ParentCompletionReviewNotice
@@ -4797,13 +4798,15 @@ interface CompletionGateNoticeProps {
   onConfirm: (taskId: string) => void
   onContinue: (taskId: string) => void
   onDismiss: (taskId: string) => void
+  onOpenSession?: (task: Task) => Promise<boolean> | boolean
 }
 
-function CompletionGateNotice({ task, onConfirm, onContinue, onDismiss }: CompletionGateNoticeProps) {
+function CompletionGateNotice({ task, onConfirm, onContinue, onDismiss, onOpenSession }: CompletionGateNoticeProps) {
   if (task.status !== 'pending_acceptance') return null
 
   const active = hasActiveCompletionGate(task)
   const message = task.completionAcceptance?.message || completionAcceptanceMessage
+  const canOpenSession = canOpenAgentSession(task)
 
   return (
     <section className={`completion-gate ${active ? 'active' : 'handled'}`} onClick={(event) => event.stopPropagation()}>
@@ -4817,6 +4820,14 @@ function CompletionGateNotice({ task, onConfirm, onContinue, onDismiss }: Comple
       <div className="completion-gate-actions">
         <button className="primary-button" type="button" onClick={() => onConfirm(task.id)}>
           确认完成
+        </button>
+        <button
+          type="button"
+          title={canOpenSession ? '打开关联的 Codex 会话' : '当前任务没有可打开的 Codex 会话'}
+          disabled={!canOpenSession || !onOpenSession}
+          onClick={() => onOpenSession?.(task)}
+        >
+          进入会话
         </button>
         <button type="button" onClick={() => onContinue(task.id)}>
           继续修改
@@ -5319,6 +5330,7 @@ function MiniTaskRow({ task, selected, multiSelected, taskPath, parentTask, chil
               onConfirm={onToggleDone}
               onContinue={onContinueCompletionRequest}
               onDismiss={onDismissCompletionRequest}
+              onOpenSession={onOpenAgentSession}
             />
             <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
             <ParentCompletionReviewNotice task={task} childTasks={childTasks} onConfirm={onToggleDone} onKeep={onKeepParentTaskOpen} />
@@ -6128,6 +6140,7 @@ function NormalTaskDetailPopover({
             onConfirm={onComplete}
             onContinue={onContinueCompletionRequest}
             onDismiss={onDismissCompletionRequest}
+            onOpenSession={onOpenAgentSession}
           />
           <SessionReviewNotice task={task} onResolve={onResolveSessionReview} onOpenSession={onOpenAgentSession} />
           <ParentCompletionReviewNotice task={task} childTasks={childTasks} onConfirm={onComplete} onKeep={onKeepParentTaskOpen} />
