@@ -4425,6 +4425,93 @@ select:focus-visible {
   height: 16px;
 }
 
+.cloud-backup-heading,
+.cloud-backup-actions,
+.cloud-recovery-key-row,
+.cloud-backup-list > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloud-backup-heading {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.cloud-backup-switch {
+  flex: 0 0 auto;
+}
+
+.cloud-backup-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.cloud-backup-metrics span {
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid rgba(48, 43, 35, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink-muted);
+  font-size: calc(10px * var(--app-font-scale));
+}
+
+.cloud-backup-metrics strong {
+  color: var(--ink);
+  font-size: calc(12px * var(--app-font-scale));
+}
+
+.cloud-backup-actions {
+  flex-wrap: wrap;
+}
+
+.cloud-recovery-key-row input {
+  min-width: 0;
+  flex: 1;
+}
+
+.cloud-backup-list {
+  display: grid;
+  max-height: 190px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(48, 43, 35, 0.1);
+}
+
+.cloud-backup-list > div {
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(48, 43, 35, 0.08);
+}
+
+.cloud-backup-list span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.cloud-backup-item-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.cloud-backup-list small {
+  color: var(--ink-muted);
+}
+
+.cloud-backup-empty {
+  margin: 8px 0 0;
+  color: var(--ink-muted);
+}
+
+@media (max-width: 760px) {
+  .cloud-backup-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .settings-test-row {
   display: flex;
   align-items: center;
