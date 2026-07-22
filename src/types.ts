@@ -76,6 +76,16 @@ export interface TaskParentLink {
   confidence: 'explicit' | 'inferred'
 }
 
+export interface TaskRelationshipDecision {
+  state: TaskRelationshipState
+  reason: string
+  candidateTaskIds: string[]
+  decidedAt: string
+  decidedBy: 'agent' | 'human'
+  agent?: string
+  agentSessionId?: string
+}
+
 export interface ParentCompletionReview {
   requestedAt: string
   requestedBy: string
@@ -105,6 +115,7 @@ export interface Task {
   parentTaskId?: string
   parentLink?: TaskParentLink
   relationshipState?: TaskRelationshipState
+  relationshipDecision?: TaskRelationshipDecision
   parentCompletionReview?: ParentCompletionReview
   origin: TaskOrigin
   remindedAt?: string
