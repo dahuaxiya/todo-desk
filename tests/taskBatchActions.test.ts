@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createSerialBackgroundQueue, enqueueCompletionSync } from '../src/completionSyncQueue.ts'
 import { collectIncompleteDescendantTaskIds, resolveTaskActionIds } from '../src/taskBatchActions.ts'
 
 test('an action on a selected task targets the complete multi-selection', () => {
@@ -50,4 +51,46 @@ test('handles multiple targets and malformed cycles without returning targets tw
 
   assert.deepEqual(collectIncompleteDescendantTaskIds(tasks, ['a']), ['b', 'c'])
   assert.deepEqual(collectIncompleteDescendantTaskIds(tasks, ['a', 'c']), ['b'])
+})
+
+test('queues one non-blocking cloud sync for a complete descendant batch', async () => {
+  let releaseFirstJob = () => undefined
+  const firstJobGate = new Promise<void>((resolve) => {
+    releaseFirstJob = resolve
+  })
+  const calls: string[][] = []
+  const queue = createSerialBackgroundQueue()
+
+  const enqueued = enqueueCompletionSync(queue, ['parent', 'child', 'child'], async (taskIds) => {
+    calls.push(taskIds)
+    await firstJobGate
+  })
+
+  assert.equal(enqueued, true)
+  assert.deepEqual(calls, [])
+  await Promise.resolve()
+  assert.deepEqual(calls, [['parent', 'child']])
+
+  releaseFirstJob()
+  await queue.whenIdle()
+})
+
+test('keeps later completion syncs ordered after an earlier failure', async () => {
+  const calls: string[] = []
+  const errors: string[] = []
+  const queue = createSerialBackgroundQueue((error) => {
+    errors.push(error instanceof Error ? error.message : String(error))
+  })
+
+  enqueueCompletionSync(queue, ['first'], async () => {
+    calls.push('first')
+    throw new Error('offline')
+  })
+  enqueueCompletionSync(queue, ['second'], async () => {
+    calls.push('second')
+  })
+
+  await queue.whenIdle()
+  assert.deepEqual(calls, ['first', 'second'])
+  assert.deepEqual(errors, ['offline'])
 })

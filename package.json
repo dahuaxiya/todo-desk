@@ -20,6 +20,7 @@
     "test:topology-network": "node --test tests/topologyNetwork.test.ts",
     "test:topology-parent-binding": "node --test tests/topologyParentBinding.test.ts",
     "test:batch-actions": "node --test tests/taskBatchActions.test.ts",
+    "test:calendar-sync-policy": "node --test tests/calendarSyncPolicy.test.js",
     "test:backup": "node --test tests/backupManager.test.js",
     "agent:install": "node scripts/install-agent-integration.mjs",
     "preview": "vite preview"
