@@ -128,6 +128,8 @@ npm run agent:install
 - Kimi 能通过 `~/.kimi-code/config.toml` 的 `extra_skill_dirs` 加载 `todo-desk` skill，并在 `~/.kimi-code/AGENTS.md` 里看到同样规则。
 - Cursor 能在 `~/.cursor/skills-cursor/todo-desk` 找到 skill，并通过 `~/.cursor/rules/todo-desk.mdc` 应用规则。
 - 所有 agent 都有一个兜底共享路径：`~/.agents/skills/todo-desk`。
+- Claude、Cursor、Kimi 会安装 Stop hook，在 session 结束前检查任务挂载和父任务决策；同一问题只阻止一次，避免循环。
+- Codex 当前通过 `notify` 做非阻断校验。安装器会保留并继续调用原有 notify 命令，不会覆盖已有桌面通知。
 
 完整写入位置如下：
 
@@ -151,6 +153,8 @@ npm run agent:install
 - `agentSessionId`：当前会话/线程 id，必须来自运行时，不允许编造。
 - `repository` / `repositoryPath`：当前代码库名和路径。
 - `tags`：至少包含 `agent` 和 `agentSessionId`，再补 `todo-desk`、项目标签等。
+- `relationshipState`：每次创建必须明确为 `linked`、`independent_root` 或 `unresolved`。
+- `relationshipDecision`：记录判断理由、检索过的候选任务 id、决策时间、agent 和 session。
 
 推进中使用同一个任务追加进展。实现完成但用户还没有确认时，agent 只能请求完成审批，任务会进入 `pending_acceptance` 并显示红点；用户点“确认完成”或明确说 done 后，才允许更新成 `done`。如果当前 session 本轮输出已经完成，但 agent 判断任务尚未完成，agent 应请求未完成提醒，Todo Desk 会用非红色点提示，直到用户点击“已查看”或“查看会话”。如果 Todo Desk 没启动、API 不通、拿不到 session id，agent 需要直接告诉用户阻塞，不能假装已经写入。
 
@@ -162,12 +166,13 @@ npm run agent:install
 scripts/install-agent-integration.mjs
 ```
 
-它做四件事：
+它做五件事：
 
 1. 检查 `http://127.0.0.1:47731/health`，确认 Todo Desk API 是否可用。
 2. 把仓库内 `skills/todo-desk` 同步到各 agent 的 skill 目录。
 3. 在各 agent 的全局指令文件里用 marker 写入一段可重复更新的 Todo Desk 规则。
 4. 对 Cursor 生成独立的 always-on rule：`~/.cursor/rules/todo-desk.mdc`。
+5. 合并安装 session 结束校验：Claude/Cursor/Kimi 使用 Stop hook，Codex 使用可委托原通知的 `notify` 校验。
 
 marker 使用：
 
@@ -261,11 +266,13 @@ Kimi 当前主要通过 `~/.kimi-code/config.toml` 的 `extra_skill_dirs` 加载
 - `session id` 必须来自当前运行时，例如 `CODEX_THREAD_ID`、`CLAUDE_SESSION_ID`、`KIMI_SESSION_ID`、`CURSOR_SESSION_ID` 或等价线程 id。
 - 拿不到 session id 时，不得伪造，也不得创建、更新或完成任务。
 - 如果新任务是当前 Todo Desk 任务的计划拆分，创建时传 `--parent-task-id <当前任务 id> --relation-type subtask_of`。
+- 每次创建必须在 `--parent-task-id`、`--independent-root`、`--parent-unresolved` 中三选一，并传 `--parent-decision-reason`。实际查看过的候选任务 id 使用 `--parent-candidate-ids` 记录。
 - Agent 在执行过程中要主动识别派生任务，不需要等主人再次要求拆分。只有新问题有独立结果、不是当前任务的常规实现步骤，并且可以单独分配/延期/完成或会改变父任务验收时，才自动创建卡片。
 - 自动创建前先查询当前父任务已有的未完成子卡；相同问题已经存在时更新原卡，不重复创建。改代码、补测试、跑构建、常规重构、根因记录和即时解决的临时错误仍记录在当前任务进展里。
 - 自动派生时传 `--parent-task-id <当前任务 id> --relation-type discovered_from --relation-reason <派生原因>`。立即切换处理用 `status=doing`，暂不处理用 `status=todo`。
 - 父任务不解决派生问题就不能验收时使用 `--affects-parent-completion`；不影响父任务交付、可以独立后续处理时使用 `--follow-up-only`。
 - 任务层级只能由明确的 Todo Desk task id 建立，不要根据标题、项目、标签、仓库或相同 session 推断。`session id` 只用于记录执行来源，一个分支可以跨多个 session。
+- 新版 `add_work.py` 和本机 API 都会拒绝未明确关系决策的 AI 新任务。`unresolved` 代表“已经搜索但无法可靠判断”，不是“没有执行搜索”。
 - 工作推进时更新同一条 Todo Desk 任务，不要重复创建。
 - 实现完成但主人还没有确认时，使用 `--request-completion`，让 Todo Desk 显示红点完成确认。
 - 本轮 session 输出完成但任务尚未完成时，使用 `--request-session-review`，让 Todo Desk 显示非红色未完成提醒。
