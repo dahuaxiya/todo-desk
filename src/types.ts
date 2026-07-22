@@ -271,7 +271,7 @@ export interface TodoDeskBridge {
     message?: string
     endpoint?: string
   }>
-  syncToLark: (payload: { data: AppData; completedTaskId?: string }) => Promise<{
+  syncToLark: (payload: { data: AppData; completedTaskIds?: string[] }) => Promise<{
     ok: boolean
     skipped?: boolean
     message?: string

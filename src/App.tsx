@@ -17,6 +17,7 @@ import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import type { GlobalTopologyViewMemory } from './GlobalTopologyView'
+import { createSerialBackgroundQueue, enqueueCompletionSync } from './completionSyncQueue'
 import { collectIncompleteDescendantTaskIds, resolveTaskActionIds } from './taskBatchActions'
 import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, CloudBackupStatus, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipDecision, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
@@ -1392,6 +1393,12 @@ function App() {
   const [multiSelectedTaskIds, setMultiSelectedTaskIds] = useState<string[]>([])
   const [descendantCompletionPrompt, setDescendantCompletionPrompt] = useState<DescendantCompletionPrompt | null>(null)
   const [descendantCompletionBusy, setDescendantCompletionBusy] = useState(false)
+  const completionSyncQueue = useMemo(
+    () => createSerialBackgroundQueue((error) => {
+      setSyncState(error instanceof Error ? error.message : '飞书后台同步失败')
+    }),
+    [],
+  )
   const [openSortColumn, setOpenSortColumn] = useState<TaskColumnStatus | ''>('')
   const [mainView, setMainView] = useState<MainView>('board')
   const [globalTopologyFocusRequest, setGlobalTopologyFocusRequest] = useState<TopologyFocusRequest | null>(null)
@@ -2539,18 +2546,22 @@ function App() {
   }
 
   const syncToLark = useCallback(
-    async (nextData = data, completedTaskId?: string) => {
+    async (nextData = dataRef.current, completedTaskIds: string[] = []) => {
       if (!window.todoDesk) {
         setSyncState('飞书同步需要桌面 App 运行')
         return nextData
       }
       setSyncState('正在同步飞书...')
       try {
-        const result = await window.todoDesk.syncToLark({ data: nextData, completedTaskId })
+        const result = await window.todoDesk.syncToLark({ data: nextData, completedTaskIds })
         if (result.ok && result.data) {
-          setData(result.data)
+          const mergedData = mergeWithDefaults(result.data)
+          // Background sync can finish after another task action. Keep the imperative snapshot in
+          // step with the rendered state before a subsequent queued save reads it.
+          dataRef.current = mergedData
+          setData(mergedData)
           setSyncState(`同步成功 ${formatDateTime(new Date().toISOString())}`)
-          return result.data
+          return mergedData
         }
         setSyncState(result.message ?? '同步已跳过')
         return nextData
@@ -2559,7 +2570,7 @@ function App() {
         return nextData
       }
     },
-    [data],
+    [],
   )
 
   const completeTasksNow = useCallback(
@@ -2616,21 +2627,21 @@ function App() {
         ...currentData,
         tasks: nextTasks,
       }
-      let saved = await persist(nextData)
+      const saved = await persist(nextData)
       setSelectedTaskId(taskIds.length > 1 ? '' : taskIds[0] || '')
       if (taskIds.length > 1) setMultiSelectedTaskIds([])
       setSyncState(newlyCompletedTaskIds.length > 1 ? `已完成 ${newlyCompletedTaskIds.length} 个任务` : '任务已完成')
 
       if (saved.settings.syncOnComplete) {
-        // The Lark bridge appends a sync log entry to the returned data. Feed each response into
-        // the next request so a batch completion cannot overwrite the previous task's sync log.
-        for (const taskId of newlyCompletedTaskIds) {
-          saved = await syncToLark(saved, taskId)
-        }
+        // The local JSON write is the completion boundary. Lark is external I/O and must not keep
+        // the confirmation dialog busy; later batches stay ordered through the background queue.
+        enqueueCompletionSync(completionSyncQueue, newlyCompletedTaskIds, async (completedTaskIds) => {
+          await syncToLark(dataRef.current, completedTaskIds)
+        })
       }
       return saved
     },
-    [persist, syncToLark],
+    [completionSyncQueue, persist, syncToLark],
   )
 
   const completeTask = useCallback(

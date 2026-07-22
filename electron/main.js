@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, editTaskWithAiAndImages, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
 import { searchTasks } from './task-search.js'
 import { createBackupManager } from './backup-manager.js'
+import { calendarSettingsComparableSignature, shouldConsiderTaskForCalendarSync } from './calendar-sync-policy.js'
 import { assertAgentRelationshipDecision, deriveTaskRelationshipState, normalizeTaskRelationshipDecision } from './task-relationship.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -1326,30 +1327,15 @@ async function syncTaskCalendars(task, settings) {
   }
 }
 
-function taskCalendarComparableSignature(task) {
-  return JSON.stringify({
-    title: task.title,
-    detail: task.detail,
-    project: task.project,
-    tags: task.tags || [],
-    dueAt: task.dueAt || '',
-    reminderAt: task.reminderAt || '',
-    updatedAt: task.updatedAt || '',
-  })
-}
-
-function shouldConsiderTaskForCalendarSync(task, previousTask) {
-  if (!previousTask) return true
-  if (task.calendarSync?.local || task.calendarSync?.lark) return true
-  return taskCalendarComparableSignature(task) !== taskCalendarComparableSignature(previousTask)
-}
-
 async function syncTimedTasksToCalendars(data, previousData) {
   const settings = data.settings || getDefaultData().settings
+  const previousSettings = previousData?.settings || getDefaultData().settings
+  const calendarSettingsChanged = calendarSettingsComparableSignature(settings)
+    !== calendarSettingsComparableSignature(previousSettings)
   const previousTasks = new Map((previousData?.tasks || []).map((task) => [task.id, task]))
   const tasks = []
   for (const task of data.tasks || []) {
-    if (!shouldConsiderTaskForCalendarSync(task, previousTasks.get(task.id))) {
+    if (!shouldConsiderTaskForCalendarSync(task, previousTasks.get(task.id), calendarSettingsChanged)) {
       tasks.push(task)
       continue
     }
@@ -1765,10 +1751,16 @@ async function stopApiServer() {
 }
 
 async function startApiServer(settings) {
+  const port = Number(settings.apiPort) || 47731
+  if (settings.apiEnabled && apiServer && apiPort === port) {
+    // Most data saves do not change API settings. Keep the existing listener alive so a local
+    // task action neither pays for a close/rebind cycle nor interrupts an Agent request in flight.
+    return
+  }
+
   await stopApiServer()
   if (!settings.apiEnabled) return
 
-  const port = Number(settings.apiPort) || 47731
   apiServer = http.createServer((request, response) => {
     handleApiRequest(request, response)
   })
@@ -2036,7 +2028,14 @@ async function callAiConnectivityTest(settings) {
   }
 }
 
-function buildLarkMarkdown(data, completedTask) {
+function formatCompletedTaskSummary(completedTasks) {
+  if (!completedTasks.length) return '手动同步'
+  if (completedTasks.length === 1) return completedTasks[0].title
+  const visibleTitles = completedTasks.slice(0, 3).map((task) => task.title).join('、')
+  return `${completedTasks.length} 个任务：${visibleTitles}${completedTasks.length > 3 ? ' 等' : ''}`
+}
+
+function buildLarkMarkdown(data, completedTasks = []) {
   const doing = data.tasks.filter((task) => task.status === 'doing' || task.status === 'pending_acceptance')
   const todo = data.tasks.filter((task) => task.status === 'todo')
   const done = data.tasks
@@ -2048,7 +2047,7 @@ function buildLarkMarkdown(data, completedTask) {
     '',
     `## Todo Desk 同步 ${new Date().toLocaleString('zh-CN')}`,
     '',
-    `刚完成：${completedTask?.title ?? '手动同步'}`,
+    `刚完成：${formatCompletedTaskSummary(completedTasks)}`,
     '',
     '### 当前正在做',
     ...(doing.length ? doing.map(formatTaskLine) : ['- 无']),
@@ -2907,7 +2906,7 @@ ipcMain.handle('ai:test-connection', async (_event, payload) => {
 })
 
 ipcMain.handle('lark:sync', async (_event, payload) => {
-  const { data, completedTaskId } = payload
+  const { data } = payload
   const doc = data.settings?.larkDoc?.trim()
   if (!doc) {
     return {
@@ -2917,26 +2916,42 @@ ipcMain.handle('lark:sync', async (_event, payload) => {
     }
   }
 
-  const completedTask = data.tasks.find((task) => task.id === completedTaskId)
-  const markdown = buildLarkMarkdown(data, completedTask)
+  const completedTaskIds = [...new Set(Array.isArray(payload.completedTaskIds) ? payload.completedTaskIds : [])]
+  const completedTaskIdSet = new Set(completedTaskIds)
+  const completedTasks = data.tasks.filter((task) => completedTaskIdSet.has(task.id))
+  const markdown = buildLarkMarkdown(data, completedTasks)
   await runLarkUpdate(doc, markdown)
 
-  const nextData = {
-    ...data,
-    syncLog: [
-      {
+  const syncedAt = new Date().toISOString()
+  const syncLogEntries = completedTasks.length
+    ? completedTasks.map((task) => ({
         id: crypto.randomUUID(),
-        at: new Date().toISOString(),
-        taskId: completedTaskId ?? '',
-        title: completedTask?.title ?? '手动同步',
+        at: syncedAt,
+        taskId: task.id,
+        title: task.title,
         status: 'ok',
-      },
-      ...(data.syncLog ?? []),
+      }))
+    : [{
+        id: crypto.randomUUID(),
+        at: syncedAt,
+        taskId: '',
+        title: '手动同步',
+        status: 'ok',
+      }]
+  // The renderer is free to keep editing while this external request is in flight. Re-read the
+  // current local snapshot before appending logs so an older completion payload cannot roll back
+  // task changes made during the Lark round trip.
+  const latestData = await readData()
+  const nextData = {
+    ...latestData,
+    syncLog: [
+      ...syncLogEntries,
+      ...(latestData.syncLog ?? []),
     ].slice(0, 50),
   }
-  await saveData(nextData)
+  const saved = await saveData(nextData)
   return {
     ok: true,
-    data: nextData,
+    data: saved,
   }
 })
