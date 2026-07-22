@@ -489,6 +489,7 @@ select:focus-visible {
 }
 
 .descendant-completion-dialog {
+  position: relative;
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
   gap: 14px;
@@ -499,6 +500,43 @@ select:focus-visible {
   background: #fffdf8;
   box-shadow: 0 22px 54px rgba(39, 34, 27, 0.2);
   color: var(--ink);
+}
+
+.descendant-completion-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.descendant-completion-close:hover:not(:disabled) {
+  border-color: rgba(48, 43, 35, 0.12);
+  background: rgba(48, 43, 35, 0.06);
+  color: var(--ink);
+}
+
+.descendant-completion-close:focus-visible {
+  outline: 2px solid rgba(29, 111, 134, 0.36);
+  outline-offset: 1px;
+}
+
+.descendant-completion-close svg {
+  width: 17px;
+  height: 17px;
+}
+
+.descendant-completion-copy {
+  min-width: 0;
+  padding-right: 24px;
 }
 
 .descendant-completion-mark {
@@ -546,6 +584,15 @@ select:focus-visible {
     grid-template-columns: 34px minmax(0, 1fr);
     gap: 10px;
     padding: 14px;
+  }
+
+  .descendant-completion-close {
+    top: 8px;
+    right: 8px;
+  }
+
+  .descendant-completion-copy {
+    padding-right: 20px;
   }
 
   .descendant-completion-mark {

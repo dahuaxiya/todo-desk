@@ -4951,19 +4951,26 @@ function DescendantCompletionDialog({ prompt, busy, onCancel, onResolve }: Desce
   return createPortal(
     <div className="descendant-completion-backdrop" role="presentation">
       <section className="descendant-completion-dialog" role="dialog" aria-modal="true" aria-labelledby="descendant-completion-title">
+        <button
+          className="descendant-completion-close"
+          type="button"
+          title="取消并关闭"
+          aria-label="取消并关闭"
+          disabled={busy}
+          onClick={onCancel}
+        >
+          <X aria-hidden="true" />
+        </button>
         <div className="descendant-completion-mark" aria-hidden="true">
           <CheckCheck />
         </div>
-        <div>
+        <div className="descendant-completion-copy">
           <h2 id="descendant-completion-title">还要完成所有子任务吗？</h2>
           <p>
             {multipleRoots ? '已选任务' : '父任务'}将被标记完成，下面还有 {prompt.descendantCount} 个未完成的子任务或后代任务。
           </p>
         </div>
         <footer>
-          <button type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
           <button type="button" disabled={busy} onClick={() => onResolve(false)}>
             {busy ? '处理中...' : multipleRoots ? '仅完成已选任务' : '仅完成父任务'}
           </button>
