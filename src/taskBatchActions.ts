@@ -9,8 +9,8 @@ export function resolveTaskActionIds(clickedTaskId: string, selectedTaskIds: Ite
     : [clickedTaskId]
 }
 
-export function collectIncompleteDescendantTaskIds(tasks: RelatedTask[], rootTaskIds: Iterable<string>) {
-  const rootIds = new Set(rootTaskIds)
+export function collectIncompleteDescendantTaskIds(tasks: RelatedTask[], targetTaskIds: Iterable<string>) {
+  const targetIds = new Set(targetTaskIds)
   const taskById = new Map(tasks.map((task) => [task.id, task]))
   const childrenByParentId = new Map<string, RelatedTask[]>()
 
@@ -19,7 +19,9 @@ export function collectIncompleteDescendantTaskIds(tasks: RelatedTask[], rootTas
     childrenByParentId.set(task.parentTaskId, [...(childrenByParentId.get(task.parentTaskId) ?? []), task])
   }
 
-  const queue = [...rootIds].flatMap((taskId) => childrenByParentId.get(taskId) ?? [])
+  // A target is any task the user is completing, including a middle node that also has a parent.
+  // Descendant traversal therefore starts from relationships, never from a "root task" flag.
+  const queue = [...targetIds].flatMap((taskId) => childrenByParentId.get(taskId) ?? [])
   const visited = new Set<string>()
   const incompleteDescendantIds: string[] = []
 
@@ -27,7 +29,7 @@ export function collectIncompleteDescendantTaskIds(tasks: RelatedTask[], rootTas
   // an unfinished grandchild below a completed child, and "all descendants" must still find it.
   while (queue.length > 0) {
     const task = queue.shift()
-    if (!task || visited.has(task.id) || rootIds.has(task.id) || !taskById.has(task.id)) continue
+    if (!task || visited.has(task.id) || targetIds.has(task.id) || !taskById.has(task.id)) continue
     visited.add(task.id)
     if (task.status !== 'done') incompleteDescendantIds.push(task.id)
     queue.push(...(childrenByParentId.get(task.id) ?? []))
