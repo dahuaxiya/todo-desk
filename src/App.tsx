@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { CheckCheck, ListTodo, Merge, Play, Sparkles, Trash2, X } from 'lucide-react'
 import './App.css'
 import addTaskIcon from './assets/icons/add-task.png'
 import chevronDownIcon from './assets/icons/chevron-down.png'
@@ -16,6 +17,7 @@ import settingsIcon from './assets/icons/settings.png'
 import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import type { GlobalTopologyViewMemory } from './GlobalTopologyView'
+import { collectIncompleteDescendantTaskIds, resolveTaskActionIds } from './taskBatchActions'
 import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, CloudBackupStatus, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
@@ -84,6 +86,11 @@ type AiTestStatus = 'idle' | 'checking' | 'ok' | 'failed'
 type CalendarSyncStatus = 'ok' | 'failed' | 'skipped' | 'deleted' | 'pending'
 type CalendarTaskState = 'overdue' | 'open' | 'done'
 type TaskParentLinkType = NonNullable<Task['parentLink']>['type']
+
+interface DescendantCompletionPrompt {
+  rootTaskIds: string[]
+  descendantCount: number
+}
 
 const parentLinkTypeConfig: Record<TaskParentLinkType, { label: string; shortLabel: string }> = {
   subtask_of: { label: '计划子任务', shortLabel: '子任务' },
@@ -1341,6 +1348,8 @@ function App() {
   const quickTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const [imagePreview, setImagePreview] = useState<ImagePreviewState | null>(null)
   const [multiSelectedTaskIds, setMultiSelectedTaskIds] = useState<string[]>([])
+  const [descendantCompletionPrompt, setDescendantCompletionPrompt] = useState<DescendantCompletionPrompt | null>(null)
+  const [descendantCompletionBusy, setDescendantCompletionBusy] = useState(false)
   const [openSortColumn, setOpenSortColumn] = useState<TaskColumnStatus | ''>('')
   const [mainView, setMainView] = useState<MainView>('board')
   const [globalTopologyFocusRequest, setGlobalTopologyFocusRequest] = useState<TopologyFocusRequest | null>(null)
@@ -1506,6 +1515,17 @@ function App() {
       .map((taskId) => data.tasks.find((task) => task.id === taskId))
       .filter((task): task is Task => Boolean(task)),
     [data.tasks, multiSelectedTaskIds],
+  )
+
+  const resolveActionTaskIds = useCallback(
+    (taskId: string, explicitTaskIds?: string[]) => {
+      const requestedIds = explicitTaskIds?.length
+        ? [...new Set(explicitTaskIds)]
+        : resolveTaskActionIds(taskId, multiSelectedTaskIds)
+      const existingTaskIds = new Set(dataRef.current.tasks.map((task) => task.id))
+      return requestedIds.filter((requestedId) => existingTaskIds.has(requestedId))
+    },
+    [multiSelectedTaskIds],
   )
 
   function updateOriginFilter(nextFilter: TaskOriginFilter) {
@@ -2459,7 +2479,7 @@ function App() {
     async (nextData = data, completedTaskId?: string) => {
       if (!window.todoDesk) {
         setSyncState('飞书同步需要桌面 App 运行')
-        return
+        return nextData
       }
       setSyncState('正在同步飞书...')
       try {
@@ -2467,70 +2487,133 @@ function App() {
         if (result.ok && result.data) {
           setData(result.data)
           setSyncState(`同步成功 ${formatDateTime(new Date().toISOString())}`)
-          return
+          return result.data
         }
         setSyncState(result.message ?? '同步已跳过')
+        return nextData
       } catch (error) {
         setSyncState(error instanceof Error ? error.message : '飞书同步失败')
+        return nextData
       }
     },
     [data],
   )
 
-  const completeTask = useCallback(
-    async (taskId: string) => {
-      const currentTask = data.tasks.find((task) => task.id === taskId)
-      if (!currentTask || currentTask.status === 'done') return
+  const completeTasksNow = useCallback(
+    async (taskIds: string[]) => {
+      const currentData = dataRef.current
+      const targetIds = new Set(taskIds)
+      const newlyCompletedTaskIds = currentData.tasks
+        .filter((task) => targetIds.has(task.id) && task.status !== 'done')
+        .map((task) => task.id)
+      if (newlyCompletedTaskIds.length === 0) return currentData
 
+      const newlyCompletedIdSet = new Set(newlyCompletedTaskIds)
       const completedAt = new Date().toISOString()
-      const completionAcceptance = currentTask.status === 'pending_acceptance'
-        ? {
-            requestedAt: currentTask.completionAcceptance?.requestedAt || completedAt,
-            requestedBy: currentTask.completionAcceptance?.requestedBy || 'agent',
-            message: currentTask.completionAcceptance?.message || completionAcceptanceMessage,
-            resolution: 'accepted' as const,
-            resolvedAt: completedAt,
-          }
-        : currentTask.completionAcceptance
-      const parentCompletionReview = hasActiveParentCompletionReview(currentTask)
-        ? {
-            ...currentTask.parentCompletionReview,
-            requestedAt: currentTask.parentCompletionReview?.requestedAt || completedAt,
-            requestedBy: currentTask.parentCompletionReview?.requestedBy || 'agent',
-            message: currentTask.parentCompletionReview?.message || parentCompletionReviewMessage,
-            reason: currentTask.parentCompletionReview?.reason || 'all_agent_children_done',
-            childTaskIds: currentTask.parentCompletionReview?.childTaskIds || [],
-            resolution: 'accepted' as const,
-            resolvedAt: completedAt,
-          }
-        : currentTask.parentCompletionReview
-      let nextTasks = data.tasks.map((task) =>
-        task.id === taskId
+      let nextTasks = currentData.tasks.map((task) => {
+        if (!newlyCompletedIdSet.has(task.id)) return task
+        const completionAcceptance = task.status === 'pending_acceptance'
           ? {
-              ...task,
-              status: 'done' as TaskStatus,
-              completedAt,
-              completionAcceptance,
-              sessionReview: undefined,
-              parentCompletionReview,
-              updatedAt: completedAt,
+              requestedAt: task.completionAcceptance?.requestedAt || completedAt,
+              requestedBy: task.completionAcceptance?.requestedBy || 'agent',
+              message: task.completionAcceptance?.message || completionAcceptanceMessage,
+              resolution: 'accepted' as const,
+              resolvedAt: completedAt,
             }
-          : task,
-      )
-      nextTasks = applyParentReviewForCompletedChild(nextTasks, taskId, completedAt)
+          : task.completionAcceptance
+        const parentCompletionReview = hasActiveParentCompletionReview(task)
+          ? {
+              ...task.parentCompletionReview,
+              requestedAt: task.parentCompletionReview?.requestedAt || completedAt,
+              requestedBy: task.parentCompletionReview?.requestedBy || 'agent',
+              message: task.parentCompletionReview?.message || parentCompletionReviewMessage,
+              reason: task.parentCompletionReview?.reason || 'all_agent_children_done',
+              childTaskIds: task.parentCompletionReview?.childTaskIds || [],
+              resolution: 'accepted' as const,
+              resolvedAt: completedAt,
+            }
+          : task.parentCompletionReview
+        return {
+          ...task,
+          status: 'done' as TaskStatus,
+          completedAt,
+          completionAcceptance,
+          sessionReview: undefined,
+          parentCompletionReview,
+          updatedAt: completedAt,
+        }
+      })
+
+      // Apply child-to-parent notices only after every selected task is marked done. If a parent
+      // is part of the same batch it is already done and will not receive a stale review notice.
+      for (const taskId of newlyCompletedTaskIds) {
+        nextTasks = applyParentReviewForCompletedChild(nextTasks, taskId, completedAt)
+      }
       const nextData = {
-        ...data,
+        ...currentData,
         tasks: nextTasks,
       }
-      const saved = await persist(nextData)
-      setSelectedTaskId(taskId)
+      let saved = await persist(nextData)
+      setSelectedTaskId(taskIds.length > 1 ? '' : taskIds[0] || '')
+      if (taskIds.length > 1) setMultiSelectedTaskIds([])
+      setSyncState(newlyCompletedTaskIds.length > 1 ? `已完成 ${newlyCompletedTaskIds.length} 个任务` : '任务已完成')
 
       if (saved.settings.syncOnComplete) {
-        syncToLark(saved, taskId)
+        // The Lark bridge appends a sync log entry to the returned data. Feed each response into
+        // the next request so a batch completion cannot overwrite the previous task's sync log.
+        for (const taskId of newlyCompletedTaskIds) {
+          saved = await syncToLark(saved, taskId)
+        }
+      }
+      return saved
+    },
+    [persist, syncToLark],
+  )
+
+  const completeTask = useCallback(
+    async (taskId: string, explicitTaskIds?: string[]) => {
+      const taskIds = resolveActionTaskIds(taskId, explicitTaskIds)
+      if (taskIds.length === 0) return
+
+      const incompleteDescendantIds = collectIncompleteDescendantTaskIds(dataRef.current.tasks, taskIds)
+      if (incompleteDescendantIds.length > 0) {
+        // Both dialog choices complete the requested parents. The only decision left to the user
+        // is whether the recursively discovered descendants should be included in the same action.
+        setDescendantCompletionPrompt({
+          rootTaskIds: taskIds,
+          descendantCount: incompleteDescendantIds.length,
+        })
+        return
+      }
+
+      try {
+        await completeTasksNow(taskIds)
+      } catch (error) {
+        setSyncState(error instanceof Error ? error.message : '完成任务失败')
       }
     },
-    [data, persist, syncToLark],
+    [completeTasksNow, resolveActionTaskIds],
   )
+
+  async function resolveDescendantCompletion(includeDescendants: boolean) {
+    const prompt = descendantCompletionPrompt
+    if (!prompt || descendantCompletionBusy) return
+
+    setDescendantCompletionBusy(true)
+    try {
+      // Recompute at confirmation time so a child created by an Agent while the dialog is open is
+      // included when the user explicitly chooses to complete every descendant.
+      const descendantTaskIds = includeDescendants
+        ? collectIncompleteDescendantTaskIds(dataRef.current.tasks, prompt.rootTaskIds)
+        : []
+      await completeTasksNow([...prompt.rootTaskIds, ...descendantTaskIds])
+      setDescendantCompletionPrompt(null)
+    } catch (error) {
+      setSyncState(error instanceof Error ? error.message : '完成任务失败')
+    } finally {
+      setDescendantCompletionBusy(false)
+    }
+  }
 
   async function continueCompletionRequest(taskId: string) {
     const currentTask = data.tasks.find((task) => task.id === taskId)
@@ -2593,35 +2676,47 @@ function App() {
     setSelectedTaskId(taskId)
   }
 
-  async function toggleDone(taskId: string) {
-    const currentTask = data.tasks.find((task) => task.id === taskId)
+  async function toggleDone(taskId: string, explicitTaskIds?: string[]) {
+    const currentTask = dataRef.current.tasks.find((task) => task.id === taskId)
     if (!currentTask) return
     if (currentTask.status === 'done') {
-      await reopenTask(taskId, 'todo')
+      await moveTask(taskId, 'todo', explicitTaskIds)
       return
     }
-    await completeTask(taskId)
+    await completeTask(taskId, explicitTaskIds)
   }
 
-  async function reopenTask(taskId: string, status: TaskColumnStatus = 'todo') {
-    await updateTask(taskId, { status, completedAt: '' })
-  }
-
-  async function moveTask(taskId: string, status: TaskColumnStatus) {
-    const currentTask = data.tasks.find((task) => task.id === taskId)
-    if (!currentTask || currentTask.status === status) {
+  async function moveTask(taskId: string, status: TaskColumnStatus, explicitTaskIds?: string[]) {
+    const taskIds = resolveActionTaskIds(taskId, explicitTaskIds)
+    const currentData = dataRef.current
+    const targetIds = new Set(taskIds)
+    if (!currentData.tasks.some((task) => targetIds.has(task.id) && task.status !== status)) {
       setDraggingTaskId('')
       return
     }
 
     if (status === 'done') {
       setDraggingTaskId('')
-      await completeTask(taskId)
+      await completeTask(taskId, taskIds)
       return
     }
 
-    await updateTask(taskId, { status, completedAt: '' })
-    setSelectedTaskId(taskId)
+    const now = new Date().toISOString()
+    try {
+      await persist({
+        ...currentData,
+        tasks: currentData.tasks.map((task) => targetIds.has(task.id)
+          ? { ...task, status, completedAt: '', updatedAt: now }
+          : task),
+      })
+      setSyncState(taskIds.length > 1 ? `已将 ${taskIds.length} 个任务移到${statusConfig[status].label}` : `已移到${statusConfig[status].label}`)
+    } catch (error) {
+      setSyncState(error instanceof Error ? error.message : '移动任务失败')
+      setDraggingTaskId('')
+      return
+    }
+    setSelectedTaskId(taskIds.length > 1 ? '' : taskId)
+    if (taskIds.length > 1) setMultiSelectedTaskIds([])
     setDraggingTaskId('')
   }
 
@@ -2837,29 +2932,32 @@ function App() {
     return () => window.clearInterval(timer)
   }, [data.settings.desktopReminders, data.tasks, updateTask])
 
-  async function deleteTask(taskId: string) {
-    const taskToDelete = data.tasks.find((task) => task.id === taskId)
-    if (!taskToDelete) return
+  async function deleteTask(taskId: string, explicitTaskIds?: string[]) {
+    const taskIds = resolveActionTaskIds(taskId, explicitTaskIds)
+    const currentData = dataRef.current
+    const taskIdSet = new Set(taskIds)
+    const tasksToDelete = currentData.tasks.filter((task) => taskIdSet.has(task.id))
+    if (tasksToDelete.length === 0) return
 
     const deletedAt = new Date().toISOString()
-    const nextTasks = data.tasks.filter((task) => task.id !== taskId)
-    const trashedTask = {
-      ...taskToDelete,
-      deletedAt,
-      updatedAt: deletedAt,
-    }
+    const nextTasks = currentData.tasks.filter((task) => !taskIdSet.has(task.id))
+    const trashedTasks = tasksToDelete.map((task) => ({ ...task, deletedAt, updatedAt: deletedAt }))
     try {
-      await persist({ ...data, tasks: nextTasks, trash: [trashedTask, ...(data.trash ?? [])] })
+      // Keep a batch deletion atomic so calendar cleanup and the recoverable trash snapshot see
+      // exactly the same set of removed tasks.
+      await persist({ ...currentData, tasks: nextTasks, trash: [...trashedTasks, ...(currentData.trash ?? [])] })
     } catch (error) {
       setSyncState(error instanceof Error ? error.message : '删除任务失败')
       return
     }
-    if (selectedTaskId === taskId) {
-      setSelectedTaskId(nextTasks[0]?.id ?? '')
+    if (taskIdSet.has(selectedTaskId)) {
+      setSelectedTaskId(tasksToDelete.length > 1 ? '' : nextTasks[0]?.id ?? '')
     }
-    if (editingTaskId === taskId) {
+    if (taskIdSet.has(editingTaskId)) {
       startCreate('todo')
     }
+    setMultiSelectedTaskIds([])
+    setSyncState(tasksToDelete.length > 1 ? `已将 ${tasksToDelete.length} 个任务移入回收箱` : '已移入回收箱')
   }
 
   async function restoreTask(taskId: string) {
@@ -3269,7 +3367,7 @@ function App() {
 
   function handleDockPointerMove(event: ReactMouseEvent<HTMLElement>) {
     const target = event.target instanceof Element ? event.target : null
-    const isInteractiveDockArea = Boolean(target?.closest('.dock-card, .dock-popover, .task-topology-backdrop'))
+    const isInteractiveDockArea = Boolean(target?.closest('.dock-card, .dock-popover, .task-topology-backdrop, .descendant-completion-backdrop'))
     setDockPassthrough(!isInteractiveDockArea)
   }
 
@@ -3289,6 +3387,14 @@ function App() {
   const isQuickComposer = !editingTaskId && data.settings.addMode === 'quick'
   const hasExpandedTask = dockState.docked ? Boolean(expandedDockTask) : Boolean(selectedTaskId)
   const composerExpanded = !isQuickComposer || attachedImages.length > 0
+  const descendantCompletionDialog = descendantCompletionPrompt && (
+    <DescendantCompletionDialog
+      prompt={descendantCompletionPrompt}
+      busy={descendantCompletionBusy}
+      onCancel={() => setDescendantCompletionPrompt(null)}
+      onResolve={(includeDescendants) => void resolveDescendantCompletion(includeDescendants)}
+    />
+  )
 
   function resizeQuickTextarea(textarea: HTMLTextAreaElement) {
     // Compact mode reserves the lower composer block. Keep the empty input tall
@@ -3327,11 +3433,23 @@ function App() {
             {multiSelectedTasks.length > 1 && (
               <div className="dock-merge-bar">
                 <span>{multiSelectedTasks.length} 项</span>
-                <button type="button" disabled={Boolean(mergingMode)} onClick={() => mergeSelectedTasks('plain')}>
-                  {mergingMode === 'plain' ? '合并中' : '合并'}
+                <button type="button" title="批量完成" aria-label="批量完成" disabled={Boolean(mergingMode)} onClick={() => void completeTask(multiSelectedTasks[0].id, multiSelectedTaskIds)}>
+                  <CheckCheck aria-hidden="true" />
                 </button>
-                <button type="button" disabled={Boolean(mergingMode)} onClick={() => mergeSelectedTasks('ai')}>
-                  {mergingMode === 'ai' ? 'AI 中' : 'AI'}
+                <button type="button" title="批量移到正在做" aria-label="批量移到正在做" disabled={Boolean(mergingMode)} onClick={() => void moveTask(multiSelectedTasks[0].id, 'doing', multiSelectedTaskIds)}>
+                  <Play aria-hidden="true" />
+                </button>
+                <button type="button" title="批量移到待处理" aria-label="批量移到待处理" disabled={Boolean(mergingMode)} onClick={() => void moveTask(multiSelectedTasks[0].id, 'todo', multiSelectedTaskIds)}>
+                  <ListTodo aria-hidden="true" />
+                </button>
+                <button type="button" title="普通合并" aria-label="普通合并" disabled={Boolean(mergingMode)} onClick={() => mergeSelectedTasks('plain')}>
+                  <Merge aria-hidden="true" />
+                </button>
+                <button type="button" title="AI 合并" aria-label="AI 合并" disabled={Boolean(mergingMode)} onClick={() => mergeSelectedTasks('ai')}>
+                  <Sparkles aria-hidden="true" />
+                </button>
+                <button className="danger" type="button" title="批量删除" aria-label="批量删除" disabled={Boolean(mergingMode)} onClick={() => void deleteTask(multiSelectedTasks[0].id, multiSelectedTaskIds)}>
+                  <Trash2 aria-hidden="true" />
                 </button>
               </div>
             )}
@@ -3507,6 +3625,7 @@ function App() {
             onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
           />
         )}
+        {descendantCompletionDialog}
       </main>
     )
   }
@@ -3577,6 +3696,11 @@ function App() {
             {multiSelectedTasks.length > 1 && (
               <SelectionMergeBar
                 count={multiSelectedTasks.length}
+                compact
+                onComplete={() => void completeTask(multiSelectedTasks[0].id, multiSelectedTaskIds)}
+                onMoveDoing={() => void moveTask(multiSelectedTasks[0].id, 'doing', multiSelectedTaskIds)}
+                onMoveTodo={() => void moveTask(multiSelectedTasks[0].id, 'todo', multiSelectedTaskIds)}
+                onDelete={() => void deleteTask(multiSelectedTasks[0].id, multiSelectedTaskIds)}
                 onPlainMerge={() => mergeSelectedTasks('plain')}
                 onAiMerge={() => mergeSelectedTasks('ai')}
                 onClear={() => setMultiSelectedTaskIds([])}
@@ -3689,6 +3813,7 @@ function App() {
             onOpenTask={(taskId) => void openTaskFromTopology(taskId)}
           />
         )}
+        {descendantCompletionDialog}
       </main>
     )
   }
@@ -3820,6 +3945,10 @@ function App() {
       {multiSelectedTasks.length > 1 && (
         <SelectionMergeBar
           count={multiSelectedTasks.length}
+          onComplete={() => void completeTask(multiSelectedTasks[0].id, multiSelectedTaskIds)}
+          onMoveDoing={() => void moveTask(multiSelectedTasks[0].id, 'doing', multiSelectedTaskIds)}
+          onMoveTodo={() => void moveTask(multiSelectedTasks[0].id, 'todo', multiSelectedTaskIds)}
+          onDelete={() => void deleteTask(multiSelectedTasks[0].id, multiSelectedTaskIds)}
           onPlainMerge={() => mergeSelectedTasks('plain')}
           onAiMerge={() => mergeSelectedTasks('ai')}
           onClear={() => setMultiSelectedTaskIds([])}
@@ -4528,6 +4657,7 @@ function App() {
           layout="normal"
         />
       )}
+      {descendantCompletionDialog}
     </main>
   )
 }
@@ -4756,26 +4886,108 @@ interface MiniTaskRowProps {
 
 interface SelectionMergeBarProps {
   count: number
+  compact?: boolean
+  onComplete: () => void
+  onMoveDoing: () => void
+  onMoveTodo: () => void
+  onDelete: () => void
   onPlainMerge: () => void
   onAiMerge: () => void
   onClear: () => void
   mergingMode: '' | 'plain' | 'ai'
 }
 
-function SelectionMergeBar({ count, onPlainMerge, onAiMerge, onClear, mergingMode }: SelectionMergeBarProps) {
+function SelectionMergeBar({ count, compact = false, onComplete, onMoveDoing, onMoveTodo, onDelete, onPlainMerge, onAiMerge, onClear, mergingMode }: SelectionMergeBarProps) {
+  const disabled = Boolean(mergingMode)
   return (
-    <div className="selection-merge-bar">
+    <div className={`selection-merge-bar ${compact ? 'compact' : ''}`}>
       <span>{mergingMode ? (mergingMode === 'ai' ? 'AI 合并中...' : '普通合并中...') : `已选择 ${count} 个任务`}</span>
-      <button type="button" disabled={Boolean(mergingMode)} onClick={onPlainMerge}>
-        {mergingMode === 'plain' ? '合并中...' : '普通合并'}
+      <button type="button" title="批量完成" aria-label="批量完成" disabled={disabled} onClick={onComplete}>
+        <CheckCheck aria-hidden="true" />
+        <b>完成</b>
       </button>
-      <button type="button" disabled={Boolean(mergingMode)} onClick={onAiMerge}>
-        {mergingMode === 'ai' ? 'AI 合并中...' : 'AI 合并'}
+      <button type="button" title="批量移到正在做" aria-label="批量移到正在做" disabled={disabled} onClick={onMoveDoing}>
+        <Play aria-hidden="true" />
+        <b>正在做</b>
       </button>
-      <button type="button" disabled={Boolean(mergingMode)} onClick={onClear}>
-        取消
+      <button type="button" title="批量移到待处理" aria-label="批量移到待处理" disabled={disabled} onClick={onMoveTodo}>
+        <ListTodo aria-hidden="true" />
+        <b>待处理</b>
+      </button>
+      <i className="selection-action-divider" aria-hidden="true" />
+      <button type="button" title="普通合并" aria-label="普通合并" disabled={disabled} onClick={onPlainMerge}>
+        <Merge aria-hidden="true" />
+        <b>{mergingMode === 'plain' ? '合并中' : '合并'}</b>
+      </button>
+      <button type="button" title="AI 合并" aria-label="AI 合并" disabled={disabled} onClick={onAiMerge}>
+        <Sparkles aria-hidden="true" />
+        <b>{mergingMode === 'ai' ? 'AI 中' : 'AI 合并'}</b>
+      </button>
+      <button className="danger" type="button" title="批量删除" aria-label="批量删除" disabled={disabled} onClick={onDelete}>
+        <Trash2 aria-hidden="true" />
+        <b>删除</b>
+      </button>
+      <button className="selection-clear" type="button" title="取消多选" aria-label="取消多选" disabled={disabled} onClick={onClear}>
+        <X aria-hidden="true" />
       </button>
     </div>
+  )
+}
+
+interface DescendantCompletionDialogProps {
+  prompt: DescendantCompletionPrompt
+  busy: boolean
+  onCancel: () => void
+  onResolve: (includeDescendants: boolean) => void
+}
+
+function DescendantCompletionDialog({ prompt, busy, onCancel, onResolve }: DescendantCompletionDialogProps) {
+  const multipleRoots = prompt.rootTaskIds.length > 1
+
+  useEffect(() => {
+    if (busy) return undefined
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onCancel()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [busy, onCancel])
+
+  return createPortal(
+    <div className="descendant-completion-backdrop" role="presentation">
+      <section className="descendant-completion-dialog" role="dialog" aria-modal="true" aria-labelledby="descendant-completion-title">
+        <button
+          className="descendant-completion-close"
+          type="button"
+          title="取消并关闭"
+          aria-label="取消并关闭"
+          disabled={busy}
+          onClick={onCancel}
+        >
+          <X aria-hidden="true" />
+        </button>
+        <div className="descendant-completion-mark" aria-hidden="true">
+          <CheckCheck />
+        </div>
+        <div className="descendant-completion-copy">
+          <h2 id="descendant-completion-title">还要完成所有子任务吗？</h2>
+          <p>
+            {multipleRoots ? '已选任务' : '父任务'}将被标记完成，下面还有 {prompt.descendantCount} 个未完成的子任务或后代任务。
+          </p>
+        </div>
+        <footer>
+          <button type="button" disabled={busy} onClick={() => onResolve(false)}>
+            {busy ? '处理中...' : multipleRoots ? '仅完成已选任务' : '仅完成父任务'}
+          </button>
+          <button className="primary-button" type="button" disabled={busy} onClick={() => onResolve(true)}>
+            {busy ? '处理中...' : `全部一起完成 (${prompt.descendantCount})`}
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
   )
 }
 

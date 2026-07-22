@@ -409,9 +409,201 @@ select:focus-visible {
 }
 
 .selection-merge-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-height: 30px;
   padding: 0 10px;
   font-size: calc(12px * var(--app-font-scale));
+}
+
+.selection-merge-bar button svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.9;
+}
+
+.selection-merge-bar button b {
+  font: inherit;
+  font-weight: 750;
+}
+
+.selection-merge-bar button.danger {
+  border-color: rgba(184, 64, 51, 0.28);
+  color: #a43d32;
+}
+
+.selection-merge-bar .selection-clear {
+  width: 30px;
+  padding: 0;
+}
+
+.selection-action-divider {
+  align-self: stretch;
+  width: 1px;
+  min-height: 24px;
+  background: rgba(29, 111, 134, 0.17);
+}
+
+.selection-merge-bar.compact {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(28px, 1fr));
+  gap: 4px;
+}
+
+.selection-merge-bar.compact > span {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.selection-merge-bar.compact button {
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+}
+
+.selection-merge-bar.compact button b,
+.selection-merge-bar.compact .selection-action-divider {
+  display: none;
+}
+
+.mini-list > .selection-merge-bar {
+  position: sticky;
+  z-index: 12;
+  top: 0;
+  flex: 0 0 auto;
+  box-shadow: 0 8px 18px rgba(29, 111, 134, 0.14);
+}
+
+.descendant-completion-backdrop {
+  position: fixed;
+  z-index: 160;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(35, 33, 29, 0.26);
+  backdrop-filter: blur(3px);
+}
+
+.descendant-completion-dialog {
+  position: relative;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px;
+  width: min(430px, 100%);
+  padding: 20px;
+  border: 1px solid rgba(48, 43, 35, 0.18);
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 22px 54px rgba(39, 34, 27, 0.2);
+  color: var(--ink);
+}
+
+.descendant-completion-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.descendant-completion-close:hover:not(:disabled) {
+  border-color: rgba(48, 43, 35, 0.12);
+  background: rgba(48, 43, 35, 0.06);
+  color: var(--ink);
+}
+
+.descendant-completion-close:focus-visible {
+  outline: 2px solid rgba(29, 111, 134, 0.36);
+  outline-offset: 1px;
+}
+
+.descendant-completion-close svg {
+  width: 17px;
+  height: 17px;
+}
+
+.descendant-completion-copy {
+  min-width: 0;
+  padding-right: 24px;
+}
+
+.descendant-completion-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 7px;
+  background: rgba(29, 111, 134, 0.1);
+  color: #1d6f86;
+}
+
+.descendant-completion-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+.descendant-completion-dialog h2 {
+  margin: 1px 0 7px;
+  font-size: calc(17px * var(--app-font-scale));
+  letter-spacing: 0;
+}
+
+.descendant-completion-dialog p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: calc(13px * var(--app-font-scale));
+  line-height: 1.55;
+}
+
+.descendant-completion-dialog footer {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.descendant-completion-dialog footer button {
+  min-height: 34px;
+}
+
+@media (max-width: 360px) {
+  .descendant-completion-dialog {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .descendant-completion-close {
+    top: 8px;
+    right: 8px;
+  }
+
+  .descendant-completion-copy {
+    padding-right: 20px;
+  }
+
+  .descendant-completion-mark {
+    width: 34px;
+    height: 34px;
+  }
+
+  .descendant-completion-dialog footer {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
 }
 
 .composer,
@@ -4910,10 +5102,12 @@ select:focus-visible {
 .dock-merge-bar {
   -webkit-app-region: no-drag;
   grid-row: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(24px, 1fr) repeat(3, 24px);
+  grid-auto-rows: 24px;
   align-items: center;
   gap: 3px;
-  min-height: 28px;
+  min-height: 54px;
   padding: 2px 4px;
   border: 1px solid rgba(29, 111, 134, 0.2);
   border-radius: 7px;
@@ -4921,7 +5115,7 @@ select:focus-visible {
 }
 
 .dock-merge-bar span {
-  margin-right: auto;
+  grid-row: 1 / span 2;
   color: var(--ink-muted);
   font-size: calc(10px * var(--app-font-scale));
   font-weight: 800;
@@ -4930,11 +5124,25 @@ select:focus-visible {
 }
 
 .dock-merge-bar button {
+  display: grid;
+  place-items: center;
+  width: 24px;
   min-height: 22px;
-  padding: 0 6px;
+  padding: 0;
   border-radius: 6px;
   font-size: calc(10px * var(--app-font-scale));
   line-height: 1;
+}
+
+.dock-merge-bar button svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+
+.dock-merge-bar button.danger {
+  border-color: rgba(184, 64, 51, 0.25);
+  color: #a43d32;
 }
 
 .dock-task-head {

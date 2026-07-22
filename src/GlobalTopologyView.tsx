@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import dagre from '@dagrejs/dagre'
-import { Link2, MousePointer2, Redo2, Search, Undo2, X } from 'lucide-react'
+import { CheckCheck, Link2, ListTodo, MousePointer2, Play, Redo2, Search, Trash2, Undo2, X } from 'lucide-react'
 import {
   Background,
   BackgroundVariant,
@@ -63,14 +63,14 @@ interface GlobalTopologyViewProps {
   onCreateTask: (request: TopologyTaskCreateRequest) => void
   onSetRelationshipState: (taskIds: string[], state: TaskRelationshipState) => Promise<void> | void
   onUnlinkTask: (taskId: string) => Promise<void> | void
-  onChangeStatus: (taskId: string, status: TaskColumnStatus) => Promise<void> | void
-  onToggleDone: (taskId: string) => Promise<void> | void
+  onChangeStatus: (taskId: string, status: TaskColumnStatus, taskIds?: string[]) => Promise<void> | void
+  onToggleDone: (taskId: string, taskIds?: string[]) => Promise<void> | void
   onCopyTask: (task: Task) => Promise<void> | void
   canOpenAgentSession: (task: Task) => boolean
   onOpenAgentSession: (task: Task) => Promise<boolean> | void
   onOpenCalendar: (task: Task) => Promise<void> | void
   onEditTask: (task: Task) => void
-  onDeleteTask: (taskId: string) => Promise<void> | void
+  onDeleteTask: (taskId: string, taskIds?: string[]) => Promise<void> | void
   initialMemory?: GlobalTopologyViewMemory
   onMemoryChange: (memory: GlobalTopologyViewMemory) => void
 }
@@ -500,6 +500,19 @@ export function GlobalTopologyView({
   const onMemoryChangeRef = useRef(onMemoryChange)
   const filterResetReadyRef = useRef(false)
 
+  const getActionTaskIds = useCallback((taskId: string) => {
+    const selectedIds = selectedTaskIdsRef.current
+    return selectedIds.size > 1 && selectedIds.has(taskId) ? [...selectedIds] : [taskId]
+  }, [])
+
+  const changeSelectedTasksStatus = useCallback((taskId: string, status: TaskColumnStatus) => {
+    void onChangeStatus(taskId, status, getActionTaskIds(taskId))
+  }, [getActionTaskIds, onChangeStatus])
+
+  const toggleSelectedTasksDone = useCallback((taskId: string) => {
+    void onToggleDone(taskId, getActionTaskIds(taskId))
+  }, [getActionTaskIds, onToggleDone])
+
   onMemoryChangeRef.current = onMemoryChange
   memoryRef.current = {
     statusFilter,
@@ -666,8 +679,8 @@ export function GlobalTopologyView({
             : !eligibleParentCandidateIds.has(task.id)
               ? 'invalid'
               : 'eligible',
-        onChangeStatus,
-        onToggleDone,
+        onChangeStatus: changeSelectedTasksStatus,
+        onToggleDone: toggleSelectedTasksDone,
         onToggleCollapse: (taskId: string) => {
           setCollapsedTaskIds((current) => {
             const next = new Set(current)
@@ -681,7 +694,7 @@ export function GlobalTopologyView({
       draggable: !canvasParentPickActive,
       connectable: !canvasParentPickActive,
     })))
-  }, [automaticPositions, canvasParentPickActive, collapsedTaskIds, eligibleParentCandidateIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, onChangeStatus, onToggleDone, parentBindingTaskIdSet, visibleTasks])
+  }, [automaticPositions, canvasParentPickActive, changeSelectedTasksStatus, collapsedTaskIds, eligibleParentCandidateIds, filteredAutomaticPositions, filteredChildrenByParentId, filteredPositionOverrides, filteredView, hiddenDescendantCountByTaskId, localPositions, parentBindingTaskIdSet, toggleSelectedTasksDone, visibleTasks])
 
   useEffect(() => {
     const current = selectedTaskIdsRef.current
@@ -1120,10 +1133,38 @@ export function GlobalTopologyView({
         <span className="global-topology-visible-count">当前 {visibleTasks.length}</span>
         {selectedTaskIds.size > 1 && <span className="global-topology-selection-count">已选 {selectedTaskIds.size}</span>}
         {selectedTaskIds.size > 1 && (
-          <button className="topology-bind-parent-action" type="button" onClick={() => openQuickParentPicker(selectedTaskIds)}>
-            <Link2 aria-hidden="true" size={14} strokeWidth={2} />
-            挂到父任务
-          </button>
+          <>
+            <button className="topology-bind-parent-action" type="button" onClick={() => openQuickParentPicker(selectedTaskIds)}>
+              <Link2 aria-hidden="true" size={14} strokeWidth={2} />
+              挂到父任务
+            </button>
+            <div className="global-topology-batch-actions" role="group" aria-label="批量任务操作">
+              <button type="button" title="批量完成" aria-label="批量完成" onClick={() => {
+                const taskIds = [...selectedTaskIds]
+                void onChangeStatus(taskIds[0], 'done', taskIds)
+              }}>
+                <CheckCheck aria-hidden="true" />
+              </button>
+              <button type="button" title="批量移到正在做" aria-label="批量移到正在做" onClick={() => {
+                const taskIds = [...selectedTaskIds]
+                void onChangeStatus(taskIds[0], 'doing', taskIds)
+              }}>
+                <Play aria-hidden="true" />
+              </button>
+              <button type="button" title="批量移到待处理" aria-label="批量移到待处理" onClick={() => {
+                const taskIds = [...selectedTaskIds]
+                void onChangeStatus(taskIds[0], 'todo', taskIds)
+              }}>
+                <ListTodo aria-hidden="true" />
+              </button>
+              <button className="danger" type="button" title="批量删除" aria-label="批量删除" onClick={() => {
+                const taskIds = [...selectedTaskIds]
+                void onDeleteTask(taskIds[0], taskIds)
+              }}>
+                <Trash2 aria-hidden="true" />
+              </button>
+            </div>
+          </>
         )}
         <div className="global-topology-filters">
           <select className="project-filter" value={projectFilter} aria-label="按项目筛选" onChange={(event) => setProjectFilter(event.target.value)}>
@@ -1427,14 +1468,14 @@ export function GlobalTopologyView({
               </div>
               <footer>
                 {selectedTask.status !== 'done' && (
-                  <button className="primary" type="button" onClick={() => void onToggleDone(selectedTask.id)}>
+                  <button className="primary" type="button" onClick={() => toggleSelectedTasksDone(selectedTask.id)}>
                     {selectedTask.status === 'pending_acceptance' ? '确认完成' : '完成'}
                   </button>
                 )}
-                {selectedTask.status === 'done' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'todo')}>转待办</button>}
-                {selectedTask.status === 'done' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'doing')}>继续做</button>}
-                {selectedTask.status !== 'done' && selectedTask.status !== 'doing' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'doing')}>开始</button>}
-                {selectedTask.status !== 'done' && selectedTask.status !== 'todo' && <button type="button" onClick={() => void onChangeStatus(selectedTask.id, 'todo')}>待办</button>}
+                {selectedTask.status === 'done' && <button type="button" onClick={() => changeSelectedTasksStatus(selectedTask.id, 'todo')}>转待办</button>}
+                {selectedTask.status === 'done' && <button type="button" onClick={() => changeSelectedTasksStatus(selectedTask.id, 'doing')}>继续做</button>}
+                {selectedTask.status !== 'done' && selectedTask.status !== 'doing' && <button type="button" onClick={() => changeSelectedTasksStatus(selectedTask.id, 'doing')}>开始</button>}
+                {selectedTask.status !== 'done' && selectedTask.status !== 'todo' && <button type="button" onClick={() => changeSelectedTasksStatus(selectedTask.id, 'todo')}>待办</button>}
                 <button type="button" onClick={() => void onCopyTask(selectedTask)}>复制</button>
                 {canOpenAgentSession(selectedTask) && <button type="button" onClick={() => void onOpenAgentSession(selectedTask)}>会话</button>}
                 {(selectedTask.reminderAt || selectedTask.dueAt) && <button type="button" onClick={() => void onOpenCalendar(selectedTask)}>日历</button>}
@@ -1442,7 +1483,7 @@ export function GlobalTopologyView({
                 {selectedTask.relationshipState === 'independent_root' && (
                   <button type="button" onClick={() => void onSetRelationshipState([selectedTask.id], 'unresolved')}>移回待归类</button>
                 )}
-                <button className="danger" type="button" onClick={() => void onDeleteTask(selectedTask.id)}>删除</button>
+                <button className="danger" type="button" onClick={() => void onDeleteTask(selectedTask.id, getActionTaskIds(selectedTask.id))}>删除</button>
               </footer>
             </>
           </aside>
