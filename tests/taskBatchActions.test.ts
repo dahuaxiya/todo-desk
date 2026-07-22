@@ -26,7 +26,21 @@ test('collects every unfinished descendant across all levels', () => {
   )
 })
 
-test('handles multiple roots and malformed cycles without returning roots twice', () => {
+test('collects descendants when the target is a parent in the middle of the tree', () => {
+  const tasks = [
+    { id: 'root', status: 'doing' as const },
+    { id: 'middle-parent', parentTaskId: 'root', status: 'doing' as const },
+    { id: 'open-child', parentTaskId: 'middle-parent', status: 'todo' as const },
+    { id: 'open-grandchild', parentTaskId: 'open-child', status: 'pending_acceptance' as const },
+  ]
+
+  assert.deepEqual(
+    collectIncompleteDescendantTaskIds(tasks, ['middle-parent']),
+    ['open-child', 'open-grandchild'],
+  )
+})
+
+test('handles multiple targets and malformed cycles without returning targets twice', () => {
   const tasks = [
     { id: 'a', parentTaskId: 'c', status: 'doing' as const },
     { id: 'b', parentTaskId: 'a', status: 'todo' as const },

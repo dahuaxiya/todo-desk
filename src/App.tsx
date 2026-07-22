@@ -88,7 +88,7 @@ type CalendarTaskState = 'overdue' | 'open' | 'done'
 type TaskParentLinkType = NonNullable<Task['parentLink']>['type']
 
 interface DescendantCompletionPrompt {
-  rootTaskIds: string[]
+  targetTaskIds: string[]
   descendantCount: number
 }
 
@@ -2640,10 +2640,10 @@ function App() {
 
       const incompleteDescendantIds = collectIncompleteDescendantTaskIds(dataRef.current.tasks, taskIds)
       if (incompleteDescendantIds.length > 0) {
-        // Both dialog choices complete the requested parents. The only decision left to the user
+        // Both dialog choices complete the requested tasks. The only decision left to the user
         // is whether the recursively discovered descendants should be included in the same action.
         setDescendantCompletionPrompt({
-          rootTaskIds: taskIds,
+          targetTaskIds: taskIds,
           descendantCount: incompleteDescendantIds.length,
         })
         return
@@ -2667,9 +2667,9 @@ function App() {
       // Recompute at confirmation time so a child created by an Agent while the dialog is open is
       // included when the user explicitly chooses to complete every descendant.
       const descendantTaskIds = includeDescendants
-        ? collectIncompleteDescendantTaskIds(dataRef.current.tasks, prompt.rootTaskIds)
+        ? collectIncompleteDescendantTaskIds(dataRef.current.tasks, prompt.targetTaskIds)
         : []
-      await completeTasksNow([...prompt.rootTaskIds, ...descendantTaskIds])
+      await completeTasksNow([...prompt.targetTaskIds, ...descendantTaskIds])
       setDescendantCompletionPrompt(null)
     } catch (error) {
       setSyncState(error instanceof Error ? error.message : '完成任务失败')
@@ -5017,7 +5017,7 @@ interface DescendantCompletionDialogProps {
 }
 
 function DescendantCompletionDialog({ prompt, busy, onCancel, onResolve }: DescendantCompletionDialogProps) {
-  const multipleRoots = prompt.rootTaskIds.length > 1
+  const multipleTargets = prompt.targetTaskIds.length > 1
 
   useEffect(() => {
     if (busy) return undefined
@@ -5049,12 +5049,12 @@ function DescendantCompletionDialog({ prompt, busy, onCancel, onResolve }: Desce
         <div className="descendant-completion-copy">
           <h2 id="descendant-completion-title">还要完成所有子任务吗？</h2>
           <p>
-            {multipleRoots ? '已选任务' : '父任务'}将被标记完成，下面还有 {prompt.descendantCount} 个未完成的子任务或后代任务。
+            {multipleTargets ? '已选任务' : '当前任务'}将被标记完成，下面还有 {prompt.descendantCount} 个未完成的子任务或后代任务。
           </p>
         </div>
         <footer>
           <button type="button" disabled={busy} onClick={() => onResolve(false)}>
-            {busy ? '处理中...' : multipleRoots ? '仅完成已选任务' : '仅完成父任务'}
+            {busy ? '处理中...' : multipleTargets ? '仅完成已选任务' : '仅完成当前任务'}
           </button>
           <button className="primary-button" type="button" disabled={busy} onClick={() => onResolve(true)}>
             {busy ? '处理中...' : `全部一起完成 (${prompt.descendantCount})`}
