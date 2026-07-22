@@ -1975,6 +1975,49 @@ select:focus-visible {
   cursor: grabbing;
 }
 
+.task-card-context-menu {
+  -webkit-app-region: no-drag;
+  position: fixed;
+  z-index: 1100;
+  max-width: calc(100vw - 16px);
+  padding: 5px;
+  border: 1px solid rgba(48, 43, 35, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 252, 244, 0.98);
+  box-shadow: 0 14px 34px rgba(48, 43, 35, 0.2);
+  backdrop-filter: blur(12px);
+}
+
+.task-card-context-menu button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: calc(12px * var(--app-font-scale));
+  font-weight: 750;
+  text-align: left;
+}
+
+.task-card-context-menu button:hover,
+.task-card-context-menu button:focus-visible {
+  background: rgba(239, 246, 255, 0.92);
+  color: #1d4ed8;
+  outline: none;
+}
+
+.task-card-context-menu svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
 .task-card.selected {
   border-color: #e0ad1e;
   box-shadow: inset 3px 0 0 var(--accent), 0 12px 24px rgba(78, 62, 36, 0.12);

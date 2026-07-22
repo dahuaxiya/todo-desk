@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { CheckCheck, ListTodo, Merge, Play, Sparkles, Trash2, X } from 'lucide-react'
+import { CheckCheck, ListTodo, Merge, Network, Play, Sparkles, Trash2, X } from 'lucide-react'
 import './App.css'
 import addTaskIcon from './assets/icons/add-task.png'
 import chevronDownIcon from './assets/icons/chevron-down.png'
@@ -90,6 +90,12 @@ type TaskParentLinkType = NonNullable<Task['parentLink']>['type']
 interface DescendantCompletionPrompt {
   targetTaskIds: string[]
   descendantCount: number
+}
+
+interface TaskCardContextMenuState {
+  taskId: string
+  x: number
+  y: number
 }
 
 const parentLinkTypeConfig: Record<TaskParentLinkType, { label: string; shortLabel: string }> = {
@@ -1396,6 +1402,7 @@ function App() {
   const [mainView, setMainView] = useState<MainView>('board')
   const [globalTopologyFocusRequest, setGlobalTopologyFocusRequest] = useState<TopologyFocusRequest | null>(null)
   const [globalTopologyContextTaskId, setGlobalTopologyContextTaskId] = useState('')
+  const [taskCardContextMenu, setTaskCardContextMenu] = useState<TaskCardContextMenuState | null>(null)
   const globalTopologyFocusRequestIdRef = useRef(0)
   const [topologyViewMemory, setTopologyViewMemory] = useState<GlobalTopologyViewMemory>()
   const [calendarMonth, setCalendarMonth] = useState(() => new Date())
@@ -1688,6 +1695,7 @@ function App() {
   }
 
   function openTaskInGlobalTopology(taskId: string) {
+    setTaskCardContextMenu(null)
     globalTopologyFocusRequestIdRef.current += 1
     setGlobalTopologyFocusRequest({
       taskId,
@@ -4116,6 +4124,10 @@ function App() {
                 void openRelatedTask(taskId)
               }}
               onOpenTopology={openTaskTopology}
+              onOpenContextMenu={(taskId, position) => {
+                setOpenSortColumn('')
+                setTaskCardContextMenu({ taskId, ...position })
+              }}
               onContinueCompletionRequest={continueCompletionRequest}
               onResolveSessionReview={resolveSessionReview}
               draggingTaskId={draggingTaskId}
@@ -4722,6 +4734,13 @@ function App() {
           }
         />
       )}
+      {taskCardContextMenu && (
+        <TaskCardContextMenu
+          menu={taskCardContextMenu}
+          onClose={() => setTaskCardContextMenu(null)}
+          onOpenTopology={openTaskInGlobalTopology}
+        />
+      )}
       {topologyTaskId && taskLookup.has(topologyTaskId) && (
         <TaskTopologyDialog
           tasks={data.tasks}
@@ -4760,6 +4779,7 @@ interface TaskColumnProps {
   onCreateChildTask: (task: Task, relationType: TaskParentLinkType) => void
   onOpenRelatedTask: (taskId: string) => void
   onOpenTopology: (taskId: string) => void
+  onOpenContextMenu: (taskId: string, position: { x: number; y: number }) => void
   onContinueCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
   draggingTaskId: string
@@ -6053,6 +6073,69 @@ function ImagePreviewDialog({ preview, onClose, onMove }: ImagePreviewDialogProp
   )
 }
 
+interface TaskCardContextMenuProps {
+  menu: TaskCardContextMenuState
+  onClose: () => void
+  onOpenTopology: (taskId: string) => void
+}
+
+function TaskCardContextMenu({ menu, onClose, onOpenTopology }: TaskCardContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const viewportMargin = 8
+  const menuWidth = 204
+  const menuHeight = 44
+  const maxLeft = Math.max(viewportMargin, window.innerWidth - menuWidth - viewportMargin)
+  const maxTop = Math.max(viewportMargin, window.innerHeight - menuHeight - viewportMargin)
+  const left = Math.min(Math.max(viewportMargin, menu.x), maxLeft)
+  const top = Math.min(Math.max(viewportMargin, menu.y), maxTop)
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) onClose()
+    }
+
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') onClose()
+    }
+
+    // 菜单锚定的是右键时的屏幕坐标；页面或窗口变化后关闭，避免菜单悬在错误的任务上。
+    window.addEventListener('pointerdown', handlePointerDown, true)
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', onClose)
+    window.addEventListener('scroll', onClose, true)
+    window.addEventListener('blur', onClose)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true)
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', onClose)
+      window.removeEventListener('scroll', onClose, true)
+      window.removeEventListener('blur', onClose)
+    }
+  }, [onClose])
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="task-card-context-menu"
+      role="menu"
+      aria-label="任务操作"
+      style={{ left, top, width: menuWidth }}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        autoFocus
+        onClick={() => onOpenTopology(menu.taskId)}
+      >
+        <Network aria-hidden="true" />
+        <span>在拓扑中打开</span>
+      </button>
+    </div>,
+    document.body,
+  )
+}
+
 function TaskColumn({
   status,
   tasks,
@@ -6076,6 +6159,7 @@ function TaskColumn({
   onCreateChildTask,
   onOpenRelatedTask,
   onOpenTopology,
+  onOpenContextMenu,
   onContinueCompletionRequest,
   onResolveSessionReview,
   draggingTaskId,
@@ -6188,6 +6272,7 @@ function TaskColumn({
             onCreateChildTask={onCreateChildTask}
             onOpenRelatedTask={onOpenRelatedTask}
             onOpenTopology={onOpenTopology}
+            onOpenContextMenu={onOpenContextMenu}
             onContinueCompletionRequest={onContinueCompletionRequest}
             onResolveSessionReview={onResolveSessionReview}
             onDragStart={onDragStart}
@@ -6224,6 +6309,7 @@ interface TaskCardProps {
   onCreateChildTask: (task: Task, relationType: TaskParentLinkType) => void
   onOpenRelatedTask: (taskId: string) => void
   onOpenTopology: (taskId: string) => void
+  onOpenContextMenu: (taskId: string, position: { x: number; y: number }) => void
   onContinueCompletionRequest: (taskId: string) => void
   onResolveSessionReview: (taskId: string, resolution: 'reviewed' | 'rework' | 'dismissed') => void
   onDragStart: (taskId: string) => void
@@ -6480,6 +6566,7 @@ function TaskCard({
   onCreateChildTask,
   onOpenRelatedTask,
   onOpenTopology,
+  onOpenContextMenu,
   onContinueCompletionRequest,
   onResolveSessionReview,
   onDragStart,
@@ -6514,6 +6601,11 @@ function TaskCard({
         onDragStart(task.id)
       }}
       onDragEnd={() => onDragStart('')}
+      onContextMenu={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onOpenContextMenu(task.id, { x: event.clientX, y: event.clientY })
+      }}
       onClick={(event: ReactMouseEvent<HTMLElement>) => {
         if (isInteractiveTaskEventTarget(event.target)) return
         if (event.metaKey || event.ctrlKey) {
