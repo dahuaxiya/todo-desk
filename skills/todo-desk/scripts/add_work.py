@@ -9,10 +9,16 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 
 def compact(value: dict) -> dict:
     return {key: item for key, item in value.items() if item not in ("", None, {})}
+
+
+def parse_task_ids(value: str) -> list[str]:
+    normalized = value.replace("，", ",").replace("、", ",").replace(" ", ",")
+    return list(dict.fromkeys(item.strip() for item in normalized.split(",") if item.strip()))[:50]
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,9 +36,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent-session-id", default=os.environ.get("TODO_DESK_AGENT_SESSION_ID", ""))
     parser.add_argument("--repository", default=os.environ.get("TODO_DESK_REPOSITORY", ""))
     parser.add_argument("--repository-path", default=os.environ.get("TODO_DESK_REPOSITORY_PATH", os.getcwd()))
-    parser.add_argument("--parent-task-id", default="")
+    relationship_group = parser.add_mutually_exclusive_group(required=True)
+    relationship_group.add_argument("--parent-task-id", default=None)
+    relationship_group.add_argument("--independent-root", action="store_true")
+    relationship_group.add_argument("--parent-unresolved", action="store_true")
     parser.add_argument("--relation-type", choices=["subtask_of", "discovered_from"], default="subtask_of")
     parser.add_argument("--relation-reason", default="")
+    parser.add_argument("--parent-decision-reason", default="")
+    parser.add_argument("--parent-candidate-ids", default="")
     completion_group = parser.add_mutually_exclusive_group()
     completion_group.add_argument("--affects-parent-completion", dest="affects_parent_completion", action="store_true")
     completion_group.add_argument("--follow-up-only", dest="affects_parent_completion", action="store_false")
@@ -44,6 +55,23 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    parent_task_id = (args.parent_task_id or "").strip()
+    if args.parent_task_id is not None and not parent_task_id:
+        print("--parent-task-id cannot be empty. Use --parent-unresolved when no parent can be selected.", file=sys.stderr)
+        return 2
+    decision_reason = (args.parent_decision_reason or args.relation_reason).strip()
+    if not decision_reason:
+        print("A relationship decision reason is required. Use --parent-decision-reason or --relation-reason.", file=sys.stderr)
+        return 2
+
+    relationship_state = (
+        "linked" if parent_task_id
+        else "independent_root" if args.independent_root
+        else "unresolved"
+    )
+    candidate_task_ids = parse_task_ids(args.parent_candidate_ids)
+    if parent_task_id and parent_task_id not in candidate_task_ids:
+        candidate_task_ids.insert(0, parent_task_id)
     parent_link = compact({
         "type": args.relation_type,
         "reason": args.relation_reason,
@@ -51,7 +79,7 @@ def main() -> int:
         "affectsParentCompletion": args.affects_parent_completion,
         "createdBy": "agent",
         "confidence": "explicit",
-    }) if args.parent_task_id else None
+    }) if parent_task_id else None
     origin = {
         "kind": "agent",
         "channel": "todo-desk-skill",
@@ -68,8 +96,17 @@ def main() -> int:
         }),
         "client": {
             "name": "todo-desk-skill",
-            "version": "1",
+            "version": "2",
         },
+    }
+    relationship_decision = {
+        "state": relationship_state,
+        "reason": decision_reason,
+        "candidateTaskIds": candidate_task_ids,
+        "decidedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "decidedBy": "agent",
+        "agent": args.agent,
+        "agentSessionId": args.agent_session_id,
     }
     payload = {
         "title": args.title,
@@ -85,8 +122,10 @@ def main() -> int:
         "agentSessionId": args.agent_session_id,
         "repository": args.repository,
         "repositoryPath": args.repository_path,
-        "parentTaskId": args.parent_task_id,
+        "parentTaskId": parent_task_id,
         "parentLink": parent_link,
+        "relationshipState": relationship_state,
+        "relationshipDecision": relationship_decision,
         "origin": origin,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -100,6 +139,10 @@ def main() -> int:
     try:
         with urllib.request.urlopen(request, timeout=args.timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        print(f"Todo Desk API rejected the task ({exc.code}): {body}", file=sys.stderr)
+        return 1
     except urllib.error.URLError as exc:
         print(f"Todo Desk API request failed: {exc}", file=sys.stderr)
         return 1

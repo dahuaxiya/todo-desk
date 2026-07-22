@@ -88,6 +88,8 @@ python3 ${searchScript} \\
 - agent 必须结合搜索结果与当前对话自行判断最近一级直接父任务；session 命中和模糊分数不能单独证明父子关系。
 - 过滤条件没有结果时应放宽条件重试；摘要不足时只读取 \`GET /tasks/<task-id>\` 的单条详情，不得读取完整任务列表进入模型上下文。
 - 能明确判断时创建 AI 卡片传 \`--parent-task-id\`；计划内拆分使用 \`subtask_of\`，执行中发现的独立问题使用 \`discovered_from\`。无法可靠判断时不得强行关联。
+- 每次创建必须明确三选一：\`--parent-task-id\`、\`--independent-root\` 或 \`--parent-unresolved\`。不能省略关系决策。
+- 使用 \`--parent-decision-reason\` 记录判断依据；把实际查看过的候选任务 id 通过 \`--parent-candidate-ids\` 传入，多个 id 用逗号分隔。
 
 优先使用本机脚本：
 
@@ -103,10 +105,22 @@ python3 ${addScript} \\
   --agent-session-id "<session-id>" \\
   --repository "<repo-name>" \\
   --repository-path "<repo-path>" \\
-  --parent-task-id "<可选：明确的直接上级任务 id>" \\
+  --parent-task-id "<明确的直接上级任务 id>" \\
   --relation-type "<subtask_of 或 discovered_from>" \\
   --relation-reason "<派生问题的来源说明>" \\
+  --parent-decision-reason "<为什么它是直接父任务>" \\
+  --parent-candidate-ids "<检索过的候选任务 id>" \\
   --affects-parent-completion
+\`\`\`
+
+没有父任务时必须明确选择一种根任务状态：
+
+\`\`\`bash
+# 明确属于独立根任务
+python3 ${addScript} ... --independent-root --parent-decision-reason "<独立原因>" --parent-candidate-ids "<候选 id>"
+
+# 已搜索但目前无法可靠判断，保留在待归类
+python3 ${addScript} ... --parent-unresolved --parent-decision-reason "<无法判断的原因>" --parent-candidate-ids "<候选 id>"
 \`\`\`
 
 推进工作时更新同一个任务：
@@ -174,6 +188,7 @@ python3 ${updateScript} \\
 - \`session-id\` 必须来自当前运行时，不要编造；常见来源包括 \`CODEX_THREAD_ID\`、\`CLAUDE_SESSION_ID\`、\`KIMI_SESSION_ID\`、\`CURSOR_SESSION_ID\` 或该工具暴露的等价会话/线程 id。
 - 创建任务时 \`tags\` 至少包含当前 \`agent\` 和 \`session-id\`，并同时传 \`--agent\` 与 \`--agent-session-id\`。
 - \`add_work.py\` 会显式写入 \`origin.kind=agent\` 和 \`origin.channel=todo-desk-skill\`；不要只靠 \`source\`、\`repository\` 等上下文字段表达任务来源。
+- \`add_work.py\` 会拒绝没有关系三态、判断理由的创建请求；不要用原始 HTTP 请求绕过。
 - 计划内拆分使用 \`--parent-task-id <当前任务 id> --relation-type subtask_of\`；处理中自动识别出的独立新问题使用 \`--relation-type discovered_from --relation-reason <派生原因>\`。
 - 是否影响父任务完成必须按验收条件判断：阻塞父任务验收使用 \`--affects-parent-completion\`，可独立后续处理使用 \`--follow-up-only\`。
 - 只有直接上级任务 id 明确可得时才建立关系，不要根据标题、项目、标签、仓库或相同 session 猜测。session id 只记录执行来源，不表达任务层级。
@@ -230,6 +245,96 @@ async function upsertManagedBlock(filePath, block, options, summary) {
   await writeTextIfChanged(filePath, next, options, summary)
 }
 
+function upsertHashBlockContent(current, name, block) {
+  const start = `# ${name}:start`
+  const end = `# ${name}:end`
+  const managed = `${start}\n${block.trim()}\n${end}`
+  const pattern = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`)
+  return pattern.test(current)
+    ? current.replace(pattern, managed)
+    : `${current.trimEnd()}${current.trim() ? '\n\n' : ''}${managed}\n`
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`
+}
+
+function sessionCheckCommand(skillDir, source, port) {
+  const scriptPath = join(skillDir, 'scripts', 'check_session.py')
+  return ['python3', shellQuote(scriptPath), '--hook-source', source, '--agent', source, '--port', String(port)].join(' ')
+}
+
+async function readJsonObject(filePath, summary) {
+  const raw = await readText(filePath)
+  if (!raw.trim()) return {}
+  try {
+    const value = JSON.parse(raw)
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value
+  } catch (error) {
+    summary.warnings.push(`Cannot update invalid JSON config ${filePath}: ${error.message}`)
+  }
+  return null
+}
+
+function isTodoDeskHookCommand(value) {
+  return typeof value === 'string' && value.includes('todo-desk') && value.includes('check_session.py')
+}
+
+async function upsertClaudeStopHook(homeDir, skillDir, options, summary) {
+  const filePath = join(homeDir, '.claude', 'settings.json')
+  const config = await readJsonObject(filePath, summary)
+  if (!config) return
+  const stopGroups = Array.isArray(config.hooks?.Stop) ? config.hooks.Stop : []
+  const cleanedGroups = stopGroups
+    .map((group) => ({
+      ...group,
+      hooks: Array.isArray(group.hooks)
+        ? group.hooks.filter((hook) => !isTodoDeskHookCommand(hook?.command))
+        : [],
+    }))
+    .filter((group) => group.hooks.length > 0)
+  const hook = {
+    hooks: [{
+      type: 'command',
+      command: sessionCheckCommand(skillDir, 'claude', options.port),
+      timeout: 8,
+    }],
+  }
+  const next = {
+    ...config,
+    hooks: {
+      ...(config.hooks || {}),
+      Stop: [...cleanedGroups, hook],
+    },
+  }
+  summary.hooks.push({ target: 'claude', event: 'Stop', filePath })
+  await writeTextIfChanged(filePath, `${JSON.stringify(next, null, 2)}\n`, options, summary)
+}
+
+async function upsertCursorStopHook(homeDir, skillDir, options, summary) {
+  const filePath = join(homeDir, '.cursor', 'hooks.json')
+  const config = await readJsonObject(filePath, summary)
+  if (!config) return
+  const stopHooks = Array.isArray(config.hooks?.stop) ? config.hooks.stop : []
+  const hook = {
+    type: 'command',
+    command: sessionCheckCommand(skillDir, 'cursor', options.port),
+    timeout: 8,
+    failClosed: false,
+    loop_limit: 1,
+  }
+  const next = {
+    ...config,
+    version: 1,
+    hooks: {
+      ...(config.hooks || {}),
+      stop: [...stopHooks.filter((item) => !isTodoDeskHookCommand(item?.command)), hook],
+    },
+  }
+  summary.hooks.push({ target: 'cursor', event: 'stop', filePath })
+  await writeTextIfChanged(filePath, `${JSON.stringify(next, null, 2)}\n`, options, summary)
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -279,6 +384,46 @@ function parseTomlStringArray(value) {
   return matches.map((match) => match[1])
 }
 
+function parseTopLevelNotify(config) {
+  const match = config.match(/^notify\s*=\s*(\[[^\n]*\])\s*$/m)
+  if (!match) return { match: null, command: [] }
+  return { match, command: parseTomlStringArray(match[1]) }
+}
+
+async function upsertCodexNotifyHook(homeDir, skillDir, options, summary) {
+  const configPath = join(homeDir, '.codex', 'config.toml')
+  const delegatePath = join(homeDir, '.codex', 'todo-desk-notify-delegate.json')
+  const current = await readText(configPath)
+  const notify = parseTopLevelNotify(current)
+  if (/^notify\s*=/m.test(current) && (!notify.match || notify.command.length === 0)) {
+    summary.warnings.push(`Cannot safely parse Codex notify in ${configPath}; Todo Desk notify hook was not installed.`)
+    return
+  }
+
+  if (notify.command.length > 0 && !notify.command.some((item) => item.includes('check_session.py'))) {
+    await writeTextIfChanged(delegatePath, `${JSON.stringify({ command: notify.command }, null, 2)}\n`, options, summary)
+  }
+  const scriptPath = join(skillDir, 'scripts', 'check_session.py')
+  const command = [
+    'python3',
+    scriptPath,
+    '--hook-source',
+    'codex',
+    '--agent',
+    'codex',
+    '--port',
+    String(options.port),
+    '--delegate-config',
+    delegatePath,
+  ]
+  const line = `notify = ${JSON.stringify(command)}`
+  const next = notify.match
+    ? current.replace(notify.match[0], line)
+    : `${line}\n${current}`
+  summary.hooks.push({ target: 'codex', event: 'agent-turn-complete notify', filePath: configPath })
+  await writeTextIfChanged(configPath, next, options, summary)
+}
+
 async function getKimiExtraSkillDirs(homeDir) {
   const configPath = join(homeDir, '.kimi-code', 'config.toml')
   const fallbackDir = join(homeDir, '.kimi', 'extra-skills')
@@ -292,14 +437,23 @@ async function getKimiExtraSkillDirs(homeDir) {
   }
 }
 
-async function ensureKimiConfig(homeDir, options, summary) {
+async function ensureKimiConfig(homeDir, skillDir, options, summary) {
   const { configPath, fallbackDir, dirs } = await getKimiExtraSkillDirs(homeDir)
   const current = await readText(configPath)
   const line = `extra_skill_dirs = [ ${dirs.map((item) => `"${item}"`).join(', ')} ]`
-  const next = current.match(/^extra_skill_dirs\s*=\s*\[[^\]]*\]/m)
+  const withSkillDirs = current.match(/^extra_skill_dirs\s*=\s*\[[^\]]*\]/m)
     ? current.replace(/^extra_skill_dirs\s*=\s*\[[^\]]*\]/m, line)
     : `${current.trimEnd()}${current.trim() ? '\n' : ''}${line}\n`
+  // Older Kimi versions wrote an empty inline array. TOML forbids defining the same array again
+  // with [[hooks]], so remove only the provably empty legacy declaration and preserve real hooks.
+  const withoutEmptyLegacyHooks = withSkillDirs.replace(/^hooks\s*=\s*\[\s*\]\s*\n?/m, '')
+  const hookBlock = `[[hooks]]
+event = "Stop"
+command = ${JSON.stringify(sessionCheckCommand(skillDir, 'kimi', options.port))}
+timeout = 8`
+  const next = upsertHashBlockContent(withoutEmptyLegacyHooks, 'todo-desk-session-hook', hookBlock)
 
+  summary.hooks.push({ target: 'kimi', event: 'Stop', filePath: configPath })
   await writeTextIfChanged(configPath, next, options, summary)
   return { fallbackDir, dirs }
 }
@@ -313,7 +467,6 @@ async function main() {
 
   const homeDir = resolve(expandHome(options.home, os.homedir()))
   const sharedSkillDir = join(homeDir, '.agents', 'skills', 'todo-desk')
-  const block = instructionBlock(sharedSkillDir)
   const summary = {
     homeDir,
     targets: options.targets,
@@ -322,6 +475,7 @@ async function main() {
     skillCopies: [],
     writes: [],
     unchanged: [],
+    hooks: [],
     warnings: [],
   }
 
@@ -334,30 +488,38 @@ async function main() {
 
   if (isTarget(options, 'generic')) {
     await copySkillTo(sharedSkillDir, options, summary)
-    await upsertManagedBlock(join(homeDir, '.agents', 'AGENTS.md'), block, options, summary)
+    await upsertManagedBlock(join(homeDir, '.agents', 'AGENTS.md'), instructionBlock(sharedSkillDir), options, summary)
   }
 
   if (isTarget(options, 'codex')) {
-    await copySkillTo(join(homeDir, '.codex', 'skills', 'todo-desk'), options, summary)
-    await upsertManagedBlock(join(homeDir, '.codex', 'AGENTS.md'), block, options, summary)
+    const codexSkillDir = join(homeDir, '.codex', 'skills', 'todo-desk')
+    await copySkillTo(codexSkillDir, options, summary)
+    await upsertManagedBlock(join(homeDir, '.codex', 'AGENTS.md'), instructionBlock(codexSkillDir), options, summary)
+    await upsertCodexNotifyHook(homeDir, codexSkillDir, options, summary)
   }
 
   if (isTarget(options, 'claude')) {
-    await copySkillTo(join(homeDir, '.claude', 'skills', 'todo-desk'), options, summary)
-    await upsertManagedBlock(join(homeDir, '.claude', 'CLAUDE.md'), block, options, summary)
+    const claudeSkillDir = join(homeDir, '.claude', 'skills', 'todo-desk')
+    await copySkillTo(claudeSkillDir, options, summary)
+    await upsertManagedBlock(join(homeDir, '.claude', 'CLAUDE.md'), instructionBlock(claudeSkillDir), options, summary)
+    await upsertClaudeStopHook(homeDir, claudeSkillDir, options, summary)
   }
 
   if (isTarget(options, 'kimi')) {
-    const kimi = await ensureKimiConfig(homeDir, options, summary)
+    const kimi = await getKimiExtraSkillDirs(homeDir)
+    const kimiSkillDir = join(kimi.fallbackDir, 'todo-desk')
     for (const dir of kimi.dirs) {
       await copySkillTo(join(dir, 'todo-desk'), options, summary)
     }
-    await upsertManagedBlock(join(homeDir, '.kimi-code', 'AGENTS.md'), block, options, summary)
+    await ensureKimiConfig(homeDir, kimiSkillDir, options, summary)
+    await upsertManagedBlock(join(homeDir, '.kimi-code', 'AGENTS.md'), instructionBlock(kimiSkillDir), options, summary)
   }
 
   if (isTarget(options, 'cursor')) {
-    await copySkillTo(join(homeDir, '.cursor', 'skills-cursor', 'todo-desk'), options, summary)
-    await writeTextIfChanged(join(homeDir, '.cursor', 'rules', 'todo-desk.mdc'), cursorRule(sharedSkillDir), options, summary)
+    const cursorSkillDir = join(homeDir, '.cursor', 'skills-cursor', 'todo-desk')
+    await copySkillTo(cursorSkillDir, options, summary)
+    await writeTextIfChanged(join(homeDir, '.cursor', 'rules', 'todo-desk.mdc'), cursorRule(cursorSkillDir), options, summary)
+    await upsertCursorStopHook(homeDir, cursorSkillDir, options, summary)
   }
 
   console.log(JSON.stringify(summary, null, 2))

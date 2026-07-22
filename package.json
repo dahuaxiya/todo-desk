@@ -16,6 +16,7 @@
     "lint": "oxlint",
     "test:ai": "node scripts/test-ai-assistant.mjs",
     "test:task-search": "node scripts/test-task-search.mjs",
+    "test:agent-integration": "node --test tests/taskRelationshipDecision.test.js tests/agentIntegration.test.mjs",
     "test:topology-network": "node --test tests/topologyNetwork.test.ts",
     "test:topology-parent-binding": "node --test tests/topologyParentBinding.test.ts",
     "test:batch-actions": "node --test tests/taskBatchActions.test.ts",

@@ -76,7 +76,8 @@ The agent must inspect the search results and current conversation itself:
 2. If a repository or project filter returns no useful result, retry with a broader search instead of assuming no related task exists.
 3. If a summary is insufficient, fetch only that task through `GET /tasks/<task-id>`; do not load the complete task list into model context.
 4. If one task is clearly the nearest direct parent, pass its id through `--parent-task-id`. Use `subtask_of` for planned decomposition or `discovered_from` for an independent issue exposed while executing it.
-5. If the agent cannot establish the relationship confidently, create the task without a parent rather than forcing a link.
+5. If the work is genuinely independent, use `--independent-root`. If the search was inconclusive, use `--parent-unresolved` so the task remains visible in the relationship inbox.
+6. Always pass `--parent-decision-reason` and include the ids actually reviewed through `--parent-candidate-ids`. Do not force a link, but do not omit the decision.
 
 This search process is mandatory even when the user only asks the agent to "record the current work."
 
@@ -99,6 +100,8 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
   --parent-task-id "optional-direct-parent-task-id" \
   --relation-type discovered_from \
   --relation-reason "The issue discovered while handling the parent task" \
+  --parent-decision-reason "The selected task directly produced this issue" \
+  --parent-candidate-ids "candidate-id,parent-task-id" \
   --affects-parent-completion \
   --due-at "2026-07-01T18:00:00+08:00" \
   --reminder-at "2026-07-01T17:30:00+08:00"
@@ -114,9 +117,12 @@ Fields:
 - `source` defaults to the current agent/tool name when supplied by the caller, otherwise `codex`.
 - `agent`, `agent-session-id`, `repository`, and `repository-path` attach work to the current agent run and codebase.
 - `parent-task-id` records the task that directly led to this work. Pass it only when the parent is explicit; do not infer it from a similar title, project, tag, repository, or session.
+- Every create call must choose exactly one relationship mode: `--parent-task-id`, `--independent-root`, or `--parent-unresolved`. The script rejects omitted decisions.
+- `parent-decision-reason` records why the relationship state was selected. `parent-candidate-ids` is a comma-separated audit trail of candidate tasks actually reviewed; it may be empty only when the search returned no candidates.
 - `relation-type=subtask_of` means planned decomposition. `relation-type=discovered_from` means a new issue found while executing the parent task.
 - For a derived issue, use `relation-reason` to explain how it arose. Use `--affects-parent-completion` when it blocks the parent, or `--follow-up-only` when the parent may finish independently.
 - The script also sends `origin.kind=agent`, `origin.channel=todo-desk-skill`, and `origin.confidence=explicit`. Todo Desk uses `origin.kind` as the authoritative source classification for UI styling and avoids guessing from metadata fields.
+- The script sends `relationshipDecision` with the selected state, reason, candidate ids, timestamp, agent, and session. New agent tasks without this evidence are rejected by the API.
 - `agent-session-id` is required for current-work logging. If the current session id is unavailable, do not create, update, or complete the Todo Desk task; tell the user that logging is blocked instead of inventing or leaving the value empty.
 
 ## Create a Derived Branch
@@ -158,6 +164,8 @@ python3 /Users/dxm/.agents/skills/todo-desk/scripts/add_work.py \
   --parent-task-id "current-todo-task-id" \
   --relation-type discovered_from \
   --relation-reason "Token refresh races were found while tracing the login failure" \
+  --parent-decision-reason "The login investigation directly exposed the refresh race" \
+  --parent-candidate-ids "current-todo-task-id" \
   --affects-parent-completion
 ```
 

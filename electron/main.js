@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { buildAiEndpoint, buildAiFallbackEndpoint, buildAiMergeRequestPayload, clipText, editTaskWithAiAndImages, looksLikeHtml, normalizeMergedTask, parseTasksWithAiAndImages, parseTasksWithLocalFallback } from './ai-task-parser.js'
 import { searchTasks } from './task-search.js'
 import { createBackupManager } from './backup-manager.js'
+import { assertAgentRelationshipDecision, deriveTaskRelationshipState, normalizeTaskRelationshipDecision } from './task-relationship.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -203,12 +204,15 @@ function normalizeTaskOrigin(task, confidence = 'legacy-inferred') {
   const origin = explicit || inferOriginFromTask(task, confidence)
   const requestedRelationshipState = taskRelationshipStates.has(task.relationshipState) ? task.relationshipState : undefined
   // 关系状态是父子结构的派生事实：有父任务必然 linked；无父 Agent 默认待归类，
-  // 只有用户明确标记后才允许成为独立根任务。这样旧数据无需迁移也能进入关系收件箱。
-  const relationshipState = parentTaskId
-    ? 'linked'
-    : origin.kind === 'agent'
-      ? requestedRelationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
-      : undefined
+  // 只有用户或 agent 明确标记后才允许成为独立根任务。旧数据仍可正常读取。
+  const relationshipState = deriveTaskRelationshipState(parentTaskId, origin.kind, requestedRelationshipState)
+  const relationshipDecision = normalizeTaskRelationshipDecision(task.relationshipDecision, {
+    parentTaskId,
+    relationshipState,
+    originKind: origin.kind,
+    agent: normalizeString(task.agent || origin.agent?.name),
+    agentSessionId: normalizeString(task.agentSessionId || origin.agent?.sessionId),
+  })
   return compactObject({
     ...task,
     completionAcceptance,
@@ -216,6 +220,7 @@ function normalizeTaskOrigin(task, confidence = 'legacy-inferred') {
     parentTaskId,
     parentLink,
     relationshipState,
+    relationshipDecision,
     parentCompletionReview,
     origin,
   })
@@ -1509,6 +1514,7 @@ function normalizeExternalTask(input) {
     parentTaskId,
     parentLink: normalizeParentLink(input.parentLink, { ...input, agent, agentSessionId, source }, parentTaskId, now),
     relationshipState: taskRelationshipStates.has(input.relationshipState) ? input.relationshipState : undefined,
+    relationshipDecision: input.relationshipDecision,
     parentCompletionReview: normalizeParentCompletionReview(input.parentCompletionReview),
     source,
     agent,
@@ -1517,6 +1523,9 @@ function normalizeExternalTask(input) {
     repositoryPath,
   }
   const normalized = normalizeTaskOrigin({ ...task, origin: explicitOrigin || input.origin }, 'explicit')
+  // UI-created tasks do not pass through this API. Every API-created agent task must therefore
+  // prove that the caller made one of the three parent decisions instead of silently defaulting.
+  assertAgentRelationshipDecision(normalized)
   const sessionReviewPatch = applySessionReview(normalized, input, now)
   const withSessionReview = sessionReviewPatch ? normalizeTaskOrigin({ ...normalized, ...sessionReviewPatch }, 'explicit') : normalized
   const decisionPatch = applyCompletionDecision(withSessionReview, input, now)
@@ -1549,6 +1558,9 @@ function normalizeTaskPatch(input, currentTask) {
     patch.parentCompletionReview = normalizeParentCompletionReview(input.parentCompletionReview)
   }
   if (taskRelationshipStates.has(input.relationshipState)) patch.relationshipState = input.relationshipState
+  if (Object.prototype.hasOwnProperty.call(input, 'relationshipDecision')) {
+    patch.relationshipDecision = input.relationshipDecision
+  }
   if (Object.prototype.hasOwnProperty.call(input, 'parentTaskId') || Object.prototype.hasOwnProperty.call(input, 'parentId')) {
     const parentTaskId = normalizeParentTaskId(input.parentTaskId || input.parentId)
     patch.parentTaskId = parentTaskId || undefined

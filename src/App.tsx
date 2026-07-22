@@ -18,7 +18,7 @@ import trashIcon from './assets/icons/trash.png'
 import type { CSSProperties, ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import type { GlobalTopologyViewMemory } from './GlobalTopologyView'
 import { collectIncompleteDescendantTaskIds, resolveTaskActionIds } from './taskBatchActions'
-import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, CloudBackupStatus, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
+import type { AddMode, AppData, AppFontSize, AppMode, AppSettings, CloudBackupStatus, ShortcutAction, ShortcutSettings, Task, TaskColumnStatus, TaskImage, TaskOrigin, TaskPriority, TaskRelationshipDecision, TaskRelationshipState, TaskSortMode, TaskStatus, TopologyFocusRequest, TopologyPosition, TopologyTaskCreateRequest } from './types'
 
 const GlobalTopologyView = lazy(() => import('./GlobalTopologyView').then((module) => ({ default: module.GlobalTopologyView })))
 const TaskTopologyCanvas = lazy(() => import('./TaskTopologyCanvas').then((module) => ({ default: module.TaskTopologyCanvas })))
@@ -417,16 +417,54 @@ function normalizeParentFields(task: Task): Pick<Task, 'parentTaskId' | 'parentL
   }
 }
 
+function createHumanRelationshipDecision(
+  state: TaskRelationshipState,
+  reason: string,
+  candidateTaskIds: string[] = [],
+  decidedAt = new Date().toISOString(),
+): TaskRelationshipDecision {
+  return {
+    state,
+    reason,
+    candidateTaskIds: [...new Set(candidateTaskIds.map((id) => id.trim()).filter(Boolean))],
+    decidedAt,
+    decidedBy: 'human',
+  }
+}
+
+function normalizeRelationshipDecision(task: Task, relationshipState: TaskRelationshipState | undefined): Task['relationshipDecision'] {
+  const decision = task.relationshipDecision
+  if (!decision || decision.state !== relationshipState) return undefined
+  const parentTaskId = String(task.parentTaskId || '').trim()
+  const candidateTaskIds = [...new Set((decision.candidateTaskIds || []).map((id) => String(id || '').trim()).filter(Boolean))]
+  if (relationshipState === 'linked' && parentTaskId && !candidateTaskIds.includes(parentTaskId)) {
+    candidateTaskIds.unshift(parentTaskId)
+  }
+  return {
+    state: relationshipState,
+    reason: String(decision.reason || '').trim(),
+    candidateTaskIds,
+    decidedAt: decision.decidedAt || task.updatedAt || task.createdAt || new Date().toISOString(),
+    decidedBy: decision.decidedBy === 'human' ? 'human' : 'agent',
+    agent: decision.agent ? String(decision.agent) : undefined,
+    agentSessionId: decision.agentSessionId ? String(decision.agentSessionId) : undefined,
+  }
+}
+
 function normalizeTaskOrigin(task: Task): Task {
   const parentFields = normalizeParentFields(task)
-  const withRelationshipState = (normalizedTask: Task): Task => ({
-    ...normalizedTask,
-    relationshipState: parentFields.parentTaskId
+  const withRelationshipState = (normalizedTask: Task): Task => {
+    const relationshipState: TaskRelationshipState | undefined = parentFields.parentTaskId
       ? 'linked'
       : normalizedTask.origin.kind === 'agent'
         ? normalizedTask.relationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
-        : undefined,
-  })
+        : undefined
+    return {
+      ...normalizedTask,
+      relationshipState,
+      relationshipDecision: normalizeRelationshipDecision({ ...normalizedTask, ...parentFields }, relationshipState),
+    }
+  }
   if (hasValidOrigin(task)) return withRelationshipState({ ...task, ...parentFields })
 
   const source = (task.source || '').trim().toLowerCase()
@@ -1861,6 +1899,12 @@ function App() {
       && existing?.parentTaskId === nextParentTaskId
       && existing.parentLink,
     )
+    const nextRelationshipState: TaskRelationshipState | undefined = nextParentTaskId
+      ? 'linked'
+      : existing && isAgentCreatedTask(existing)
+        ? existing.relationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
+        : undefined
+    const relationshipChanged = Boolean(existing && (existing.parentTaskId || '') !== nextParentTaskId)
     return {
       id: existing?.id ?? crypto.randomUUID(),
       title: toDraftString(draft.title).trim(),
@@ -1878,11 +1922,15 @@ function App() {
       completionAcceptance: existing?.completionAcceptance,
       sessionReview: existing?.sessionReview,
       parentTaskId: nextParentTaskId || undefined,
-      relationshipState: nextParentTaskId
-        ? 'linked'
-        : existing && isAgentCreatedTask(existing)
-          ? existing.relationshipState === 'independent_root' ? 'independent_root' : 'unresolved'
-          : undefined,
+      relationshipState: nextRelationshipState,
+      relationshipDecision: relationshipChanged && nextRelationshipState
+        ? createHumanRelationshipDecision(
+            nextRelationshipState,
+            nextParentTaskId ? '用户通过任务详情绑定父任务' : '用户通过任务详情解除父任务，等待重新归类',
+            nextParentTaskId ? [nextParentTaskId] : [],
+            now,
+          )
+        : existing?.relationshipDecision,
       // 只有人类在表单中新建或更换关系时才重建 parentLink。
       // 父任务未变时保留 agent 写入的派生类型、原因和创建时间。
       parentLink: nextParentTaskId
@@ -2407,6 +2455,16 @@ function App() {
         : isAgentCreatedTask(taskToLink)
           ? 'unresolved'
           : undefined,
+      relationshipDecision: parentTaskId
+        ? createHumanRelationshipDecision(
+            'linked',
+            keepExistingRelation ? taskToLink.relationshipDecision?.reason || '用户确认保留当前父任务' : '用户通过拓扑绑定父任务',
+            [parentTaskId],
+            now,
+          )
+        : isAgentCreatedTask(taskToLink)
+          ? createHumanRelationshipDecision('unresolved', '用户解除父任务，任务需要重新归类', [], now)
+          : undefined,
       parentLink: parentTaskId
         ? {
             type: nextRelationType,
@@ -2755,7 +2813,17 @@ function App() {
     const currentData = dataRef.current
     const nextTasks = currentData.tasks.map((task) => {
       if (!selectedIds.has(task.id) || task.parentTaskId || !isAgentCreatedTask(task)) return task
-      return { ...task, relationshipState: state, updatedAt: now }
+      return {
+        ...task,
+        relationshipState: state,
+        relationshipDecision: createHumanRelationshipDecision(
+          state,
+          state === 'independent_root' ? '用户在拓扑中确认该任务是独立根任务' : '用户将任务移回待归类',
+          [],
+          now,
+        ),
+        updatedAt: now,
+      }
     })
     await persist({ ...currentData, tasks: nextTasks })
     setSyncState(state === 'independent_root' ? `已将 ${selectedIds.size} 个 AI 任务标记为独立任务` : `已将 ${selectedIds.size} 个 AI 任务移回待归类`)
@@ -2782,6 +2850,7 @@ function App() {
           ...task,
           parentTaskId,
           relationshipState: 'linked' as const,
+          relationshipDecision: createHumanRelationshipDecision('linked', '用户通过拓扑批量绑定父任务', [parentTaskId], now),
           parentLink: {
             type: relationType,
             reason: relationType === 'discovered_from' ? '通过全局拓扑批量建立的派生关系' : undefined,
@@ -2833,6 +2902,7 @@ function App() {
           ...task,
           parentTaskId: parentTask.id,
           relationshipState: 'linked' as const,
+          relationshipDecision: createHumanRelationshipDecision('linked', '用户在归类时创建人工父任务', [parentTask.id], now),
           parentLink: {
             type: relationType,
             reason: relationType === 'discovered_from' ? '归类时创建人工父任务并建立派生关系' : undefined,
@@ -5078,11 +5148,12 @@ function TaskParentBinder({ task, parentTask, parentCandidates, onChangeParentTa
     [candidateLookup, parentCandidates, task.id],
   )
   const filteredCandidates = useMemo(() => {
-    if (!normalizedQuery) return validParentCandidates
+    if (!normalizedQuery) {
+      return validParentCandidates.filter((candidate) => candidate.status === 'doing')
+    }
     return validParentCandidates.filter((candidate) => taskMatchesSearch(candidate, normalizedQuery))
   }, [normalizedQuery, validParentCandidates])
-  const visibleCandidateLimit = normalizedQuery ? 10 : 7
-  const visibleCandidates = filteredCandidates.slice(0, visibleCandidateLimit)
+  const visibleCandidates = normalizedQuery ? filteredCandidates.slice(0, 10) : filteredCandidates
 
   useEffect(() => {
     if (!open) return undefined

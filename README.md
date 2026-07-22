@@ -183,7 +183,15 @@ curl -X POST http://127.0.0.1:47731/tasks \
     "priority": "medium",
     "project": "Todo Desk",
     "tags": "codex release",
-    "parentTaskId": "可选的父人工任务 id",
+    "agent": "codex",
+    "agentSessionId": "运行时 session id",
+    "relationshipState": "independent_root",
+    "relationshipDecision": {
+      "state": "independent_root",
+      "reason": "这是用户直接提出的独立发布检查任务",
+      "candidateTaskIds": [],
+      "decidedBy": "agent"
+    },
     "origin": {
       "kind": "agent",
       "channel": "local-api",
@@ -203,8 +211,8 @@ curl -X PATCH http://127.0.0.1:47731/tasks/<task-id> \
   }'
 ```
 
-`origin.kind` 是任务来源的权威字段。agent 创建的任务应使用 `origin.kind = "agent"`，并尽量带上 agent、session id、repository 和 repository path。
-如果任务是计划拆分或处理过程中发现的新问题，可以传 `parentTaskId` 和 `parentLink.type` 建立显式任务分支。`subtask_of` 表示计划子任务，`discovered_from` 表示处理中派生；不要通过标题、项目、标签、仓库或相同 session 猜测关系。影响上级任务完成的 AI 分支都确认完成后，Todo Desk 会提示用户复核上级任务。
+`origin.kind` 是任务来源的权威字段。agent 创建的任务应使用 `origin.kind = "agent"`，并带上 agent、session id、repository 和 repository path。
+新建 AI 任务必须明确选择 `linked`、`independent_root` 或 `unresolved`，同时提交 `relationshipDecision` 的判断理由和检索过的候选任务 id；缺少决策时 API 会拒绝创建。计划拆分或处理中发现的新问题可以通过 `parentTaskId` 和 `parentLink.type` 建立显式分支，`subtask_of` 表示计划子任务，`discovered_from` 表示处理中派生。不要通过标题、项目、标签、仓库或相同 session 猜测关系。
 
 ## Agent 接入
 
