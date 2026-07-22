@@ -4936,11 +4936,12 @@ function TaskParentBinder({ task, parentTask, parentCandidates, onChangeParentTa
     [candidateLookup, parentCandidates, task.id],
   )
   const filteredCandidates = useMemo(() => {
-    if (!normalizedQuery) return validParentCandidates
+    if (!normalizedQuery) {
+      return validParentCandidates.filter((candidate) => candidate.status === 'doing')
+    }
     return validParentCandidates.filter((candidate) => taskMatchesSearch(candidate, normalizedQuery))
   }, [normalizedQuery, validParentCandidates])
-  const visibleCandidateLimit = normalizedQuery ? 10 : 7
-  const visibleCandidates = filteredCandidates.slice(0, visibleCandidateLimit)
+  const visibleCandidates = normalizedQuery ? filteredCandidates.slice(0, 10) : filteredCandidates
 
   useEffect(() => {
     if (!open) return undefined
