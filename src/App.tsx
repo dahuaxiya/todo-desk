@@ -1119,8 +1119,12 @@ function formatTaskForClipboard(task: Task) {
   return lines.filter(Boolean).join('\n')
 }
 
-function mergeUniqueStrings(values: string[]) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+function mergeUniqueStrings(values: Array<string | null | undefined>) {
+  // 智能添加和旧版本地数据允许缺省项目、标签等字段；合并时不能让一个缺省值中断整次操作。
+  return Array.from(new Set(values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean)))
 }
 
 function pickMergedStatus(tasks: Task[]): TaskStatus {
@@ -1812,57 +1816,58 @@ function App() {
       }
     }
 
-    const now = new Date().toISOString()
-    const sourceIdSet = new Set(sourceTasks.map((task) => task.id))
-    const firstSourceIndex = data.tasks.findIndex((task) => task.id === sourceTasks[0].id)
-    const mergedParentTaskIds = mergeUniqueStrings(sourceTasks.map((task) => task.parentTaskId || ''))
-    const mergedParentTaskId = mergedParentTaskIds.length === 1 && !sourceIdSet.has(mergedParentTaskIds[0])
-      ? mergedParentTaskIds[0]
-      : ''
-    const mergedTask: Task = {
-      id: crypto.randomUUID(),
-      title: mergedContent.title,
-      detail: mergedContent.detail,
-      status: pickMergedStatus(sourceTasks),
-      priority: pickMergedPriority(sourceTasks),
-      project: mergeUniqueStrings(sourceTasks.map((task) => task.project)).join(' / '),
-      tags: mergeUniqueStrings(sourceTasks.flatMap((task) => task.tags)),
-      dueAt: pickEarliestDate(sourceTasks.map((task) => task.dueAt)),
-      reminderAt: pickEarliestDate(sourceTasks.map((task) => task.reminderAt)),
-      imagePaths: sourceTasks.flatMap((task) => task.imagePaths),
-      createdAt: now,
-      updatedAt: now,
-      completedAt: sourceTasks.every((task) => task.status === 'done') ? now : '',
-      parentTaskId: mergedParentTaskId || undefined,
-      parentLink: mergedParentTaskId
-        ? {
-            type: 'subtask_of',
-            affectsParentCompletion: true,
-            createdBy: 'human',
-            createdAt: now,
-            confidence: 'explicit',
-          }
-        : undefined,
-      origin: createHumanTaskOrigin(mode === 'ai' ? 'ui-ai-merge' : 'ui-merge'),
-      remindedAt: '',
-      source: mode === 'ai' ? 'ai-merge' : 'merge',
-      agent: mergeUniqueStrings(sourceTasks.map((task) => task.agent || '')).join(' / '),
-      agentSessionId: mergeUniqueStrings(sourceTasks.map((task) => task.agentSessionId || '')).join(' / '),
-      repository: mergeUniqueStrings(sourceTasks.map((task) => task.repository || '')).join(' / '),
-      repositoryPath: mergeUniqueStrings(sourceTasks.map((task) => task.repositoryPath || '')).join(' / '),
-    }
-    const deletedAt = now
-    let nextTasks = data.tasks.filter((task) => !sourceIdSet.has(task.id))
-    nextTasks.splice(Math.max(0, firstSourceIndex), 0, mergedTask)
-    if (mergedTask.status === 'done' && mergedTask.parentTaskId) {
-      nextTasks = applyParentReviewForCompletedChild(nextTasks, mergedTask.id, now)
-    }
-    const trashedTasks = sourceTasks.map((task) => ({
-      ...task,
-      deletedAt,
-      updatedAt: deletedAt,
-    }))
+    // 合并会同时聚合历史任务的可选元数据；构造和持久化必须共用异常边界，才能在坏数据时恢复操作按钮。
     try {
+      const now = new Date().toISOString()
+      const sourceIdSet = new Set(sourceTasks.map((task) => task.id))
+      const firstSourceIndex = data.tasks.findIndex((task) => task.id === sourceTasks[0].id)
+      const mergedParentTaskIds = mergeUniqueStrings(sourceTasks.map((task) => task.parentTaskId || ''))
+      const mergedParentTaskId = mergedParentTaskIds.length === 1 && !sourceIdSet.has(mergedParentTaskIds[0])
+        ? mergedParentTaskIds[0]
+        : ''
+      const mergedTask: Task = {
+        id: crypto.randomUUID(),
+        title: mergedContent.title,
+        detail: mergedContent.detail,
+        status: pickMergedStatus(sourceTasks),
+        priority: pickMergedPriority(sourceTasks),
+        project: mergeUniqueStrings(sourceTasks.map((task) => task.project)).join(' / '),
+        tags: mergeUniqueStrings(sourceTasks.flatMap((task) => task.tags ?? [])),
+        dueAt: pickEarliestDate(sourceTasks.map((task) => task.dueAt)),
+        reminderAt: pickEarliestDate(sourceTasks.map((task) => task.reminderAt)),
+        imagePaths: sourceTasks.flatMap((task) => task.imagePaths ?? []),
+        createdAt: now,
+        updatedAt: now,
+        completedAt: sourceTasks.every((task) => task.status === 'done') ? now : '',
+        parentTaskId: mergedParentTaskId || undefined,
+        parentLink: mergedParentTaskId
+          ? {
+              type: 'subtask_of',
+              affectsParentCompletion: true,
+              createdBy: 'human',
+              createdAt: now,
+              confidence: 'explicit',
+            }
+          : undefined,
+        origin: createHumanTaskOrigin(mode === 'ai' ? 'ui-ai-merge' : 'ui-merge'),
+        remindedAt: '',
+        source: mode === 'ai' ? 'ai-merge' : 'merge',
+        agent: mergeUniqueStrings(sourceTasks.map((task) => task.agent)).join(' / '),
+        agentSessionId: mergeUniqueStrings(sourceTasks.map((task) => task.agentSessionId)).join(' / '),
+        repository: mergeUniqueStrings(sourceTasks.map((task) => task.repository)).join(' / '),
+        repositoryPath: mergeUniqueStrings(sourceTasks.map((task) => task.repositoryPath)).join(' / '),
+      }
+      const deletedAt = now
+      let nextTasks = data.tasks.filter((task) => !sourceIdSet.has(task.id))
+      nextTasks.splice(Math.max(0, firstSourceIndex), 0, mergedTask)
+      if (mergedTask.status === 'done' && mergedTask.parentTaskId) {
+        nextTasks = applyParentReviewForCompletedChild(nextTasks, mergedTask.id, now)
+      }
+      const trashedTasks = sourceTasks.map((task) => ({
+        ...task,
+        deletedAt,
+        updatedAt: deletedAt,
+      }))
       await persist({
         ...data,
         tasks: nextTasks,
